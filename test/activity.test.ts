@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
-import { getAdvanceNonceAccountInstruction, getAssignInstruction, getInitializeNonceAccountInstruction, getTransferSolInstruction } from '@solana-program/system';
+import { getAdvanceNonceAccountInstruction, getAssignInstruction, getCreateAccountInstruction, getInitializeNonceAccountInstruction, getTransferSolInstruction } from '@solana-program/system';
 import {
     AuthorityType,
     getApproveCheckedInstruction,
@@ -195,10 +195,11 @@ test('a token made and minted to the wallet is a mint, its rent apart; one burne
     const [NEW_MINT, NEWCOMER] = [key(46), key(47)];
     const TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as Address;
     // The new mint signs, as System's CreateAccount wants; InitializeMint2 (20) makes it a mint.
+    const create = getCreateAccountInstruction({ payer: createNoopSigner(WALLET), newAccount: createNoopSigner(NEW_MINT), lamports: 1_461_600n, space: 82, programAddress: TOKEN });
     const init = { programAddress: TOKEN, accounts: [{ address: NEW_MINT, role: AccountRole.WRITABLE_SIGNER }, { address: MY_TOKENS, role: AccountRole.WRITABLE }], data: new Uint8Array([20, 6]) };
     const burn = { programAddress: TOKEN, accounts: [{ address: MY_TOKENS, role: AccountRole.WRITABLE }, { address: WALLET, role: AccountRole.READONLY_SIGNER }], data: new Uint8Array([8]) };
     const [minted, burned, paid] = await landed(
-        item([init], WALLET, {
+        item([create, init], WALLET, {
             lamports: { [WALLET]: [1_000_000_000n, 1_000_000_000n - 10_000n - 1_461_600n - 2_039_280n], [NEW_MINT]: [0n, 1_461_600n], [MY_TOKENS]: [0n, 2_039_280n] },
             tokens: [{ address: MY_TOKENS, mint: NEW_MINT, owner: WALLET, before: null, after: 1_000_000_000n }],
         }, { fee: 10_000 }),
@@ -238,6 +239,45 @@ test('every instruction is read by the review\'s decoders: a delegate given or r
     assert.deepEqual([told(made)[0].name, told(made)[0].args.nonceAuthority], ['InitializeNonceAccount', WALLET]);
     // The token accounts it lists, with their mints, for the words.
     assert.deepEqual(summarize(approved, WALLET).held, [{ address: MY_TOKENS, mint: MINT, decimals: 6, owner: WALLET }]);
+});
+
+test('what a site cannot pass off: a payment as rent, wrapped SOL as their rent, a loss as a mint, a send as a burn', async () => {
+    const [STAKE, HOLDER, JUNK, EVIL] = [key(50), key(51), key(52), key(53)];
+    const WRAPPED = 'So11111111111111111111111111111111111111112' as Address;
+    // 100 SOL into a new 200-byte account: its rent is rent, the rest is SOL sent.
+    const stake = getCreateAccountInstruction({ payer: createNoopSigner(WALLET), newAccount: createNoopSigner(STAKE), lamports: 100_000_000_000n, space: 200, programAddress: key(54) });
+    // A program moves the wallet's tokens to someone, and mints it a junk token.
+    const drain = { programAddress: key(55), accounts: [{ address: WALLET, role: AccountRole.WRITABLE_SIGNER }, { address: MY_TOKENS, role: AccountRole.WRITABLE }, { address: THEIR_TOKENS, role: AccountRole.WRITABLE }, { address: key(56), role: AccountRole.WRITABLE }], data: new Uint8Array([1]) };
+    // A send of 100 to someone who burns as much from another account of theirs in the same transaction.
+    const swapped = { programAddress: key(55), accounts: [{ address: WALLET, role: AccountRole.WRITABLE_SIGNER }, { address: MY_TOKENS, role: AccountRole.WRITABLE }, { address: THEIR_TOKENS, role: AccountRole.WRITABLE }, { address: key(57), role: AccountRole.WRITABLE }], data: new Uint8Array([2]) };
+    const wrapped = { programAddress: key(55), accounts: [{ address: WALLET, role: AccountRole.WRITABLE_SIGNER }, { address: HOLDER, role: AccountRole.WRITABLE }], data: new Uint8Array([3]) };
+    const [staked, drained, passed, paid] = await landed(
+        item([stake], WALLET, { lamports: { [WALLET]: [200_000_000_000n, 99_999_995_000n], [STAKE]: [0n, 100_000_000_000n] } }),
+        item([drain], WALLET, {
+            tokens: [
+                { address: MY_TOKENS, mint: MINT, owner: WALLET, before: 1_000n, after: 0n },
+                { address: THEIR_TOKENS, mint: MINT, owner: EVIL, before: 0n, after: 1_000n },
+                { address: key(56), mint: JUNK, owner: WALLET, before: null, after: 1n },
+            ],
+        }),
+        item([swapped], WALLET, {
+            tokens: [
+                { address: MY_TOKENS, mint: MINT, owner: WALLET, before: 100n, after: 0n },
+                { address: THEIR_TOKENS, mint: MINT, owner: EVIL, before: 0n, after: 100n },
+                { address: key(57), mint: MINT, owner: EVIL, before: 500n, after: 300n },
+            ],
+        }),
+        item([wrapped], WALLET, {
+            lamports: { [WALLET]: [20_000_000_000n, 9_997_955_720n - 5_000n + 5_000n], [HOLDER]: [0n, 10_002_039_280n] },
+            tokens: [{ address: HOLDER, mint: WRAPPED, owner: FRIEND, before: null, after: 10_000_000_000n }],
+        }),
+    );
+    const s = summarize(staked, WALLET);
+    assert.deepEqual([s.kind, s.rent.opened, s.moves[0].units], ['send', 2_282_880n, -(100_000_000_000n - 2_282_880n)]);
+    assert.equal(summarize(drained, WALLET).kind, 'send'); // what left is told, not "Minted 1 junk"
+    assert.equal(summarize(passed, WALLET).kind, 'send'); // they burned theirs: yours went to them
+    const w = summarize(paid, WALLET);
+    assert.deepEqual([w.kind, w.rent.theirs], ['send', 2_039_280n]); // their rent apart, the 10 SOL sent
 });
 
 test("rent stays the wallet's own: wrapping SOL, closing while sending, rent sent elsewhere, rent others pay", async () => {

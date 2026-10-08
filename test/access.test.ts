@@ -49,8 +49,10 @@ test('a delegate on a token account of yours: what it can move, and whether that
 });
 
 test('a close authority that is not you; another owner’s account says nothing', () => {
-    assert.deepEqual(grantsOf(PAYER, [tokens({ closer: OTHER })], [], []), [{ kind: 'closer', account: TOKEN, mint: MINT, to: OTHER }]);
+    assert.deepEqual(grantsOf(PAYER, [tokens({ closer: OTHER })], [], []), [{ kind: 'closer', account: TOKEN, mint: MINT, to: OTHER, sol: 0n }]);
     assert.deepEqual(grantsOf(PAYER, [tokens({ closer: PAYER })], [], []), []);
+    // Wrapped SOL can be closed while it holds SOL: its closer takes it.
+    assert.equal((grantsOf(PAYER, [tokens({ closer: OTHER, native: 2_039_280n, amount: 5_000_000_000n })], [], [])[0] as { sol: bigint }).sol, 5_000_000_000n);
     assert.deepEqual(grantsOf(PAYER, [tokens({ owner: OTHER, delegate: ISSUER, delegated: 5n })], [], []), []);
 });
 
@@ -80,6 +82,12 @@ test('grants come worst first', () => {
     const waiting: Waiting = { account: key(43), nonce: getBase58Decoder().decode(value) };
     const grants = grantsOf(PAYER, [tokens({ closer: OTHER, delegate: OTHER, delegated: 10n })], [mint({ freezer: ISSUER, permanent: ISSUER })], [{ waiting, account: nonce(key(43), PAYER, value) }]);
     assert.deepEqual(grants.map((g) => g.kind), ['delegate', 'permanent', 'nonce', 'closer', 'freeze']);
+    // A wallet another program owns: first of all.
+    const taken = grantsOf(PAYER, [], [], [], account(PAYER, key(44), 5n));
+    assert.deepEqual(taken, [{ kind: 'taken', program: key(44) }]);
+    assert.deepEqual(grantsOf(PAYER, [], [], [], account(PAYER, SYSTEM, 5n)), []);
+    // A delegate that is the owner itself is no one else.
+    assert.deepEqual(grantsOf(PAYER, [tokens({ delegate: PAYER, delegated: 5n })], [], []), []);
 });
 
 test('garbage in any account reads as nothing it does not hold, and never throws', () => {

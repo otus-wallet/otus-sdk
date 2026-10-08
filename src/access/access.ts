@@ -13,8 +13,9 @@ import type { OtusRpc } from '../rpc.ts';
 
 /** What someone besides you can do with what you hold, each with whom. */
 export type Grant =
+    | { kind: 'taken'; program: Address } // the wallet itself belongs to a program now, which can move all it holds
     | { kind: 'delegate'; account: Address; program: Address; mint: Address; to: Address; allowance: bigint; all: boolean } // can move up to `allowance` out of the account (of this token program); `all`: everything it holds, or without end
-    | { kind: 'closer'; account: Address; mint: Address; to: Address } // can close the account once it is empty, and keep its rent
+    | { kind: 'closer'; account: Address; mint: Address; to: Address; sol: bigint } // can close the account and keep its rent: once it holds no tokens, or, wrapped SOL (`sol`: what it holds), at any time, taking that SOL
     | { kind: 'permanent'; mint: Address; to: Address } // the token's permanent delegate: can move or burn any of yours, at any time
     | { kind: 'freeze'; mint: Address; to: Address } // the token's freeze authority: can freeze your accounts of it
     | { kind: 'nonce'; account: Address; nonce: string; authority: Address }; // a transaction you signed waits on this nonce: it can still run
@@ -27,47 +28,51 @@ export type Access = { grants: Grant[]; unchecked: number };
 
 export const MAX_MINTS = 300; // mints read, 100 a request
 const U64_MAX = 2n ** 64n - 1n; // an allowance without end
-const ORDER: Record<Grant['kind'], number> = { delegate: 0, permanent: 1, nonce: 2, closer: 3, freeze: 4 };
+const ORDER: Record<Grant['kind'], number> = { taken: 0, delegate: 1, permanent: 2, nonce: 3, closer: 4, freeze: 5 };
 
-/** Who can move, burn, freeze or close what `owner` holds: its token accounts and their mints, read in base64, and the
- *  nonce accounts of the transactions it signed that may still wait. */
+/** Who can move, burn, freeze or close what `owner` holds: the wallet itself, its token accounts and their mints, read
+ *  in base64, and the nonce accounts of the transactions it signed that may still wait. */
 export async function access(rpc: OtusRpc, owner: Address, waiting: Waiting[] = []): Promise<Access> {
     const lists = await Promise.all(TOKEN_PROGRAMS.map((programId) => rpc.getTokenAccountsByOwner(owner, { programId }, { encoding: 'base64', commitment: 'confirmed' }).send()));
     // Each read as an account that may be missing: the form the review reads.
     const tokens = lists.flatMap(({ value }) => value.map(({ pubkey, account }) => parseBase64RpcAccount(pubkey, account as typeof account | null)));
     const held = heldMints(owner, tokens);
     const asked = held.slice(0, MAX_MINTS);
-    const { accounts } = await rpcChain(rpc).accounts([...asked, ...waiting.map((w) => w.account)]);
-    const nonces = waiting.map((w, i) => ({ waiting: w, account: accounts[asked.length + i] }));
-    return { grants: grantsOf(owner, tokens, accounts.slice(0, asked.length), nonces), unchecked: held.length - asked.length };
+    const { accounts } = await rpcChain(rpc).accounts([owner, ...asked, ...waiting.map((w) => w.account)]);
+    const nonces = waiting.map((w, i) => ({ waiting: w, account: accounts[1 + asked.length + i] }));
+    return { grants: grantsOf(owner, tokens, accounts.slice(1, 1 + asked.length), nonces, accounts[0]), unchecked: held.length - asked.length };
 }
 
-/** The mints of the tokens `owner` holds some of, in its token accounts. */
+/** The mints of the tokens `owner` holds some of, in its token accounts: Token-2022's first, as only they can give an
+ *  issuer the power to move them (past MAX_MINTS, the rest go unread). */
 export function heldMints(owner: Address, tokens: MaybeEncodedAccount[]): Address[] {
     const mints = tokens.flatMap((a) => {
-        const t = read(a)?.token;
-        return t && t.owner === owner && !t.native && t.amount > 0n ? [t.mint] : [];
+        const s = read(a);
+        const t = s?.token;
+        return s && t && t.owner === owner && !t.native && t.amount > 0n ? [{ mint: t.mint, first: s.program === TOKEN_2022_PROGRAM_ADDRESS }] : [];
     });
-    return [...new Set(mints)];
+    return [...new Set([...mints.filter((m) => m.first), ...mints.filter((m) => !m.first)].map((m) => m.mint))];
 }
 
 /** Owner's token accounts, the mints of what it holds, and the nonce accounts of transactions it signed → the grants,
  *  worst first. Pure. */
-export function grantsOf(owner: Address, tokens: MaybeEncodedAccount[], mints: MaybeEncodedAccount[], nonces: { waiting: Waiting; account: MaybeEncodedAccount }[]): Grant[] {
+export function grantsOf(owner: Address, tokens: MaybeEncodedAccount[], mints: MaybeEncodedAccount[], nonces: { waiting: Waiting; account: MaybeEncodedAccount }[], wallet?: MaybeEncodedAccount): Grant[] {
     const grants: Grant[] = [];
+    // A wallet is the System Program's; once another program owns it, that program decides what leaves it.
+    if (wallet?.exists && wallet.programAddress !== SYSTEM_PROGRAM_ADDRESS) grants.push({ kind: 'taken', program: wallet.programAddress });
     for (const a of tokens) {
         const s = read(a);
         const t = s?.token;
         if (!s || !t || t.owner !== owner) continue; // another's: what it allows is not yours to know
-        if (t.delegate && t.delegated > 0n) grants.push({ kind: 'delegate', account: a.address, program: s.program, mint: t.mint, to: t.delegate, allowance: t.delegated, all: t.delegated === U64_MAX || (t.amount > 0n && t.delegated >= t.amount) });
-        if (t.closer && t.closer !== owner) grants.push({ kind: 'closer', account: a.address, mint: t.mint, to: t.closer });
+        if (t.delegate && t.delegate !== owner && t.delegated > 0n) grants.push({ kind: 'delegate', account: a.address, program: s.program, mint: t.mint, to: t.delegate, allowance: t.delegated, all: t.delegated === U64_MAX || (t.amount > 0n && t.delegated >= t.amount) });
+        if (t.closer && t.closer !== owner) grants.push({ kind: 'closer', account: a.address, mint: t.mint, to: t.closer, sol: t.native ? t.amount : 0n });
     }
     const held = new Set(heldMints(owner, tokens));
     for (const a of mints) {
         const s = read(a);
         if (!s || !isMint(s) || !held.has(a.address)) continue;
         const permanent = s.program === TOKEN_2022_PROGRAM_ADDRESS ? permanentDelegate(s.data) : null;
-        if (permanent) grants.push({ kind: 'permanent', mint: a.address, to: permanent });
+        if (permanent && permanent !== owner) grants.push({ kind: 'permanent', mint: a.address, to: permanent });
         const freezer = optionalAddress(s.data, 46);
         if (freezer) grants.push({ kind: 'freeze', mint: a.address, to: freezer });
     }

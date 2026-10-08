@@ -4,10 +4,11 @@
 // receipt, a swap, a mint, a burn) comes from where what moved went: a token no one else lost was made by its mint, not
 // received. The other side, the programs, Squads steps and a memo come from its own instructions.
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
+import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
 import { isOffCurveAddress, type Address } from '@solana/kit';
 
 import { told } from '../format.ts';
-import { isTokenProgram, LIGHTHOUSE, WSOL } from '../programs/addresses.ts';
+import { isTokenProgram, isWrappedSol, LIGHTHOUSE } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
 import { explain, type Explained } from '../review/explain.ts';
@@ -46,6 +47,7 @@ export type Activity = {
     created: Address[];
     instructions: Told[];
     held: Held[];
+    fresh: Address[]; // the accounts it brought into being
     signed: boolean;
     other: Address | null;
     programs: Address[];
@@ -66,36 +68,44 @@ export function summarize(t: Landed, wallet: Address): Activity {
     // The wallet's SOL counts the rent in its own token accounts as still its own: rent put in one it opens is not
     // spent, rent back from one it closes is not received, rent that one sends elsewhere is. Wrapped SOL in them is a
     // token, apart from their rent.
-    const rentIn = (side: 'before' | 'after', i: number) => lamports[side][i] - listed(side, i).reduce((n, b) => n + (b.mint === WSOL ? b.units : 0n), 0n);
+    const rentIn = (side: 'before' | 'after', i: number) => lamports[side][i] - listed(side, i).reduce((n, b) => n + (isWrappedSol(b.mint) ? b.units : 0n), 0n);
     const own = [...new Set([...tokens.before, ...tokens.after].filter((b) => yours(b.owner)).map((b) => b.account))];
     const rent = own.reduce((n, i) => n + rentIn('after', i) - rentIn('before', i), 0n);
     const at = accounts.indexOf(wallet);
     const spent = at < 0 ? 0n : change(at);
     // Rent others put in a token account of the wallet's is no SOL of its own: only what the wallet paid counts.
     let sol = spent + (rent > 0n ? min(rent, spent < 0n ? -spent : 0n) : rent);
-    // What it paid to open others' token accounts is rent of theirs, not SOL sent: up to what the wallet lost.
+    // What it paid to open others' token accounts is rent of theirs, not SOL sent: up to what the wallet lost. Wrapped
+    // SOL put in one is SOL sent.
     const given = accounts.reduce((n, _, i) => {
         const [before, after] = [listed('before', i), listed('after', i)];
-        return lamports.before[i] === 0n && after.length && !before.length && !after.every((b) => yours(b.owner)) ? n + lamports.after[i] : n;
+        return lamports.before[i] === 0n && after.length && !before.length && !after.every((b) => yours(b.owner)) ? n + rentIn('after', i) : n;
     }, 0n);
     const theirs = sol < 0n ? min(given, -sol) : 0n;
     sol += theirs;
-    // Other accounts the transaction made that signed it (a mint, a nonce account: System's CreateAccount wants the new
-    // account's signature): what the wallet put in them is rent, not SOL sent. A wallet paid for the first time signs
-    // nothing.
-    const signers = new Set(t.message.staticAccounts.slice(0, t.message.header.numSignerAccounts));
-    const made = accounts.reduce((n, a, i) => (a !== wallet && signers.has(a) && lamports.before[i] === 0n && lamports.after[i] > 0n && !listed('after', i).length ? n + lamports.after[i] : n), 0n);
+    // Other accounts its own CreateAccount made (a mint, a nonce account): what the wallet put in them is rent, as much as
+    // the space each declares needs, and no more; past that it is SOL sent, as to a stake account. A plain account holds
+    // SOL, not rent.
+    const told = instructionsOf(t);
+    const made = told.reduce((n, ix) => {
+        if (ix.program !== SYSTEM_PROGRAM_ADDRESS || (ix.name !== 'CreateAccount' && ix.name !== 'CreateAccountWithSeed')) return n;
+        const fresh = ix.accounts.find((a) => a.role === 'newAccount')?.address;
+        const value = (name: string) => ix.args.find((a) => a.name === name)?.value ?? '';
+        const at = fresh ? accounts.indexOf(fresh) : -1;
+        if (at < 0 || fresh === wallet || lamports.before[at] !== 0n || listed('after', at).length || !/^\d{1,9}$/.test(value('space'))) return n;
+        if (value('programAddress') === SYSTEM_PROGRAM_ADDRESS && value('space') === '0') return n;
+        return n + min(lamports.after[at], rentFor(Number(value('space'))));
+    }, 0n);
     const opened = sol < 0n ? min(made, -sol) : 0n;
     sol += opened;
     const moves: Move[] = [...(sol !== 0n ? [{ mint: null, units: sol, decimals: 9 }] : []), ...tokenMoves(t, (owner) => yours(owner))];
-    const signed = isOffCurveAddress(wallet) || signers.has(wallet);
-    // A token gained that no account lost (its total in the transaction grew as much) was minted; one lost that no
-    // account gained, burned. Wrapped SOL, which a closed account turns back into SOL, is neither.
+    const signed = isOffCurveAddress(wallet) || t.message.staticAccounts.slice(0, t.message.header.numSignerAccounts).includes(wallet);
+    // A token gained that no other account lost, as its total grew as much, was minted; one lost that no other account
+    // gained, burned. Wrapped SOL, which a closed account turns back into SOL, is neither.
     const total = (mint: Address) => sum(t.tokens.after, mint) - sum(t.tokens.before, mint);
-    const madeOrBurned = (m: Move) => m.mint !== null && m.mint !== WSOL && (m.units > 0n ? total(m.mint) >= m.units : total(m.mint) <= m.units);
-    const real = moves.filter((m) => !madeOrBurned(m));
-    const [gains, losses] = [real.some((m) => m.units > 0n), real.some((m) => m.units < 0n)];
-    const kind = kindOf(moves.filter(madeOrBurned), gains, losses);
+    const elsewhere = (mint: Address, way: bigint) => othersMoved(t, wallet, mint, way);
+    const madeOrBurned = (m: Move) => m.mint !== null && !isWrappedSol(m.mint) && (m.units > 0n ? !elsewhere(m.mint, -1n) && total(m.mint) >= m.units : !elsewhere(m.mint, 1n) && total(m.mint) <= m.units);
+    const kind = kindOf(moves.filter(madeOrBurned), moves.filter((m) => !madeOrBurned(m)));
     const programs = [...new Set(t.message.instructions.map((ix) => accounts[ix.programAddressIndex]))];
     return {
         signature: t.signature,
@@ -106,8 +116,9 @@ export function summarize(t: Landed, wallet: Address): Activity {
         fee: t.fee,
         payer,
         rent: { yours: rent, theirs, opened },
-        created: createdMints(t),
-        instructions: instructionsOf(t),
+        created: t.error ? [] : createdMints(t),
+        instructions: told,
+        fresh: accounts.filter((_, i) => lamports.before[i] === 0n && lamports.after[i] > 0n),
         held: heldIn(t),
         signed,
         other: kind === 'send' || kind === 'receive' ? otherSide(t, wallet, moves, kind === 'send' ? 1n : -1n, change) : null,
@@ -121,12 +132,29 @@ export function summarize(t: Landed, wallet: Address): Activity {
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
 const sum = (balances: TokenBalance[], mint: Address) => balances.reduce((n, b) => (b.mint === mint ? n + b.units : n), 0n);
 
-// A mint before anything else that moved; a burn when nothing came back from others; then by what went and came.
-function kindOf(made: Move[], gains: boolean, losses: boolean): Kind {
-    if (made.some((m) => m.units > 0n)) return 'mint';
-    if (made.length && !gains) return 'burn';
+// The most rent a new account of this many bytes needs: 128 bytes more, at 3,480 lamports a byte-year, for two years
+// (mainnet's rate; a cluster may ask less, never more).
+const rentFor = (space: number) => BigInt(128 + space) * 6_960n;
+
+// Whether an account that is not the wallet's gained (way 1) or lost (−1) some of this token in the transaction.
+function othersMoved(t: Landed, wallet: Address, mint: Address, way: bigint): boolean {
+    const by = new Map<number, bigint>();
+    for (const [side, sign] of [['before', -1n], ['after', 1n]] as const) {
+        for (const b of t.tokens[side]) if (b.mint === mint && b.owner !== wallet) by.set(b.account, (by.get(b.account) ?? 0n) + sign * b.units);
+    }
+    return [...by.values()].some((d) => d * way > 0n);
+}
+
+// A mint when what came was made and nothing but SOL went (an NFT, a pool or stake token paid for); a burn when nothing
+// else moved; then by what went to others and came from them.
+function kindOf(made: Move[], real: Move[]): Kind {
+    const [gains, losses] = [real.some((m) => m.units > 0n), real.some((m) => m.units < 0n)];
+    if (made.some((m) => m.units > 0n) && !real.some((m) => m.units < 0n && m.mint !== null)) return 'mint';
+    if (made.length && !gains && !losses) return 'burn';
     if (gains && losses) return 'swap';
-    return losses ? 'send' : gains ? 'receive' : 'other';
+    if (losses) return 'send';
+    if (gains) return 'receive';
+    return made.length ? 'burn' : 'other';
 }
 
 // Its top-level instructions, read by the same decoders as a review: each account's place in the message gives its

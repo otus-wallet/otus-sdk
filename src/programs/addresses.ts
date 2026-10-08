@@ -11,5 +11,8 @@ export const STAKE_PROGRAM = address('Stake1111111111111111111111111111111111111
 export const LIGHTHOUSE = address('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95');
 
 export const WSOL = address('So11111111111111111111111111111111111111112');
+export const WSOL_2022 = address('9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP'); // Token-2022's wrapped SOL
+/** Wrapped SOL, of either token program: SOL itself held in a token account. */
+export const isWrappedSol = (mint: string) => mint === WSOL || mint === WSOL_2022;
 export const USDC = address('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 export const USDT = address('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB');

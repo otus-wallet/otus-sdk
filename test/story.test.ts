@@ -131,6 +131,6 @@ test('tells what an instruction does, in words', async () => {
 test('a nonce moved on leads a durable transaction; anywhere else it only takes back what was signed on it', () => {
     const e: Explained = { program: address('11111111111111111111111111111111'), programName: 'System Program', source: 'plugin', data: new Uint8Array([4, 0, 0, 0]), name: 'AdvanceNonceAccount', accounts: [{ role: 'nonceAccount', address: address('11111111111111111111111111111112') }], args: [] };
     const n = { who: (a: Address) => a.slice(0, 4) } as unknown as Names;
-    assert.deepEqual(story(e, n).effects, [{ text: 'Uses a durable nonce: this transaction never expires', tone: 'danger' }]);
+    assert.deepEqual(story(e, n, false, true).effects, [{ text: 'Uses a durable nonce: this transaction never expires', tone: 'danger' }]);
     assert.deepEqual(story(e, n, false, false).effects, [{ text: 'Moves the nonce of 1111 on: what was signed on it can no longer run', tone: 'plain' }]);
 });

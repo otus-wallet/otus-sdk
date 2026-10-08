@@ -32,8 +32,9 @@ export type Names = {
 const AUTHORITY: Record<string, string> = { 0: 'The right to mint', 1: 'The right to freeze', 2: 'The ownership', 3: 'The right to close' };
 
 /** One explained instruction → its story. `risky`: its program may be harmful, so what it does to you shows in red.
- *  `first`: it leads the transaction, where a nonce's advance makes the whole transaction durable. */
-export function story(e: Explained, n: Names, risky = false, first = true): Story {
+ *  `first`: it leads a transaction about to be signed, where a nonce's advance makes the whole transaction durable;
+ *  anywhere else (later in it, inside a proposal, once landed) the advance only moves the nonce on. */
+export function story(e: Explained, n: Names, risky = false, first = false): Story {
     const arg = (name: string) => e.args.find((a) => a.name === name)?.value ?? '';
     const acc = (role: string) => e.accounts.find((a) => a.role === role)?.address;
     const big = (name: string) => (/^\d+$/.test(arg(name)) ? BigInt(arg(name)) : 0n);
