@@ -1,24 +1,28 @@
 // What one landed transaction did for a wallet, read from the transaction alone: no account, table or name is asked
 // for. What the wallet gained and lost comes from the balances the transaction itself lists, before and after, so it
-// is what happened, not a guess; the fee and the rent of token accounts it opened or closed are set apart. Its kind
-// (a send, a receipt, a swap), the other side, the programs, Squads steps and a memo come from its own instructions.
+// is what happened, not a guess; the fee and the rent of accounts it opened or closed are set apart. Its kind (a send, a
+// receipt, a swap, a mint, a burn) comes from where what moved went: a token no one else lost was made by its mint, not
+// received. The other side, the programs, Squads steps and a memo come from its own instructions.
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
 import { isOffCurveAddress, type Address } from '@solana/kit';
 
 import { told } from '../format.ts';
-import { LIGHTHOUSE, WSOL } from '../programs/addresses.ts';
+import { isTokenProgram, LIGHTHOUSE, WSOL } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
-import type { Landed } from './history.ts';
+import type { Landed, TokenBalance } from './history.ts';
 
 /** A change in one of the wallet's balances: SOL (mint null) or a token, in its base units, gained (+) or lost (−). */
 export type Move = { mint: Address | null; units: bigint; decimals: number };
 
-export type Kind = 'send' | 'receive' | 'swap' | 'other';
+/** `swap`: something of yours went to others and something came back from others; `mint` and `burn`: a token you got
+ *  that no one else lost, or lost that no one else got. */
+export type Kind = 'send' | 'receive' | 'swap' | 'mint' | 'burn' | 'other';
 
 /** A transaction for the wallet, in short. `moves`: SOL first, then each token; SOL without the fee the wallet paid
- *  and the rent of token accounts. `rent.yours`: the rent its own token accounts gained (+, opened) or lost (−,
- *  closed); `rent.theirs`: what it put in others' token accounts it opened for them. `signed`: whether the wallet
+ *  and rent. `rent.yours`: the rent its own token accounts gained (+, opened) or lost (−, closed); `rent.theirs`: what
+ *  it put in others' token accounts it opened for them; `rent.opened`: what it put in other accounts the transaction
+ *  made (a mint, a nonce account). `created`: the mints it made. `signed`: whether the wallet
  *  signed it, or is a program's address (a Squads vault), which never signs: its program moves it; what left a wallet
  *  that did not, a delegate of its tokens moved. `other`: who got what a send sent, or sent what a
  *  receipt got. `main`: its first program that is not one of Solana's own. */
@@ -30,7 +34,8 @@ export type Activity = {
     moves: Move[];
     fee: bigint;
     payer: Address;
-    rent: { yours: bigint; theirs: bigint };
+    rent: { yours: bigint; theirs: bigint; opened: bigint };
+    created: Address[];
     signed: boolean;
     other: Address | null;
     programs: Address[];
@@ -65,11 +70,22 @@ export function summarize(t: Landed, wallet: Address): Activity {
     }, 0n);
     const theirs = sol < 0n ? min(given, -sol) : 0n;
     sol += theirs;
+    // Other accounts the transaction made that signed it (a mint, a nonce account: System's CreateAccount wants the new
+    // account's signature): what the wallet put in them is rent, not SOL sent. A wallet paid for the first time signs
+    // nothing.
+    const signers = new Set(t.message.staticAccounts.slice(0, t.message.header.numSignerAccounts));
+    const made = accounts.reduce((n, a, i) => (a !== wallet && signers.has(a) && lamports.before[i] === 0n && lamports.after[i] > 0n && !listed('after', i).length ? n + lamports.after[i] : n), 0n);
+    const opened = sol < 0n ? min(made, -sol) : 0n;
+    sol += opened;
     const moves: Move[] = [...(sol !== 0n ? [{ mint: null, units: sol, decimals: 9 }] : []), ...tokenMoves(t, (owner) => yours(owner))];
-    const signed = isOffCurveAddress(wallet) || t.message.staticAccounts.slice(0, t.message.header.numSignerAccounts).includes(wallet);
-    const gains = moves.some((m) => m.units > 0n);
-    const losses = moves.some((m) => m.units < 0n);
-    const kind: Kind = gains && losses ? 'swap' : losses ? 'send' : gains ? 'receive' : 'other';
+    const signed = isOffCurveAddress(wallet) || signers.has(wallet);
+    // A token gained that no account lost (its total in the transaction grew as much) was minted; one lost that no
+    // account gained, burned. Wrapped SOL, which a closed account turns back into SOL, is neither.
+    const total = (mint: Address) => sum(t.tokens.after, mint) - sum(t.tokens.before, mint);
+    const madeOrBurned = (m: Move) => m.mint !== null && m.mint !== WSOL && (m.units > 0n ? total(m.mint) >= m.units : total(m.mint) <= m.units);
+    const real = moves.filter((m) => !madeOrBurned(m));
+    const [gains, losses] = [real.some((m) => m.units > 0n), real.some((m) => m.units < 0n)];
+    const kind = kindOf(moves.filter(madeOrBurned), gains, losses);
     const programs = [...new Set(t.message.instructions.map((ix) => accounts[ix.programAddressIndex]))];
     return {
         signature: t.signature,
@@ -79,7 +95,8 @@ export function summarize(t: Landed, wallet: Address): Activity {
         moves,
         fee: t.fee,
         payer,
-        rent: { yours: rent, theirs },
+        rent: { yours: rent, theirs, opened },
+        created: createdMints(t),
         signed,
         other: kind === 'send' || kind === 'receive' ? otherSide(t, wallet, moves, kind === 'send' ? 1n : -1n, change) : null,
         programs,
@@ -90,6 +107,20 @@ export function summarize(t: Landed, wallet: Address): Activity {
 }
 
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
+const sum = (balances: TokenBalance[], mint: Address) => balances.reduce((n, b) => (b.mint === mint ? n + b.units : n), 0n);
+
+// A mint before anything else that moved; a burn when nothing came back from others; then by what went and came.
+function kindOf(made: Move[], gains: boolean, losses: boolean): Kind {
+    if (made.some((m) => m.units > 0n)) return 'mint';
+    if (made.length && !gains) return 'burn';
+    if (gains && losses) return 'swap';
+    return losses ? 'send' : gains ? 'receive' : 'other';
+}
+
+// The mints the transaction made itself: a token program's InitializeMint (0) or InitializeMint2 (20), the mint first.
+function createdMints(t: Landed): Address[] {
+    return t.message.instructions.flatMap((ix) => (isTokenProgram(t.accounts[ix.programAddressIndex]) && (ix.data[0] === 0 || ix.data[0] === 20) && ix.accountIndices.length ? [t.accounts[ix.accountIndices[0]]] : []));
+}
 
 // What an owner gained or lost of each token, by mint, as the token balances show: those it changed.
 function tokenMoves(t: Landed, ownerIs: (owner: Address | null) => boolean): Move[] {

@@ -149,11 +149,13 @@ test('tokens sent, opening their account: the rent set apart, the owner on the o
         }),
     );
     const s = summarize(t, WALLET);
-    assert.deepEqual([s.kind, s.other, s.moves, s.rent], ['send', FRIEND, [{ mint: MINT, units: -12_000_000n, decimals: 6 }], { yours: 0n, theirs: 2_039_280n }]); // their account, paid for
+    assert.deepEqual([s.kind, s.other, s.moves, s.rent], ['send', FRIEND, [{ mint: MINT, units: -12_000_000n, decimals: 6 }], { yours: 0n, theirs: 2_039_280n, opened: 0n }]); // their account, paid for
 });
 
 test('a swap through a program; an account of yours closed, its rent back; Squads steps; a memo', async () => {
-    const swap = { programAddress: JUPITER, accounts: [{ address: WALLET, role: AccountRole.WRITABLE_SIGNER }, { address: MY_TOKENS, role: AccountRole.WRITABLE }], data: new Uint8Array([1]) };
+    // The pool's vault pays out what the wallet gets: a swap takes from someone, as a mint does not.
+    const POOL = key(44);
+    const swap = { programAddress: JUPITER, accounts: [{ address: WALLET, role: AccountRole.WRITABLE_SIGNER }, { address: MY_TOKENS, role: AccountRole.WRITABLE }, { address: POOL, role: AccountRole.WRITABLE }], data: new Uint8Array([1]) };
     const close = getCloseAccountInstruction({ account: MY_TOKENS, destination: WALLET, owner: createNoopSigner(WALLET) });
     const discriminator = createHash('sha256').update('global:proposal_approve').digest().subarray(0, 8);
     const approve = { programAddress: SQUADS_V4, accounts: [{ address: key(40), role: AccountRole.READONLY }, { address: WALLET, role: AccountRole.WRITABLE_SIGNER }, { address: key(41), role: AccountRole.WRITABLE }], data: new Uint8Array([...discriminator, 0]) };
@@ -161,7 +163,10 @@ test('a swap through a program; an account of yours closed, its rent back; Squad
     const [swapped, closed, voted] = await landed(
         item([swap], WALLET, {
             lamports: { [WALLET]: [3_000_000_000n, 1_997_955_720n], [MY_TOKENS]: [0n, 2_039_280n] },
-            tokens: [{ address: MY_TOKENS, mint: OTHER_MINT, owner: WALLET, before: null, after: 150_000_000n }],
+            tokens: [
+                { address: MY_TOKENS, mint: OTHER_MINT, owner: WALLET, before: null, after: 150_000_000n },
+                { address: POOL, mint: OTHER_MINT, owner: key(45), before: 900_000_000n, after: 750_000_000n },
+            ],
         }),
         item([close], WALLET, {
             lamports: { [WALLET]: [1_000_000n, 3_034_280n], [MY_TOKENS]: [2_039_280n, 0n] },
@@ -170,11 +175,34 @@ test('a swap through a program; an account of yours closed, its rent back; Squad
         item([approve, note], WALLET),
     );
     const s = summarize(swapped, WALLET);
-    assert.deepEqual([s.kind, s.main, s.rent, s.moves], ['swap', JUPITER, { yours: 2_039_280n, theirs: 0n }, [{ mint: null, units: -1_000_000_000n, decimals: 9 }, { mint: OTHER_MINT, units: 150_000_000n, decimals: 6 }]]);
+    assert.deepEqual([s.kind, s.main, s.rent, s.moves], ['swap', JUPITER, { yours: 2_039_280n, theirs: 0n, opened: 0n }, [{ mint: null, units: -1_000_000_000n, decimals: 9 }, { mint: OTHER_MINT, units: 150_000_000n, decimals: 6 }]]);
     const c = summarize(closed, WALLET);
-    assert.deepEqual([c.kind, c.rent, c.moves], ['other', { yours: -2_039_280n, theirs: 0n }, []]);
+    assert.deepEqual([c.kind, c.rent, c.moves], ['other', { yours: -2_039_280n, theirs: 0n, opened: 0n }, []]);
     const v = summarize(voted, WALLET);
     assert.deepEqual([v.kind, v.squads, v.main, v.memo], ['other', ['approve'], SQUADS_V4, 'rent for June']);
+});
+
+test('a token made and minted to the wallet is a mint, its rent apart; one burned is a burn; SOL to a new wallet is sent', async () => {
+    const [NEW_MINT, NEWCOMER] = [key(46), key(47)];
+    const TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as Address;
+    // The new mint signs, as System's CreateAccount wants; InitializeMint2 (20) makes it a mint.
+    const init = { programAddress: TOKEN, accounts: [{ address: NEW_MINT, role: AccountRole.WRITABLE_SIGNER }, { address: MY_TOKENS, role: AccountRole.WRITABLE }], data: new Uint8Array([20, 6]) };
+    const burn = { programAddress: TOKEN, accounts: [{ address: MY_TOKENS, role: AccountRole.WRITABLE }, { address: WALLET, role: AccountRole.READONLY_SIGNER }], data: new Uint8Array([8]) };
+    const [minted, burned, paid] = await landed(
+        item([init], WALLET, {
+            lamports: { [WALLET]: [1_000_000_000n, 1_000_000_000n - 10_000n - 1_461_600n - 2_039_280n], [NEW_MINT]: [0n, 1_461_600n], [MY_TOKENS]: [0n, 2_039_280n] },
+            tokens: [{ address: MY_TOKENS, mint: NEW_MINT, owner: WALLET, before: null, after: 1_000_000_000n }],
+        }, { fee: 10_000 }),
+        item([burn], WALLET, { tokens: [{ address: MY_TOKENS, mint: MINT, owner: WALLET, before: 50n, after: 20n }] }),
+        item([getTransferSolInstruction({ source: createNoopSigner(WALLET), destination: NEWCOMER, amount: 100_000_000n })], WALLET, {
+            lamports: { [WALLET]: [1_000_000_000n, 899_995_000n], [NEWCOMER]: [0n, 100_000_000n] },
+        }),
+    );
+    const m = summarize(minted, WALLET);
+    assert.deepEqual([m.kind, m.moves, m.rent, m.created], ['mint', [{ mint: NEW_MINT, units: 1_000_000_000n, decimals: 6 }], { yours: 2_039_280n, theirs: 0n, opened: 1_461_600n }, [NEW_MINT]]);
+    assert.deepEqual([summarize(burned, WALLET).kind, summarize(burned, WALLET).moves], ['burn', [{ mint: MINT, units: -30n, decimals: 6 }]]);
+    const p = summarize(paid, WALLET);
+    assert.deepEqual([p.kind, p.other, p.rent.opened], ['send', NEWCOMER, 0n]); // it signed nothing: a payment, not rent
 });
 
 test("rent stays the wallet's own: wrapping SOL, closing while sending, rent sent elsewhere, rent others pay", async () => {
