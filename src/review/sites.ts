@@ -1,3 +1,9 @@
+import type { Address } from '@solana/kit';
+
+import { LIGHTHOUSE } from '../programs/addresses.ts';
+import { CORE_PROGRAMS } from '../programs/core.ts';
+import type { Message } from './decode.ts';
+
 // Sites people sign on, to tell one that imitates them: a scam site often takes a known name with a word added or
 // glued on, a letter changed or doubled, letters from another alphabet that look the same, or a free subdomain.
 const KNOWN_SITES = [
@@ -117,4 +123,12 @@ function punycode(label: string): string {
         output.splice(i++, 0, String.fromCodePoint(n));
     }
     return output.join('');
+}
+
+/** The programs a transaction calls itself, Solana's own and Lighthouse aside: what Otus keeps of the transactions you
+ *  sign for a site, to tell when it asks for a program it never did, as a site taken over would. The programs those
+ *  call inside are left out: a swap's route changes with each one. */
+export function programsCalled(message: Message): Address[] {
+    const called = message.instructions.map((ix) => message.staticAccounts[ix.programAddressIndex]);
+    return [...new Set(called)].filter((p) => p !== undefined && !CORE_PROGRAMS.has(p) && p !== LIGHTHOUSE);
 }

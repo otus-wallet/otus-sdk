@@ -13,7 +13,7 @@ export { assess, type Assessment, type Context, type Finding, type Level, type V
 export { changes, type Change, type Changes } from './review/changes.ts';
 export { explain, type Explained } from './review/explain.ts';
 export { story, type Effect, type Names, type Story } from './review/effects.ts';
-export { lookalike } from './review/sites.ts';
+export { lookalike, programsCalled } from './review/sites.ts';
 export { squadsTold, type ProposalTold } from './review/squads.ts';
 
 // Prepared to sign: guards on your accounts (Lighthouse), a compute limit and a priority fee.

@@ -18,7 +18,7 @@ import { holdings, offsetsOf, plain, read, units, type Change, type Changes, typ
 import { durable } from './decode.ts';
 import type { Explained } from './explain.ts';
 import type { Deployment } from './programs.ts';
-import { lookalike } from './sites.ts';
+import { lookalike, programsCalled } from './sites.ts';
 import type { Simulated } from './simulate.ts';
 
 /** How much a finding matters. A notice is worth knowing and changes nothing: the verdict is the worst of the rest. */
@@ -34,6 +34,7 @@ export type Context = {
     wallet: Address; // the account asked to sign
     signedBefore: number | null; // when you first signed a transaction for this site, in seconds since 1970; null: never
     host?: string; // the site's, to tell one that imitates a known site
+    programsBefore?: Address[]; // what the transactions you signed for this site called (programsCalled); undefined: none kept
     now?: number; // seconds since 1970, to tell how long ago a program was deployed
     deployments?: Map<Address, Deployment>;
     own?: boolean; // made in Otus itself: no site asked for it
@@ -211,6 +212,11 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (since === null) add('warn', 'first-visit', 'First transaction for this site', undefined, 'You never signed one for it from this wallet');
         else if (age !== null && age < DAY) add('notice', 'new-site', 'New site', undefined, `You first signed a transaction for it ${ago(age)}`);
         else add('ok', 'known-site', 'Known site', undefined, context.host ? `${context.host} · signed for before` : undefined);
+        // A program none of the transactions you signed for it called: worth knowing, as a site taken over would ask for
+        // one. A first transaction has nothing to go by, nor one for a site whose programs Otus did not keep yet.
+        const before = context.programsBefore;
+        const fresh = since !== null && before ? programsCalled(s.message).filter((p) => !before.includes(p)) : [];
+        if (fresh.length) findings.push({ level: 'notice', code: 'new-program', text: fresh.length === 1 ? 'New program for this site' : 'New programs for this site', note: fresh.map(name).join(', '), programs: fresh });
     }
 
     return { ...ranked(findings), mine, yours, keyed, programs, flows, payouts, kinds };

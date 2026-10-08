@@ -59,6 +59,19 @@ test('a plain transfer, from a known site, by programs Otus knows, is OK', async
     );
 });
 
+test('a site you signed for before gets a notice for a program none of those transactions called', async () => {
+    const call = { programAddress: EVIL_PROGRAM, accounts: [], data: new Uint8Array() };
+    const tx = transaction([getTransferSolInstruction({ source: signer, destination: RECIPIENT, amount: 1n }), call]);
+    const found = async (o: Partial<Context>) => (await review(tx, context(o), fakeChain([wallet(5_000_000n)]))).assessment.findings.find((f) => f.code === 'new-program');
+    const fresh = await found({ programsBefore: [] });
+    assert.equal(fresh?.level, 'notice');
+    assert.equal(fresh?.text, 'New program for this site');
+    assert.deepEqual(fresh?.programs, [EVIL_PROGRAM]); // the System Program, Solana's own, is never new
+    assert.equal(await found({ programsBefore: [EVIL_PROGRAM] }), undefined);
+    assert.equal(await found({ signedBefore: null, programsBefore: [] }), undefined); // a first transaction: nothing to go by
+    assert.equal(await found({}), undefined); // none kept yet
+});
+
 test('a drainer is danger, and your changes say why', async () => {
     const r = await review(DRAIN, context(), fakeChain(DRAIN_BEFORE, DRAIN_AFTER));
     assert.equal(r.assessment.verdict, 'danger');
