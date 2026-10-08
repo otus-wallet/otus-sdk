@@ -11,8 +11,7 @@ import { TOKEN_PROGRAMS } from '../programs/addresses.ts';
 import type { Tone } from './assess.ts';
 import type { Explained } from './explain.ts';
 
-/** What an instruction does: one idea, and the facts that go with it, a line each (who pays, who owns it, what follows). */
-export type Effect = { text: string; tone: Tone; more?: string[] };
+export type Effect = { text: string; tone: Tone };
 export type Story = { args: string; effects: Effect[] };
 
 /** What the words need to know about the accounts and tokens of the transaction. */
@@ -45,7 +44,7 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
         const places = decimals ?? t.decimals;
         return `${places === null ? `${units} units of` : amount(units, places, false)} ${t.symbol}`;
     };
-    const line = (text: string, tone: Tone = 'plain', more: string[] = []): Effect => ({ text, tone, ...(more.length && { more }) });
+    const line = (text: string, tone: Tone = 'plain'): Effect => ({ text, tone });
     const hurts = (a: Address | undefined) => (a && n.mine(a) ? (risky ? 'danger' : 'warn') : 'plain');
 
     if (e.source === 'unknown') return unknown(e, n, risky);
@@ -57,7 +56,7 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
             }
             case 'CreateAccount':
             case 'CreateAccountWithSeed':
-                return { args: `${who(acc('newAccount'))} · ${n.program(arg('programAddress') as Address)}`, effects: [line(`Opens ${who(acc('newAccount'))}`, 'plain', [`${sol(big('lamports'))} SOL from ${who(acc('payer'))}`, `Owned by ${n.program(arg('programAddress') as Address)}`])] };
+                return { args: `${who(acc('newAccount'))}, owned by ${n.program(arg('programAddress') as Address)}`, effects: [line(`${Who(acc('newAccount'))} owned by ${n.program(arg('programAddress') as Address)}`)] };
             case 'Assign':
             case 'AssignWithSeed':
                 return { args: `${Who(acc('account'))} → ${n.program(arg('programAddress') as Address)}`, effects: [line(`Gives ${who(acc('account'))} to ${n.program(arg('programAddress') as Address)}`, acc('account') && n.mine(acc('account')!) ? 'danger' : 'plain')] };
@@ -66,10 +65,10 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
                 return { args: `${arg('space')} bytes`, effects: [line(`Gives ${who(acc('newAccount'))} room for ${arg('space')} bytes`)] };
             case 'AdvanceNonceAccount':
                 // Anywhere else, it only moves the nonce on: what was signed on it before can no longer run.
-                if (!first) return { args: who(acc('nonceAccount')), effects: [line(`Moves the nonce of ${who(acc('nonceAccount'))} on`, 'plain', ['What was signed on it can no longer run'])] };
-                return { args: who(acc('nonceAccount')), effects: [line('Uses a durable nonce', 'danger', ['This transaction never expires'])] };
+                if (!first) return { args: who(acc('nonceAccount')), effects: [line(`Moves the nonce of ${who(acc('nonceAccount'))} on: what was signed on it can no longer run`)] };
+                return { args: who(acc('nonceAccount')), effects: [line('Uses a durable nonce: this transaction never expires', 'danger')] };
             case 'InitializeNonceAccount':
-                return { args: `${Who(acc('nonceAccount'))} · used by ${who(arg('nonceAuthority') as Address)}`, effects: [line(`Turns ${who(acc('nonceAccount'))} into a nonce account`, 'plain', [`Only ${who(arg('nonceAuthority') as Address)} can use it`])] };
+                return { args: `${Who(acc('nonceAccount'))}, used by ${who(arg('nonceAuthority') as Address)}`, effects: [line(`Only ${who(arg('nonceAuthority') as Address)} can use it`)] };
             case 'WithdrawNonceAccount':
                 return { args: `${sol(big('withdrawAmount'))} SOL`, effects: [line(`${sol(big('withdrawAmount'))} SOL from ${who(acc('nonceAccount'))} to ${who(acc('recipientAccount'))}`)] };
             case 'AuthorizeNonceAccount':
@@ -87,7 +86,7 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
             }
             case 'Approve':
             case 'ApproveChecked':
-                return { args: `${who(acc('delegate'))} · up to ${tokens(big('amount'), mint, decimals)}`, effects: [line(`${Who(acc('delegate'))} may move up to ${tokens(big('amount'), mint, decimals)} from ${who(acc('source'))}`, hurts(acc('source')))] };
+                return { args: `${who(acc('delegate'))}, up to ${tokens(big('amount'), mint, decimals)}`, effects: [line(`${Who(acc('delegate'))} may move up to ${tokens(big('amount'), mint, decimals)} from ${who(acc('source'))}`, hurts(acc('source')))] };
             case 'Revoke':
                 return { args: who(acc('source')), effects: [line(`Takes back any allowance on ${who(acc('source'))}`, 'ok')] };
             case 'SetAuthority': {
@@ -97,7 +96,7 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
             }
             case 'CloseAccount': {
                 const [account, to] = [acc('account'), acc('destination')];
-                return { args: `${Who(account)} → ${who(to)}`, effects: [line(`Closes ${who(account)}`, to && n.mine(to) ? 'plain' : hurts(account), [`Its SOL goes to ${who(to)}`])] };
+                return { args: `${Who(account)} → ${who(to)}`, effects: [line(`Closes ${who(account)}; its SOL goes to ${who(to)}`, to && n.mine(to) ? 'plain' : hurts(account))] };
             }
             case 'SyncNative':
                 return { args: Who(acc('account')), effects: [line(`Counts the SOL in ${who(acc('account'))} as wrapped SOL`)] };
@@ -119,8 +118,8 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
     if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && e.name.startsWith('CreateAssociatedToken')) {
         const [ata, owner, mint] = [acc('ata'), acc('owner'), acc('mint')];
         const what = `${owner && owner === n.wallet ? 'your' : `${who(owner)}'s`} ${n.token(mint ?? null).symbol} account`;
-        const back = owner && owner === n.wallet ? 'The rent comes back when it closes' : 'The rent is theirs when they close it';
-        const effects = ata && n.existed(ata) ? [line(`${cap(what)} is there already`, 'plain', ['Nothing changes'])] : [line(`Opens ${what}`, 'plain', [`Paid by ${who(acc('payer'))}`, back])];
+        const back = owner && owner === n.wallet ? 'the rent comes back when it closes' : 'the rent is theirs when they close it';
+        const effects = ata && n.existed(ata) ? [line(`${cap(what)} is there already: nothing changes`)] : [line(`Opens ${what}, paid by ${who(acc('payer'))}; ${back}`)];
         return { args: cap(what), effects };
     }
     if (e.program === COMPUTE_BUDGET_PROGRAM_ADDRESS) {
@@ -128,7 +127,7 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
             case 'SetComputeUnitLimit':
                 return { args: `${Number(arg('units')).toLocaleString('en-US')} CU`, effects: [line(`Caps compute at ${Number(arg('units')).toLocaleString('en-US')} units`)] };
             case 'SetComputeUnitPrice':
-                return { args: `${Number(arg('microLamports')).toLocaleString('en-US')} µlamports/CU`, effects: [n.priorityFee === null ? line('Sets a priority fee') : line(`Priority fee ${sol(n.priorityFee)} SOL`, 'plain', [`Paid by ${who(n.payer)}`])] };
+                return { args: `${Number(arg('microLamports')).toLocaleString('en-US')} µlamports/CU`, effects: [line(n.priorityFee === null ? 'Sets a priority fee' : `Priority fee ${sol(n.priorityFee)} SOL, paid by ${who(n.payer)}`)] };
             case 'RequestHeapFrame':
                 return { args: `${Number(arg('bytes')) / 1024} KB`, effects: [line(`Asks for ${Number(arg('bytes')) / 1024} KB of memory`)] };
             case 'SetLoadedAccountsDataSizeLimit':
