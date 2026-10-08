@@ -56,7 +56,7 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
             }
             case 'CreateAccount':
             case 'CreateAccountWithSeed':
-                return { args: `${who(acc('newAccount'))}, for ${n.program(arg('programAddress') as Address)}`, effects: [line(`Opens ${who(acc('newAccount'))} with ${sol(big('lamports'))} SOL from ${who(acc('payer'))}, for ${n.program(arg('programAddress') as Address)}`)] };
+                return { args: `${who(acc('newAccount'))}, owned by ${n.program(arg('programAddress') as Address)}`, effects: [line(`Opens ${who(acc('newAccount'))} with ${sol(big('lamports'))} SOL from ${who(acc('payer'))}, owned by ${n.program(arg('programAddress') as Address)}`)] };
             case 'Assign':
             case 'AssignWithSeed':
                 return { args: `${Who(acc('account'))} → ${n.program(arg('programAddress') as Address)}`, effects: [line(`Gives ${who(acc('account'))} to ${n.program(arg('programAddress') as Address)}`, acc('account') && n.mine(acc('account')!) ? 'danger' : 'plain')] };
@@ -68,11 +68,11 @@ export function story(e: Explained, n: Names, risky = false, first = true): Stor
                 if (!first) return { args: who(acc('nonceAccount')), effects: [line(`Moves the nonce of ${who(acc('nonceAccount'))} on: what was signed on it can no longer run`)] };
                 return { args: who(acc('nonceAccount')), effects: [line('Uses a durable nonce: this transaction never expires', 'danger')] };
             case 'InitializeNonceAccount':
-                return { args: `${Who(acc('nonceAccount'))}, for ${who(arg('nonceAuthority') as Address)}`, effects: [line(`Makes ${who(acc('nonceAccount'))} a durable nonce account, answering to ${who(arg('nonceAuthority') as Address)}`)] };
+                return { args: `${Who(acc('nonceAccount'))}, used by ${who(arg('nonceAuthority') as Address)}`, effects: [line(`Turns ${who(acc('nonceAccount'))} into a nonce account that only ${who(arg('nonceAuthority') as Address)} can use`)] };
             case 'WithdrawNonceAccount':
                 return { args: `${sol(big('withdrawAmount'))} SOL`, effects: [line(`${sol(big('withdrawAmount'))} SOL from ${who(acc('nonceAccount'))} to ${who(acc('recipientAccount'))}`)] };
             case 'AuthorizeNonceAccount':
-                return { args: `→ ${who(arg('newNonceAuthority') as Address)}`, effects: [line(`The nonce of ${who(acc('nonceAccount'))} now answers to ${who(arg('newNonceAuthority') as Address)}`, hurts(acc('nonceAccount')))] };
+                return { args: `→ ${who(arg('newNonceAuthority') as Address)}`, effects: [line(`Only ${who(arg('newNonceAuthority') as Address)} can use the nonce in ${who(acc('nonceAccount'))} from now on`, hurts(acc('nonceAccount')))] };
         }
     }
     if (TOKEN_PROGRAMS.includes(e.program)) {
