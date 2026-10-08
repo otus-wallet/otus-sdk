@@ -107,7 +107,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     for (const { address, before, after } of [...yours.accounts, ...keyed]) {
         const [from, to] = [before?.token ?? null, after?.token ?? null];
         if (address === wallet) {
-            if (after && !plain(after)) add('danger', 'wallet-change', 'Your wallet would no longer be a plain wallet', address, `A program takes it over: ${name(after.program)}`);
+            if (after && !plain(after)) add('danger', 'wallet-change', 'Your wallet would no longer be yours', address, `A program takes it over, with all it holds: ${name(after.program)}`);
         } else if (before && after && !plain(before) && before.program !== after.program) {
             if (mine.has(address)) add('danger', 'owner-change', 'An account of yours changes owner', address, `New owner ${name(after.program)}. You lose control of it.`);
             else add('danger', 'owner-change', 'An account with your address in it changes owner', address, `New owner ${name(after.program)}. Your place in it may go.`);
