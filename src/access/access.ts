@@ -13,7 +13,7 @@ import type { OtusRpc } from '../rpc.ts';
 
 /** What someone besides you can do with what you hold, each with whom. */
 export type Grant =
-    | { kind: 'delegate'; account: Address; mint: Address; to: Address; allowance: bigint; all: boolean } // can move up to `allowance` out of the account; `all`: everything it holds, or without end
+    | { kind: 'delegate'; account: Address; program: Address; mint: Address; to: Address; allowance: bigint; all: boolean } // can move up to `allowance` out of the account (of this token program); `all`: everything it holds, or without end
     | { kind: 'closer'; account: Address; mint: Address; to: Address } // can close the account once it is empty, and keep its rent
     | { kind: 'permanent'; mint: Address; to: Address } // the token's permanent delegate: can move or burn any of yours, at any time
     | { kind: 'freeze'; mint: Address; to: Address } // the token's freeze authority: can freeze your accounts of it
@@ -56,9 +56,10 @@ export function heldMints(owner: Address, tokens: MaybeEncodedAccount[]): Addres
 export function grantsOf(owner: Address, tokens: MaybeEncodedAccount[], mints: MaybeEncodedAccount[], nonces: { waiting: Waiting; account: MaybeEncodedAccount }[]): Grant[] {
     const grants: Grant[] = [];
     for (const a of tokens) {
-        const t = read(a)?.token;
-        if (!t || t.owner !== owner) continue; // another's: what it allows is not yours to know
-        if (t.delegate && t.delegated > 0n) grants.push({ kind: 'delegate', account: a.address, mint: t.mint, to: t.delegate, allowance: t.delegated, all: t.delegated === U64_MAX || (t.amount > 0n && t.delegated >= t.amount) });
+        const s = read(a);
+        const t = s?.token;
+        if (!s || !t || t.owner !== owner) continue; // another's: what it allows is not yours to know
+        if (t.delegate && t.delegated > 0n) grants.push({ kind: 'delegate', account: a.address, program: s.program, mint: t.mint, to: t.delegate, allowance: t.delegated, all: t.delegated === U64_MAX || (t.amount > 0n && t.delegated >= t.amount) });
         if (t.closer && t.closer !== owner) grants.push({ kind: 'closer', account: a.address, mint: t.mint, to: t.closer });
     }
     const held = new Set(heldMints(owner, tokens));

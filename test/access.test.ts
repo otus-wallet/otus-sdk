@@ -42,7 +42,7 @@ function nonce(address: Address, authority: Address, value: Uint8Array) {
 }
 
 test('a delegate on a token account of yours: what it can move, and whether that is all of it', () => {
-    assert.deepEqual(grantsOf(PAYER, [tokens({ delegate: OTHER, delegated: 100n })], [], []), [{ kind: 'delegate', account: TOKEN, mint: MINT, to: OTHER, allowance: 100n, all: false }]);
+    assert.deepEqual(grantsOf(PAYER, [tokens({ delegate: OTHER, delegated: 100n })], [], []), [{ kind: 'delegate', account: TOKEN, program: TOKEN_PROGRAM_ADDRESS, mint: MINT, to: OTHER, allowance: 100n, all: false }]);
     assert.equal((grantsOf(PAYER, [tokens({ delegate: OTHER, delegated: 1000n })], [], [])[0] as { all: boolean }).all, true);
     assert.equal((grantsOf(PAYER, [tokens({ amount: 0n, delegate: OTHER, delegated: U64_MAX })], [], [])[0] as { all: boolean }).all, true); // empty, without end: all that comes
     assert.deepEqual(grantsOf(PAYER, [tokens({ delegate: OTHER, delegated: 0n })], [], []), []); // nothing allowed
