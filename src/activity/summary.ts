@@ -4,13 +4,13 @@
 // receipt, a swap, a mint, a burn) comes from where what moved went: a token no one else lost was made by its mint, not
 // received. The other side, the programs, Squads steps and a memo come from its own instructions.
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
-import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
-import { getAddressDecoder, getU64Decoder, isOffCurveAddress, type Address } from '@solana/kit';
+import { isOffCurveAddress, type Address } from '@solana/kit';
 
 import { told } from '../format.ts';
 import { isTokenProgram, LIGHTHOUSE, WSOL } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
+import { explain, type Explained } from '../review/explain.ts';
 import type { Landed, TokenBalance } from './history.ts';
 
 /** A change in one of the wallet's balances: SOL (mint null) or a token, in its base units, gained (+) or lost (−). */
@@ -20,16 +20,12 @@ export type Move = { mint: Address | null; units: bigint; decimals: number };
  *  that no one else lost, or lost that no one else got. */
 export type Kind = 'send' | 'receive' | 'swap' | 'mint' | 'burn' | 'other';
 
-/** What a transaction did besides moving balances, by its instructions to Solana's own programs: a delegate given on a
- *  token account (`units` of its `mint`, when the transaction lists it) or taken back, an authority handed over (`to`
- *  null: removed), a nonce moved on, a nonce account made, an account given to a program. */
-export type Act =
-    | { kind: 'approve'; account: Address; delegate: Address; units: bigint; mint: Address | null; decimals: number | null }
-    | { kind: 'revoke'; account: Address; mint: Address | null }
-    | { kind: 'authority'; account: Address; role: 'mint' | 'freeze' | 'owner' | 'close'; to: Address | null }
-    | { kind: 'nonce'; account: Address }
-    | { kind: 'nonce-account'; account: Address; authority: Address }
-    | { kind: 'assign'; account: Address; program: Address };
+/** A top-level instruction as the review's decoders read it (Solana's own programs, by their official clients): its
+ *  name, accounts by role and arguments; an instruction of any other program is 'unknown'. */
+export type Told = Omit<Explained, 'data'>;
+
+/** A token account the transaction lists, with what it holds and who owns it. */
+export type Held = { address: Address; mint: Address; decimals: number; owner: Address | null };
 
 /** A transaction for the wallet, in short. `moves`: SOL first, then each token; SOL without the fee the wallet paid
  *  and rent. `rent.yours`: the rent its own token accounts gained (+, opened) or lost (−, closed); `rent.theirs`: what
@@ -48,7 +44,8 @@ export type Activity = {
     payer: Address;
     rent: { yours: bigint; theirs: bigint; opened: bigint };
     created: Address[];
-    acts: Act[];
+    instructions: Told[];
+    held: Held[];
     signed: boolean;
     other: Address | null;
     programs: Address[];
@@ -110,7 +107,8 @@ export function summarize(t: Landed, wallet: Address): Activity {
         payer,
         rent: { yours: rent, theirs, opened },
         created: createdMints(t),
-        acts: actsOf(t),
+        instructions: instructionsOf(t),
+        held: heldIn(t),
         signed,
         other: kind === 'send' || kind === 'receive' ? otherSide(t, wallet, moves, kind === 'send' ? 1n : -1n, change) : null,
         programs,
@@ -131,38 +129,25 @@ function kindOf(made: Move[], gains: boolean, losses: boolean): Kind {
     return losses ? 'send' : gains ? 'receive' : 'other';
 }
 
-const ROLES = ['mint', 'freeze', 'owner', 'close'] as const; // SetAuthority's authority types, in order
+// Its top-level instructions, read by the same decoders as a review: each account's place in the message gives its
+// role (signers first, writable before read-only; loaded ones after, writable first).
+function instructionsOf(t: Landed): Told[] {
+    const { header: h, staticAccounts, lookups } = t.message;
+    const statics = staticAccounts.length;
+    const loadedWritable = lookups.reduce((n, l) => n + l.writableIndexes.length, 0);
+    const accounts = t.accounts.map((address, i) => ({
+        address,
+        signer: i < h.numSignerAccounts,
+        writable: i < statics ? (i < h.numSignerAccounts ? i < h.numSignerAccounts - h.numReadonlySignerAccounts : i < statics - h.numReadonlyNonSignerAccounts) : i < statics + loadedWritable,
+    }));
+    return explain({ message: t.message, accounts }).map(({ data: _, ...rest }) => rest);
+}
 
-// What its own instructions to the token programs and the System Program did, each read only when its data is the
-// layout it should be: Approve (4: amount), ApproveChecked (13: amount, decimals), Revoke (5), SetAuthority (6: type,
-// then an optional address); System's Assign (1: the program), AdvanceNonceAccount (4) and InitializeNonceAccount (6:
-// its authority).
-function actsOf(t: Landed): Act[] {
-    return t.message.instructions.flatMap((ix): Act[] => {
-        const program = t.accounts[ix.programAddressIndex];
-        const at = (i: number) => (ix.accountIndices[i] === undefined ? undefined : t.accounts[ix.accountIndices[i]]);
-        const d = ix.data;
-        const listed = (i: number) => [...t.tokens.after, ...t.tokens.before].find((b) => b.account === ix.accountIndices[i]);
-        if (isTokenProgram(program)) {
-            const [account, second, third] = [at(0), at(1), at(2)];
-            if (!account) return [];
-            const token = listed(0);
-            if (d[0] === 4 && d.length === 9 && second) return [{ kind: 'approve', account, delegate: second, units: getU64Decoder().decode(d, 1), mint: token?.mint ?? null, decimals: token?.decimals ?? null }];
-            if (d[0] === 13 && d.length === 10 && second && third) return [{ kind: 'approve', account, delegate: third, units: getU64Decoder().decode(d, 1), mint: second, decimals: d[9] }];
-            if (d[0] === 5 && d.length === 1) return [{ kind: 'revoke', account, mint: token?.mint ?? null }];
-            if (d[0] === 6 && d[1] < ROLES.length && ((d[2] === 0 && d.length === 3) || (d[2] === 1 && d.length === 35))) {
-                return [{ kind: 'authority', account, role: ROLES[d[1]], to: d[2] === 1 ? getAddressDecoder().decode(d, 3) : null }];
-            }
-            return [];
-        }
-        if (program !== SYSTEM_PROGRAM_ADDRESS || d.length < 4 || d[1] !== 0 || d[2] !== 0 || d[3] !== 0) return [];
-        const account = at(0);
-        if (!account) return [];
-        if (d[0] === 4 && d.length === 4) return [{ kind: 'nonce', account }];
-        if (d[0] === 1 && d.length === 36) return [{ kind: 'assign', account, program: getAddressDecoder().decode(d, 4) }];
-        if (d[0] === 6 && d.length === 36) return [{ kind: 'nonce-account', account, authority: getAddressDecoder().decode(d, 4) }];
-        return [];
-    });
+// Every token account it lists, once, with its mint, decimals and owner.
+function heldIn(t: Landed): Held[] {
+    const seen = new Map<number, Held>();
+    for (const b of [...t.tokens.before, ...t.tokens.after]) if (!seen.has(b.account) && t.accounts[b.account]) seen.set(b.account, { address: t.accounts[b.account], mint: b.mint, decimals: b.decimals, owner: b.owner });
+    return [...seen.values()];
 }
 
 // The mints the transaction made itself: a token program's InitializeMint (0) or InitializeMint2 (20), the mint first.

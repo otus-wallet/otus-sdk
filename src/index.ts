@@ -24,7 +24,7 @@ export { toldByIdl, type IdlInstruction } from './idl/idl.ts';
 
 // A wallet's history, a page at a time (Helius' getTransactionsForAddress), each transaction in short.
 export { historyPage, NoHistory, type Landed, type Page } from './activity/history.ts';
-export { summarize, type Activity } from './activity/summary.ts';
+export { summarize, type Activity, type Held, type Told } from './activity/summary.ts';
 
 // Who besides a wallet can move, burn, freeze or close what it holds.
 export { access, delegatesGiven, grantsOf, nonceOf, waitingOn, type Access, type Grant, type Waiting } from './access/access.ts';

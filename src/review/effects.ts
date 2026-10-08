@@ -31,8 +31,9 @@ export type Names = {
 
 const AUTHORITY: Record<string, string> = { 0: 'The right to mint', 1: 'The right to freeze', 2: 'The ownership', 3: 'The right to close' };
 
-/** One explained instruction → its story. `risky`: its program may be harmful, so what it does to you shows in red. */
-export function story(e: Explained, n: Names, risky = false): Story {
+/** One explained instruction → its story. `risky`: its program may be harmful, so what it does to you shows in red.
+ *  `first`: it leads the transaction, where a nonce's advance makes the whole transaction durable. */
+export function story(e: Explained, n: Names, risky = false, first = true): Story {
     const arg = (name: string) => e.args.find((a) => a.name === name)?.value ?? '';
     const acc = (role: string) => e.accounts.find((a) => a.role === role)?.address;
     const big = (name: string) => (/^\d+$/.test(arg(name)) ? BigInt(arg(name)) : 0n);
@@ -63,7 +64,11 @@ export function story(e: Explained, n: Names, risky = false): Story {
             case 'AllocateWithSeed':
                 return { args: `${arg('space')} bytes`, effects: [line(`Gives ${who(acc('newAccount'))} room for ${arg('space')} bytes`)] };
             case 'AdvanceNonceAccount':
+                // Anywhere else, it only moves the nonce on: what was signed on it before can no longer run.
+                if (!first) return { args: who(acc('nonceAccount')), effects: [line(`Moves the nonce of ${who(acc('nonceAccount'))} on: what was signed on it can no longer run`)] };
                 return { args: who(acc('nonceAccount')), effects: [line('Uses a durable nonce: this transaction never expires', 'danger')] };
+            case 'InitializeNonceAccount':
+                return { args: `${Who(acc('nonceAccount'))}, for ${who(arg('nonceAuthority') as Address)}`, effects: [line(`Makes ${who(acc('nonceAccount'))} a durable nonce account, answering to ${who(arg('nonceAuthority') as Address)}`)] };
             case 'WithdrawNonceAccount':
                 return { args: `${sol(big('withdrawAmount'))} SOL`, effects: [line(`${sol(big('withdrawAmount'))} SOL from ${who(acc('nonceAccount'))} to ${who(acc('recipientAccount'))}`)] };
             case 'AuthorizeNonceAccount':

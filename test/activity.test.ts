@@ -214,7 +214,7 @@ test('a token made and minted to the wallet is a mint, its rent apart; one burne
     assert.deepEqual([p.kind, p.other, p.rent.opened], ['send', NEWCOMER, 0n]); // it signed nothing: a payment, not rent
 });
 
-test('what moves no balance is told by its instructions: a delegate given or revoked, an authority, a nonce, an assign', async () => {
+test('every instruction is read by the review\'s decoders: a delegate given or revoked, an authority, a nonce, an assign', async () => {
     const me = createNoopSigner(WALLET);
     const [approved, checked, revoked, handed, removed, nonce, assigned, made] = await landed(
         item([getApproveInstruction({ source: MY_TOKENS, delegate: FRIEND, owner: me, amount: 100_000_000n })], WALLET, { tokens: [{ address: MY_TOKENS, mint: MINT, owner: WALLET, before: 5n, after: 5n }] }),
@@ -226,15 +226,18 @@ test('what moves no balance is told by its instructions: a delegate given or rev
         item([getAssignInstruction({ account: me, programAddress: key(49) })], WALLET),
         item([getInitializeNonceAccountInstruction({ nonceAccount: key(48), nonceAuthority: WALLET })], WALLET),
     );
-    const acts = (l: Landed) => summarize(l, WALLET).acts;
-    assert.deepEqual(acts(approved), [{ kind: 'approve', account: MY_TOKENS, delegate: FRIEND, units: 100_000_000n, mint: MINT, decimals: 6 }]);
-    assert.deepEqual(acts(checked), [{ kind: 'approve', account: MY_TOKENS, delegate: FRIEND, units: 7n, mint: OTHER_MINT, decimals: 9 }]);
-    assert.deepEqual(acts(revoked), [{ kind: 'revoke', account: MY_TOKENS, mint: null }]);
-    assert.deepEqual(acts(handed), [{ kind: 'authority', account: MY_TOKENS, role: 'close', to: FRIEND }]);
-    assert.deepEqual(acts(removed), [{ kind: 'authority', account: OTHER_MINT, role: 'freeze', to: null }]);
-    assert.deepEqual(acts(nonce), [{ kind: 'nonce', account: key(48) }]);
-    assert.deepEqual(acts(assigned), [{ kind: 'assign', account: WALLET, program: key(49) }]);
-    assert.deepEqual(acts(made), [{ kind: 'nonce-account', account: key(48), authority: WALLET }]);
+    // Read by the review's own decoders: each instruction by its name, accounts by role, arguments.
+    const told = (l: Landed) => summarize(l, WALLET).instructions.map((i) => ({ name: i.name, accounts: Object.fromEntries(i.accounts.map((a) => [a.role, a.address])), args: Object.fromEntries(i.args.map((a) => [a.name, a.value])) }));
+    assert.deepEqual(told(approved), [{ name: 'Approve', accounts: { source: MY_TOKENS, delegate: FRIEND, owner: WALLET }, args: { amount: '100000000' } }]);
+    assert.deepEqual(told(checked)[0].name, 'ApproveChecked');
+    assert.deepEqual(told(revoked)[0].name, 'Revoke');
+    assert.deepEqual([told(handed)[0].name, told(handed)[0].args.newAuthority], ['SetAuthority', FRIEND]);
+    assert.deepEqual([told(removed)[0].name, told(removed)[0].args.newAuthority], ['SetAuthority', 'none']);
+    assert.deepEqual(told(nonce)[0], { name: 'AdvanceNonceAccount', accounts: told(nonce)[0].accounts, args: {} });
+    assert.equal(told(assigned)[0].name, 'Assign');
+    assert.deepEqual([told(made)[0].name, told(made)[0].args.nonceAuthority], ['InitializeNonceAccount', WALLET]);
+    // The token accounts it lists, with their mints, for the words.
+    assert.deepEqual(summarize(approved, WALLET).held, [{ address: MY_TOKENS, mint: MINT, decimals: 6, owner: WALLET }]);
 });
 
 test("rent stays the wallet's own: wrapping SOL, closing while sending, rent sent elsewhere, rent others pay", async () => {
