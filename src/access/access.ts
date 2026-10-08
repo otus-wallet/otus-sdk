@@ -7,7 +7,8 @@ import { getAddressDecoder, getBase58Decoder, parseBase64RpcAccount, type Addres
 import { rpcChain } from '../chain.ts';
 import { TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
 import { isMint } from '../review/assess.ts';
-import { read } from '../review/changes.ts';
+import { read, type Changes } from '../review/changes.ts';
+import { durable, type Message } from '../review/decode.ts';
 import type { OtusRpc } from '../rpc.ts';
 
 /** What someone besides you can do with what you hold, each with whom. */
@@ -74,6 +75,23 @@ export function grantsOf(owner: Address, tokens: MaybeEncodedAccount[], mints: M
         if (held && held.nonce === waiting.nonce) grants.push({ kind: 'nonce', account: waiting.account, nonce: waiting.nonce, authority: held.authority });
     }
     return grants.sort((x, y) => ORDER[x.kind] - ORDER[y.kind]);
+}
+
+/** What a signed copy of a transaction waits on, when it lives by a durable nonce rather than a blockhash: the nonce
+ *  account its first instruction advances, and the nonce. */
+export function waitingOn(m: Message): Waiting | null {
+    if (!durable(m)) return null;
+    const at = m.instructions[0].accountIndices[0];
+    const account = at === undefined ? undefined : m.staticAccounts[at];
+    return account ? { account, nonce: m.lifetimeToken } : null;
+}
+
+/** The delegates a transaction gives on accounts of yours, or lets move more: each token account, and to whom. */
+export function delegatesGiven(yours: Changes): { account: Address; to: Address }[] {
+    return yours.accounts.flatMap(({ address, before, after }) => {
+        const [from, to] = [before?.token, after?.token];
+        return to?.delegate && (to.delegate !== from?.delegate || to.delegated > (from?.delegated ?? 0n)) ? [{ account: address, to: to.delegate }] : [];
+    });
 }
 
 /** A nonce account's authority and the nonce it holds: System's, 80 bytes, its version and state (4 bytes each, state

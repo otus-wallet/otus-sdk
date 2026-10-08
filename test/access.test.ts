@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { getAddressEncoder, getBase58Decoder, type Address } from '@solana/kit';
 
-import { grantsOf, heldMints, type Waiting } from '../src/access/access.ts';
+import { delegatesGiven, grantsOf, heldMints, waitingOn, type Waiting } from '../src/access/access.ts';
+import { read } from '../src/review/changes.ts';
+import type { Message } from '../src/review/decode.ts';
 import { TOKEN_2022_PROGRAM_ADDRESS } from '../src/programs/addresses.ts';
 import { account, key, MINT, PAYER, SYSTEM, tokenAccountData } from './helpers.ts';
 
@@ -93,4 +95,27 @@ test('garbage in any account reads as nothing it does not hold, and never throws
     const whole = mint({ permanent: ISSUER });
     const cut = account(MINT, TOKEN_2022_PROGRAM_ADDRESS, 2_000_000n, whole.exists ? whole.data.slice(0, 166 + 20) : new Uint8Array());
     assert.deepEqual(grantsOf(PAYER, [tokens({})], [cut], []), []);
+});
+
+test('what a signed transaction waits on: its nonce account and nonce, when it is durable', () => {
+    const message = (data: number[]): Message => ({
+        version: 'legacy',
+        header: { numSignerAccounts: 1, numReadonlySignerAccounts: 0, numReadonlyNonSignerAccounts: 2 },
+        staticAccounts: [PAYER, key(43), key(44), SYSTEM],
+        lookups: [],
+        lifetimeToken: 'NonceValue1111111111111111111111111111111111',
+        instructions: [{ programAddressIndex: 3, accountIndices: [1, 2, 0], data: new Uint8Array(data) }],
+        config: {},
+    });
+    assert.deepEqual(waitingOn(message([4, 0, 0, 0])), { account: key(43), nonce: 'NonceValue1111111111111111111111111111111111' });
+    assert.equal(waitingOn(message([2, 0, 0, 0])), null); // a transfer first: it lives by its blockhash
+});
+
+test('the delegates a transaction gives on accounts of yours, or lets move more', () => {
+    const before = read(tokens({ delegate: OTHER, delegated: 10n }));
+    const change = (after: ReturnType<typeof read>) => ({ fee: 0n, accounts: [{ address: TOKEN, before, after }] });
+    assert.deepEqual(delegatesGiven(change(read(tokens({ delegate: OTHER, delegated: 50n })))), [{ account: TOKEN, to: OTHER }]);
+    assert.deepEqual(delegatesGiven(change(read(tokens({ delegate: ISSUER, delegated: 5n })))), [{ account: TOKEN, to: ISSUER }]);
+    assert.deepEqual(delegatesGiven(change(read(tokens({ delegate: OTHER, delegated: 5n })))), []); // less: nothing given
+    assert.deepEqual(delegatesGiven(change(read(tokens({})))), []); // revoked
 });

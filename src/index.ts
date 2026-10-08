@@ -27,6 +27,6 @@ export { historyPage, NoHistory, type Landed, type Page } from './activity/histo
 export { summarize, type Activity } from './activity/summary.ts';
 
 // Who besides a wallet can move, burn, freeze or close what it holds.
-export { access, grantsOf, nonceOf, type Access, type Grant, type Waiting } from './access/access.ts';
+export { access, delegatesGiven, grantsOf, nonceOf, waitingOn, type Access, type Grant, type Waiting } from './access/access.ts';
 
 export { Refused } from './errors.ts';
