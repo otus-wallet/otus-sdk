@@ -108,3 +108,21 @@ test('an unknown program, or a plugin that throws, leaves the instruction unknow
 test('one plugin per program', () => {
     assert.equal(new Set(CORE_PLUGINS.map((p) => p.program)).size, CORE_PLUGINS.length);
 });
+
+test('stake instructions read the same with the sysvars older wallets pass and without them', () => {
+    const STAKE = 'Stake11111111111111111111111111111111111111' as never;
+    const [stake, recipient, vote] = [key(80), key(81), key(82)];
+    const [clock, history, config] = ['SysvarC1ock11111111111111111111111111111111', 'SysvarStakeHistory1111111111111111111111111', 'StakeConfig11111111111111111111111111111111'] as never[];
+    const withdraw = new Uint8Array(12);
+    withdraw[0] = 4;
+    new DataView(withdraw.buffer).setBigUint64(4, 7n, true);
+    const roles = (data: Uint8Array, accounts: string[]) => {
+        const all = [STAKE, ...accounts].map((address) => ({ address: address as never, signer: address === PAYER, writable: false }));
+        const [e] = explain({ message: { instructions: [{ programAddressIndex: 0, accountIndices: accounts.map((_, i) => i + 1), data }] }, accounts: all });
+        return [e.name, e.accounts.map((a) => `${a.role} ${a.address}`)];
+    };
+    const told = [['stake', stake], ['recipient', recipient], ['withdrawAuthority', PAYER]].map(([r, a]) => `${r} ${a}`);
+    assert.deepEqual(roles(withdraw, [stake, recipient, clock, history, PAYER]), ['Withdraw', told]);
+    assert.deepEqual(roles(withdraw, [stake, recipient, PAYER]), ['Withdraw', told]);
+    assert.deepEqual(roles(new Uint8Array([2, 0, 0, 0]), [stake, vote, clock, history, config, PAYER]), ['DelegateStake', [`stake ${stake}`, `vote ${vote}`, `stakeAuthority ${PAYER}`]]);
+});

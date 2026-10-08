@@ -30,6 +30,17 @@ function parseToken2022Instruction(instruction: KitInstruction) {
     return parseTokenInstruction(instruction);
 }
 
+// The stake program's sysvars and config account: older wallets still pass them in its instructions (Clock, the stake
+// history, Rent, StakeConfig) where the program now reads them itself, and its client reads the accounts without them.
+// None of them can be a stake account, a validator or an authority, so dropping them lines both forms up.
+const STAKE_EXTRAS: ReadonlySet<string> = new Set([
+    'SysvarC1ock11111111111111111111111111111111',
+    'SysvarStakeHistory1111111111111111111111111',
+    'SysvarRent111111111111111111111111111111111',
+    'StakeConfig11111111111111111111111111111111',
+]);
+const withoutExtras = (plugin: Plugin): Plugin => ({ ...plugin, explain: (instruction) => plugin.explain({ ...instruction, accounts: (instruction.accounts ?? []).filter((a) => !STAKE_EXTRAS.has(a.address)) }) });
+
 /** The programs almost every transaction touches, explained by Solana's own generated clients. */
 export const CORE_PLUGINS: Plugin[] = [
     codamaPlugin(SYSTEM_PROGRAM_ADDRESS, 'System Program', parseSystemInstruction, (t) => SystemInstruction[t]),
@@ -37,7 +48,7 @@ export const CORE_PLUGINS: Plugin[] = [
     codamaPlugin(TOKEN_PROGRAM_ADDRESS, 'Token Program', parseTokenInstruction, (t) => TokenInstruction[t]),
     codamaPlugin(TOKEN_2022_PROGRAM_ADDRESS, 'Token-2022', parseToken2022Instruction, (t) => TokenInstruction[t]),
     codamaPlugin(ASSOCIATED_TOKEN_PROGRAM_ADDRESS, 'Associated Token', parseAssociatedTokenInstruction, (t) => AssociatedTokenInstruction[t]),
-    codamaPlugin(STAKE_PROGRAM_ADDRESS, 'Stake Program', parseStakeInstruction, (t) => StakeInstruction[t]),
+    withoutExtras(codamaPlugin(STAKE_PROGRAM_ADDRESS, 'Stake Program', parseStakeInstruction, (t) => StakeInstruction[t])),
     // The Memo program most sites use (MemoSq…fcHr; the client calls it legacy v3), its newer deploy, and the first one.
     codamaPlugin(LEGACY_MEMO_PROGRAM_ADDRESS_V3, 'Memo', parseAddMemoInstruction, () => 'AddMemo'),
     codamaPlugin(MEMO_PROGRAM_ADDRESS, 'Memo', parseAddMemoInstruction, () => 'AddMemo'),
