@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
-import { getAdvanceNonceAccountInstruction, getAssignInstruction, getTransferSolInstruction } from '@solana-program/system';
+import { getAdvanceNonceAccountInstruction, getAssignInstruction, getInitializeNonceAccountInstruction, getTransferSolInstruction } from '@solana-program/system';
 import {
     AuthorityType,
     getApproveCheckedInstruction,
@@ -216,7 +216,7 @@ test('a token made and minted to the wallet is a mint, its rent apart; one burne
 
 test('what moves no balance is told by its instructions: a delegate given or revoked, an authority, a nonce, an assign', async () => {
     const me = createNoopSigner(WALLET);
-    const [approved, checked, revoked, handed, removed, nonce, assigned] = await landed(
+    const [approved, checked, revoked, handed, removed, nonce, assigned, made] = await landed(
         item([getApproveInstruction({ source: MY_TOKENS, delegate: FRIEND, owner: me, amount: 100_000_000n })], WALLET, { tokens: [{ address: MY_TOKENS, mint: MINT, owner: WALLET, before: 5n, after: 5n }] }),
         item([getApproveCheckedInstruction({ source: MY_TOKENS, mint: OTHER_MINT, delegate: FRIEND, owner: me, amount: 7n, decimals: 9 })], WALLET),
         item([getRevokeInstruction({ source: MY_TOKENS, owner: me })], WALLET),
@@ -224,6 +224,7 @@ test('what moves no balance is told by its instructions: a delegate given or rev
         item([getSetAuthorityInstruction({ owned: OTHER_MINT, owner: me, authorityType: AuthorityType.FreezeAccount, newAuthority: null })], WALLET),
         item([getAdvanceNonceAccountInstruction({ nonceAccount: key(48), nonceAuthority: me })], WALLET),
         item([getAssignInstruction({ account: me, programAddress: key(49) })], WALLET),
+        item([getInitializeNonceAccountInstruction({ nonceAccount: key(48), nonceAuthority: WALLET })], WALLET),
     );
     const acts = (l: Landed) => summarize(l, WALLET).acts;
     assert.deepEqual(acts(approved), [{ kind: 'approve', account: MY_TOKENS, delegate: FRIEND, units: 100_000_000n, mint: MINT, decimals: 6 }]);
@@ -233,6 +234,7 @@ test('what moves no balance is told by its instructions: a delegate given or rev
     assert.deepEqual(acts(removed), [{ kind: 'authority', account: OTHER_MINT, role: 'freeze', to: null }]);
     assert.deepEqual(acts(nonce), [{ kind: 'nonce', account: key(48) }]);
     assert.deepEqual(acts(assigned), [{ kind: 'assign', account: WALLET, program: key(49) }]);
+    assert.deepEqual(acts(made), [{ kind: 'nonce-account', account: key(48), authority: WALLET }]);
 });
 
 test("rent stays the wallet's own: wrapping SOL, closing while sending, rent sent elsewhere, rent others pay", async () => {

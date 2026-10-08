@@ -22,12 +22,13 @@ export type Kind = 'send' | 'receive' | 'swap' | 'mint' | 'burn' | 'other';
 
 /** What a transaction did besides moving balances, by its instructions to Solana's own programs: a delegate given on a
  *  token account (`units` of its `mint`, when the transaction lists it) or taken back, an authority handed over (`to`
- *  null: removed), a nonce moved on, an account given to a program. */
+ *  null: removed), a nonce moved on, a nonce account made, an account given to a program. */
 export type Act =
     | { kind: 'approve'; account: Address; delegate: Address; units: bigint; mint: Address | null; decimals: number | null }
     | { kind: 'revoke'; account: Address; mint: Address | null }
     | { kind: 'authority'; account: Address; role: 'mint' | 'freeze' | 'owner' | 'close'; to: Address | null }
     | { kind: 'nonce'; account: Address }
+    | { kind: 'nonce-account'; account: Address; authority: Address }
     | { kind: 'assign'; account: Address; program: Address };
 
 /** A transaction for the wallet, in short. `moves`: SOL first, then each token; SOL without the fee the wallet paid
@@ -134,7 +135,8 @@ const ROLES = ['mint', 'freeze', 'owner', 'close'] as const; // SetAuthority's a
 
 // What its own instructions to the token programs and the System Program did, each read only when its data is the
 // layout it should be: Approve (4: amount), ApproveChecked (13: amount, decimals), Revoke (5), SetAuthority (6: type,
-// then an optional address); System's Assign (1: the program) and AdvanceNonceAccount (4).
+// then an optional address); System's Assign (1: the program), AdvanceNonceAccount (4) and InitializeNonceAccount (6:
+// its authority).
 function actsOf(t: Landed): Act[] {
     return t.message.instructions.flatMap((ix): Act[] => {
         const program = t.accounts[ix.programAddressIndex];
@@ -158,6 +160,7 @@ function actsOf(t: Landed): Act[] {
         if (!account) return [];
         if (d[0] === 4 && d.length === 4) return [{ kind: 'nonce', account }];
         if (d[0] === 1 && d.length === 36) return [{ kind: 'assign', account, program: getAddressDecoder().decode(d, 4) }];
+        if (d[0] === 6 && d.length === 36) return [{ kind: 'nonce-account', account, authority: getAddressDecoder().decode(d, 4) }];
         return [];
     });
 }
