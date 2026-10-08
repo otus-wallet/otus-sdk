@@ -13,6 +13,8 @@ guarded. For wallets, bots and agents alike.
 - Guards: Lighthouse assertions that make the transaction fail onchain if your accounts would end up worse than
   reviewed.
 - A wallet's history, each transaction in short (Helius' `getTransactionsForAddress`).
+- Who besides a wallet can move what it holds: delegates and close authorities on its token accounts, what its
+  tokens' issuers can do, and signed transactions still waiting on a durable nonce.
 
 ## Install
 
