@@ -134,3 +134,13 @@ test('a nonce moved on leads a durable transaction; anywhere else it only takes 
     assert.deepEqual(story(e, n, false, true).effects, [{ text: 'Uses a durable nonce: this transaction never expires', tone: 'danger' }]);
     assert.deepEqual(story(e, n, false, false).effects, [{ text: 'Moves the nonce of 1111 on: what was signed on it can no longer run', tone: 'plain' }]);
 });
+
+test('stake instructions in words: who withdraws, a validator, a withdraw authority handed over', () => {
+    const STAKE = address('Stake11111111111111111111111111111111111111');
+    const [me, account, stranger, vote] = ['4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi', '8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR', '2RJDBUrb8WrDoLbnkd6uqmPbqVbXTUa3cE25yngrgzmr', '2VDW9dFE1ZXz4zWAbaBDQFynNVdRpQ73HyfSHMzBSL6Z'].map((a) => address(a));
+    const ix = (name: string, accounts: Record<string, Address>, args: Record<string, string> = {}): Explained => ({ program: STAKE, programName: 'Stake Program', source: 'plugin', data: new Uint8Array(), name, accounts: Object.entries(accounts).map(([role, address]) => ({ role, address })), args: Object.entries(args).map(([name, value]) => ({ name, value })) });
+    const n = { wallet: me, who: (a: Address) => (a === me ? 'you' : a.slice(0, 4)), mine: (a: Address) => a === me || a === account } as unknown as Names;
+    assert.deepEqual(story(ix('Initialize', { stake: account }, { arg0: `{ staker: ${me}, withdrawer: ${stranger} }`, arg1: '{ unixTimestamp: 0, epoch: 0, custodian: 11111111111111111111111111111111 }' }), n).effects, [{ text: `Only 2RJD can withdraw from 8qbH`, tone: 'warn' }]);
+    assert.deepEqual(story(ix('DelegateStake', { stake: account, vote, stakeAuthority: me }), n).effects, [{ text: 'Stakes 8qbH with validator 2VDW', tone: 'plain' }]);
+    assert.deepEqual(story(ix('Authorize', { stake: account, authority: me }, { arg0: stranger, arg1: '1' }), n).effects, [{ text: 'The right to withdraw 8qbH goes to 2RJD', tone: 'danger' }]);
+});

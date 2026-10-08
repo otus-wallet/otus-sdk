@@ -2,6 +2,7 @@
 // says, for the programs Otus reads; for any other, what the simulation changed in your accounts it touches.
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from '@solana-program/compute-budget';
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
+import { STAKE_PROGRAM_ADDRESS } from '@solana-program/stake';
 import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
 import { ASSOCIATED_TOKEN_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import type { Address, ReadonlyUint8Array } from '@solana/kit';
@@ -28,6 +29,8 @@ export type Names = {
     changes(address: Address): string[]; // what the simulation changed in an account of yours, in words
     icon?(mint: Address): string | null; // a verified token's logo
 };
+
+const DEFAULT_ADDRESS = '11111111111111111111111111111111'; // an unset address in a struct: no one
 
 const AUTHORITY: Record<string, string> = { 0: 'The right to mint', 1: 'The right to freeze', 2: 'The ownership', 3: 'The right to close' };
 
@@ -114,6 +117,40 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
             case 'FreezeAccount':
             case 'ThawAccount':
                 return { args: Who(acc('account')), effects: [line(`${e.name === 'FreezeAccount' ? 'Freezes' : 'Thaws'} ${who(acc('account'))}`, e.name === 'FreezeAccount' ? hurts(acc('account')) : 'plain')] };
+        }
+    }
+    if (e.program === STAKE_PROGRAM_ADDRESS) {
+        // A field of a struct argument, as the client writes it: "{ staker: …, withdrawer: … }".
+        const field = (name: string, key: string) => new RegExp(`${key}: ([1-9A-HJ-NP-Za-km-z]{32,44})`).exec(arg(name))?.[1] as Address | undefined;
+        const stake = acc('stake');
+        switch (e.name) {
+            case 'Initialize':
+            case 'InitializeChecked': {
+                const withdrawer = acc('withdrawAuthority') ?? field('arg0', 'withdrawer');
+                const custodian = field('arg1', 'custodian');
+                const effects = [line(`Only ${who(withdrawer)} can withdraw from ${who(stake)}`, withdrawer && withdrawer !== n.wallet ? 'warn' : 'plain')];
+                if (custodian && custodian !== DEFAULT_ADDRESS) effects.push(line(`${Who(custodian)} holds its lockup`, 'warn'));
+                return { args: `${Who(stake)}, withdrawn by ${who(withdrawer)}`, effects };
+            }
+            case 'DelegateStake':
+                return { args: `${Who(stake)} → ${who(acc('vote'))}`, effects: [line(`Stakes ${who(stake)} with validator ${who(acc('vote'))}`)] };
+            case 'Deactivate':
+                return { args: Who(stake), effects: [line(`Unstakes ${who(stake)}`)] };
+            case 'Withdraw':
+                return { args: `${sol(big('args'))} SOL → ${who(acc('recipient'))}`, effects: [line(`${sol(big('args'))} SOL from ${who(stake)} to ${who(acc('recipient'))}`, acc('recipient') && n.mine(acc('recipient')!) ? 'ok' : hurts(stake))] };
+            case 'Authorize':
+            case 'AuthorizeChecked': {
+                const to = acc('newAuthority') ?? (arg('arg0') as Address);
+                const right = (arg('arg1') || arg('stakeAuthorize')) === '1' ? 'The right to withdraw' : 'The right to stake';
+                return { args: `${right.replace(/^The /, '')} → ${who(to)}`, effects: [line(`${right} ${who(stake)} goes to ${who(to)}`, to !== n.wallet && right === 'The right to withdraw' ? (hurts(stake) === 'plain' ? 'warn' : 'danger') : hurts(stake))] };
+            }
+            case 'Split':
+                return { args: `${sol(big('args'))} SOL → ${who(acc('splitStake'))}`, effects: [line(`${sol(big('args'))} SOL of ${who(stake)} moves to ${who(acc('splitStake'))}`)] };
+            case 'Merge':
+                return { args: `${Who(acc('sourceStake'))} → ${who(acc('destinationStake'))}`, effects: [line(`Merges ${who(acc('sourceStake'))} into ${who(acc('destinationStake'))}`)] };
+            case 'SetLockup':
+            case 'SetLockupChecked':
+                return { args: Who(stake), effects: [line(`Changes the lockup of ${who(stake)}`, hurts(stake))] };
         }
     }
     if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && e.name.startsWith('CreateAssociatedToken')) {

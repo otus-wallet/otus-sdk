@@ -4,6 +4,7 @@ import {
     parseComputeBudgetInstruction,
 } from '@solana-program/compute-budget';
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS, parseAddMemoInstruction } from '@solana-program/memo';
+import { parseStakeInstruction, STAKE_PROGRAM_ADDRESS, StakeInstruction } from '@solana-program/stake';
 import { parseSystemInstruction, SYSTEM_PROGRAM_ADDRESS, SystemInstruction } from '@solana-program/system';
 import {
     ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
@@ -36,11 +37,12 @@ export const CORE_PLUGINS: Plugin[] = [
     codamaPlugin(TOKEN_PROGRAM_ADDRESS, 'Token Program', parseTokenInstruction, (t) => TokenInstruction[t]),
     codamaPlugin(TOKEN_2022_PROGRAM_ADDRESS, 'Token-2022', parseToken2022Instruction, (t) => TokenInstruction[t]),
     codamaPlugin(ASSOCIATED_TOKEN_PROGRAM_ADDRESS, 'Associated Token', parseAssociatedTokenInstruction, (t) => AssociatedTokenInstruction[t]),
+    codamaPlugin(STAKE_PROGRAM_ADDRESS, 'Stake Program', parseStakeInstruction, (t) => StakeInstruction[t]),
     // The Memo program most sites use (MemoSq…fcHr; the client calls it legacy v3), its newer deploy, and the first one.
     codamaPlugin(LEGACY_MEMO_PROGRAM_ADDRESS_V3, 'Memo', parseAddMemoInstruction, () => 'AddMemo'),
     codamaPlugin(MEMO_PROGRAM_ADDRESS, 'Memo', parseAddMemoInstruction, () => 'AddMemo'),
     codamaPlugin(LEGACY_MEMO_PROGRAM_ADDRESS_V1, 'Memo (legacy)', parseAddMemoInstruction, () => 'AddMemo'),
 ];
 
-/** The programs the core plugins read: Solana's own, the token programs, memo. */
+/** The programs the core plugins read: Solana's own (stake included), the token programs, memo. */
 export const CORE_PROGRAMS: ReadonlySet<Address> = new Set(CORE_PLUGINS.map((p) => p.program));

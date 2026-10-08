@@ -4,6 +4,7 @@
 // receipt, a swap, a mint, a burn) comes from where what moved went: a token no one else lost was made by its mint, not
 // received. The other side, the programs, Squads steps and a memo come from its own instructions.
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
+import { STAKE_PROGRAM_ADDRESS } from '@solana-program/stake';
 import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
 import { isOffCurveAddress, type Address } from '@solana/kit';
 
@@ -48,6 +49,7 @@ export type Activity = {
     instructions: Told[];
     held: Held[];
     fresh: Address[]; // the accounts it brought into being
+    staked: bigint; // SOL it put in stake accounts of the wallet's own (it withdraws from them), or took out of them
     signed: boolean;
     other: Address | null;
     programs: Address[];
@@ -72,7 +74,11 @@ export function summarize(t: Landed, wallet: Address): Activity {
     const own = [...new Set([...tokens.before, ...tokens.after].filter((b) => yours(b.owner)).map((b) => b.account))];
     const rent = own.reduce((n, i) => n + rentIn('after', i) - rentIn('before', i), 0n);
     const at = accounts.indexOf(wallet);
-    const spent = at < 0 ? 0n : change(at);
+    const told = instructionsOf(t);
+    // Stake accounts it sets up for the wallet to withdraw from: the SOL put in them stays the wallet's own, staked.
+    const staking = stakesFor(told, wallet).map((a) => accounts.indexOf(a)).filter((i) => i >= 0);
+    const staked = staking.reduce((n, i) => n + change(i), 0n);
+    const spent = (at < 0 ? 0n : change(at)) + staked;
     // Rent others put in a token account of the wallet's is no SOL of its own: only what the wallet paid counts.
     let sol = spent + (rent > 0n ? min(rent, spent < 0n ? -spent : 0n) : rent);
     // What it paid to open others' token accounts is rent of theirs, not SOL sent: up to what the wallet lost. Wrapped
@@ -86,13 +92,12 @@ export function summarize(t: Landed, wallet: Address): Activity {
     // Other accounts its own CreateAccount made (a mint, a nonce account): what the wallet put in them is rent, as much as
     // the space each declares needs, and no more; past that it is SOL sent, as to a stake account. A plain account holds
     // SOL, not rent.
-    const told = instructionsOf(t);
     const made = told.reduce((n, ix) => {
         if (ix.program !== SYSTEM_PROGRAM_ADDRESS || (ix.name !== 'CreateAccount' && ix.name !== 'CreateAccountWithSeed')) return n;
         const fresh = ix.accounts.find((a) => a.role === 'newAccount')?.address;
         const value = (name: string) => ix.args.find((a) => a.name === name)?.value ?? '';
         const at = fresh ? accounts.indexOf(fresh) : -1;
-        if (at < 0 || fresh === wallet || lamports.before[at] !== 0n || listed('after', at).length || !/^\d{1,9}$/.test(value('space'))) return n;
+        if (at < 0 || fresh === wallet || staking.includes(at) || lamports.before[at] !== 0n || listed('after', at).length || !/^\d{1,9}$/.test(value('space'))) return n;
         if (value('programAddress') === SYSTEM_PROGRAM_ADDRESS && value('space') === '0') return n;
         return n + min(lamports.after[at], rentFor(Number(value('space'))));
     }, 0n);
@@ -119,6 +124,7 @@ export function summarize(t: Landed, wallet: Address): Activity {
         created: t.error ? [] : createdMints(t),
         instructions: told,
         fresh: accounts.filter((_, i) => lamports.before[i] === 0n && lamports.after[i] > 0n),
+        staked,
         held: heldIn(t),
         signed,
         other: kind === 'send' || kind === 'receive' ? otherSide(t, wallet, moves, kind === 'send' ? 1n : -1n, change) : null,
@@ -131,6 +137,17 @@ export function summarize(t: Landed, wallet: Address): Activity {
 
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
 const sum = (balances: TokenBalance[], mint: Address) => balances.reduce((n, b) => (b.mint === mint ? n + b.units : n), 0n);
+
+// The stake accounts it sets up with the wallet as the one who withdraws: Initialize's withdrawer, InitializeChecked's
+// withdraw authority.
+function stakesFor(told: Told[], wallet: Address): Address[] {
+    return told.flatMap((ix) => {
+        if (ix.program !== STAKE_PROGRAM_ADDRESS || (ix.name !== 'Initialize' && ix.name !== 'InitializeChecked')) return [];
+        const stake = ix.accounts.find((a) => a.role === 'stake')?.address;
+        const withdrawer = ix.accounts.find((a) => a.role === 'withdrawAuthority')?.address ?? /withdrawer: ([1-9A-HJ-NP-Za-km-z]{32,44})/.exec(ix.args.find((a) => a.name === 'arg0')?.value ?? '')?.[1];
+        return stake && withdrawer === wallet ? [stake] : [];
+    });
+}
 
 // The most rent a new account of this many bytes needs: 128 bytes more, at 3,480 lamports a byte-year, for two years
 // (mainnet's rate; a cluster may ask less, never more).

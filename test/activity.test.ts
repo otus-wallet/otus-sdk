@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
+import { getDelegateStakeInstruction, getInitializeInstruction, STAKE_PROGRAM_ADDRESS } from '@solana-program/stake';
 import { getAdvanceNonceAccountInstruction, getAssignInstruction, getCreateAccountInstruction, getInitializeNonceAccountInstruction, getTransferSolInstruction } from '@solana-program/system';
 import {
     AuthorityType,
@@ -278,6 +279,19 @@ test('what a site cannot pass off: a payment as rent, wrapped SOL as their rent,
     assert.equal(summarize(passed, WALLET).kind, 'send'); // they burned theirs: yours went to them
     const w = summarize(paid, WALLET);
     assert.deepEqual([w.kind, w.rent.theirs], ['send', 2_039_280n]); // their rent apart, the 10 SOL sent
+});
+
+test('SOL staked in a stake account the wallet withdraws from stays its own; staked for someone else, it is sent', async () => {
+    const [STAKE, VOTE, STRANGER] = [key(60), key(61), key(62)];
+    const create = getCreateAccountInstruction({ payer: createNoopSigner(WALLET), newAccount: createNoopSigner(STAKE), lamports: 1_002_282_880n, space: 200, programAddress: STAKE_PROGRAM_ADDRESS });
+    const init = (withdrawer: Address) => getInitializeInstruction({ stake: STAKE, arg0: { staker: WALLET, withdrawer }, arg1: { unixTimestamp: 0n, epoch: 0n, custodian: '11111111111111111111111111111111' as Address } });
+    const delegate = getDelegateStakeInstruction({ stake: STAKE, vote: VOTE, stakeAuthority: createNoopSigner(WALLET) });
+    const lamports = { [WALLET]: [5_000_000_000n, 5_000_000_000n - 1_002_282_880n - 5_000n] as [bigint, bigint], [STAKE]: [0n, 1_002_282_880n] as [bigint, bigint] };
+    const [mine, theirs] = await landed(item([create, init(WALLET), delegate], WALLET, { lamports }), item([create, init(STRANGER), delegate], WALLET, { lamports }));
+    const s = summarize(mine, WALLET);
+    assert.deepEqual([s.kind, s.moves, s.staked, s.instructions.map((i) => i.name)], ['other', [], 1_002_282_880n, ['CreateAccount', 'Initialize', 'DelegateStake']]);
+    const t = summarize(theirs, WALLET);
+    assert.deepEqual([t.kind, t.staked], ['send', 0n]); // someone else withdraws it: it left the wallet
 });
 
 test("rent stays the wallet's own: wrapping SOL, closing while sending, rent sent elsewhere, rent others pay", async () => {
