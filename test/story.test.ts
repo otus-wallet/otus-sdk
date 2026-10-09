@@ -141,7 +141,7 @@ test('stake instructions in words: who withdraws, a validator, a withdraw author
     const ix = (name: string, accounts: Record<string, Address>, args: Record<string, string> = {}): Explained => ({ program: STAKE, programName: 'Stake Program', source: 'plugin', data: new Uint8Array(), name, accounts: Object.entries(accounts).map(([role, address]) => ({ role, address })), args: Object.entries(args).map(([name, value]) => ({ name, value })) });
     const n = { wallet: me, who: (a: Address) => (a === me ? 'you' : a.slice(0, 4)), mine: (a: Address) => a === me || a === account } as unknown as Names;
     assert.deepEqual(story(ix('Initialize', { stake: account }, { arg0: `{ staker: ${me}, withdrawer: ${stranger} }`, arg1: '{ unixTimestamp: 0, epoch: 0, custodian: 11111111111111111111111111111111 }' }), n).effects, [{ text: `Only 2RJD can withdraw from 8qbH`, tone: 'warn' }]);
-    assert.deepEqual(story(ix('DelegateStake', { stake: account, vote, stakeAuthority: me }), n).effects, [{ text: 'Stakes 8qbH with validator 2VDW', tone: 'plain' }]);
+    assert.deepEqual(story(ix('DelegateStake', { stake: account, vote, stakeAuthority: me }), n).effects, [{ text: 'Delegates 8qbH to validator 2VDW', tone: 'plain' }]);
     assert.deepEqual(story(ix('Authorize', { stake: account, authority: me }, { arg0: stranger, arg1: '1' }), n).effects, [{ text: 'The right to withdraw 8qbH goes to 2RJD', tone: 'danger' }]);
 });
 

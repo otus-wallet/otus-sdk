@@ -146,7 +146,7 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
                 return { args: `${Who(stake)}, withdrawn by ${who(withdrawer)}`, effects };
             }
             case 'DelegateStake':
-                return { args: `${Who(stake)} → ${who(acc('vote'))}`, effects: [line(`Stakes ${who(stake)} with validator ${who(acc('vote'))}`)] };
+                return { args: `${Who(stake)} → ${who(acc('vote'))}`, effects: [line(`Delegates ${who(stake)} to validator ${who(acc('vote'))}`)] };
             case 'Deactivate':
                 return { args: Who(stake), effects: [line(`Unstakes ${who(stake)}`)] };
             case 'Withdraw':
