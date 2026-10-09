@@ -1,6 +1,6 @@
 # @otus-wallet/sdk
 
-The transaction review behind [Otus Wallet](https://github.com/otus-wallet/otus-extension), on
+The transaction review behind [Otus Wallet](https://github.com/otus-wallet/otus-app), on
 [@solana/kit](https://github.com/anza-xyz/kit): know what a Solana transaction does before signing it, and sign it
 guarded. For wallets, bots and agents alike.
 
