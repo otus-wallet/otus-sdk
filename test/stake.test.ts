@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { AccountRole, address, getAddressEncoder, getI64Encoder, getU32Encoder, getU64Encoder, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
+import { AccountRole, address, getAddressEncoder, getProgramDerivedAddress, getI64Encoder, getU32Encoder, getU64Encoder, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import { review } from '../src/review/review.ts';
 import { account, fakeChain, key, PAYER, SYSTEM, transaction } from './helpers.ts';
@@ -17,10 +17,10 @@ const { WRITABLE: W, READONLY_SIGNER: RS, WRITABLE_SIGNER: WS } = AccountRole;
 const getTransferSolInstructionTo = (to: Address): Instruction => ({ programAddress: SYSTEM, accounts: [{ address: PAYER, role: WS }, { address: to, role: W }], data: new Uint8Array([2, 0, 0, 0, ...getU64Encoder().encode(4n * SOL)]) });
 
 // A delegated stake account's data: staker and withdrawer, and a lockup (a time, an epoch, its custodian).
-function staked(withdrawer: Address, lockup: { time?: bigint; epoch?: bigint; custodian?: Address } = {}): Uint8Array {
+function staked(withdrawer: Address, lockup: { time?: bigint; epoch?: bigint; custodian?: Address } = {}, staker = withdrawer): Uint8Array {
     const d = new Uint8Array(200);
     d.set(getU32Encoder().encode(2));
-    d.set(getAddressEncoder().encode(withdrawer), 12);
+    d.set(getAddressEncoder().encode(staker), 12);
     d.set(getAddressEncoder().encode(withdrawer), 44);
     d.set(getI64Encoder().encode(lockup.time ?? 0n), 76);
     d.set(getU64Encoder().encode(lockup.epoch ?? 0n), 84);
@@ -66,4 +66,29 @@ test('your SOL into stake someone else keeps locked, made for you beforehand, is
     assert.deepEqual(await into(staked(PAYER, { time: 2_000_000_000n, custodian: THIEF })), [`danger:stake-lockup ${THIEF} can lift it: until then you can't withdraw`]);
     assert.deepEqual(await into(staked(PAYER, { time: 1_600_000_000n, custodian: THIEF })), []); // ran out in 2020
     assert.deepEqual(await into(staked(PAYER)), []);
+});
+
+test('your SOL into a stake another key withdraws is critical, whatever the site calls it; one you withdraw is not', async () => {
+    const send = getTransferSolInstructionTo(STAKED);
+    const codes = ['stake-withdrawer', 'stake-staker', 'no-authority-change'];
+    // A new stake account, made with 1 SOL of yours (and its rent) and given to someone else to withdraw.
+    const made = (data: Uint8Array) => findings(send, [account(PAYER, SYSTEM, 5n * SOL)], [account(PAYER, SYSTEM, 4n * SOL - 5000n), stakeAccount(data, SOL)], codes);
+    assert.deepEqual(await made(staked(THIEF)), [`danger:stake-withdrawer ${THIEF} can take the SOL out`]);
+    assert.deepEqual(await made(staked(THIEF, {}, PAYER)), [`danger:stake-withdrawer ${THIEF} can take the SOL out`]); // you its staker: still theirs
+    assert.deepEqual(await made(staked(PAYER)), ['ok:no-authority-change Owners and authorities stay as they are']);
+    // Yours to withdraw, someone else its staker: they can unstake it, not take it.
+    assert.deepEqual(await made(staked(PAYER, {}, THIEF)), [`warn:stake-staker ${THIEF} can unstake it or change its validator`]);
+    // Topped up the same way: an existing one of theirs, or of yours someone else manages.
+    const topped = (data: Uint8Array) => findings(send, [account(PAYER, SYSTEM, 5n * SOL), stakeAccount(data, SOL)], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(data, 5n * SOL)], codes);
+    assert.deepEqual(await topped(staked(THIEF)), [`danger:stake-withdrawer ${THIEF} can take the SOL out`]);
+    assert.deepEqual(await topped(staked(PAYER, {}, THIEF)), [`warn:stake-staker ${THIEF} can unstake it or change its validator`]);
+    // A program's own address withdrawing, as a stake pool's reserve: as its program lets it, not someone's key.
+    const [pool] = await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['withdraw'] });
+    assert.deepEqual(await made(staked(pool)), ['ok:no-authority-change Owners and authorities stay as they are']);
+});
+
+test('SOL into someone else\'s stake that is not from you, as you only pay the fee, is not called yours', async () => {
+    const touch: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }, { address: STAKED, role: W }] };
+    const moved = await findings(touch, [account(PAYER, SYSTEM, 5n * SOL), stakeAccount(staked(THIEF), SOL)], [account(PAYER, SYSTEM, 5n * SOL - 5000n), stakeAccount(staked(THIEF), 3n * SOL)], ['stake-withdrawer']);
+    assert.deepEqual(moved, []);
 });

@@ -134,6 +134,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             const text = is.lockup === was?.lockup ? 'Your SOL goes into stake someone else keeps locked' : 'Your stake gets a lockup someone else holds';
             add('danger', 'stake-lockup', text, address, is.custodian === SYSTEM_PROGRAM_ADDRESS ? "No one can lift it: you can't withdraw until it ends" : `${is.custodian} can lift it: until then you can't withdraw`);
         }
+        // Your stake, made or getting your SOL, that someone else manages: they can unstake it or move it to another
+        // validator, not take it.
+        if (is !== null && is.withdrawer === wallet && is.staker !== wallet && fed) add('warn', 'stake-staker', 'Someone else manages this stake', address, `${is.staker} can unstake it or change its validator`);
         // Your address inside any other account, as its authority or owner, stays where it was.
         if (before && after && !from) {
             for (const offset of offsetsOf(key, before).filter((o) => !offsetsOf(key, after).includes(o))) {
@@ -145,6 +148,15 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     }
     // An upgrade authority of yours used: new code for your program, or its program data closed, ending it for good.
     for (const [program, text] of upgrades(s, wallet)) add('danger', 'program-change', text, program, 'Signed with your upgrade authority');
+    // Your SOL into a stake account another key withdraws: theirs to take out, whatever the site calls it. Only SOL that
+    // could have come from you, not more than you send. A program's own address withdrawing, as a stake pool's, takes it
+    // only as its program lets it.
+    for (const flow of flows.filter((f) => f.asset === 'SOL' && f.change < 0n)) {
+        for (const o of flow.others) {
+            const is = stake(changes.accounts.find((c) => c.address === o.address)?.after ?? null);
+            if (is && o.amount <= -flow.change && !isOffCurveAddress(is.withdrawer)) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
+        }
+    }
     if (!failed && findings.length === shown) add('ok', 'no-authority-change', 'No owner or authority changes', undefined, 'Owners and authorities stay as they are');
     if (!failed) for (const [what, subject] of outflows(yours)) add('warn', 'large-outflow', `You send almost all ${what}`, subject);
 
@@ -331,16 +343,16 @@ function withdrawer(state: State, clock: Clock): Address | null {
     return null;
 }
 
-// A stake account, kind 1 (initialized) or 2 (delegated): its withdrawer, and its lockup (a time, an epoch, and the
+// A stake account, kind 1 (initialized) or 2 (delegated): its staker and withdrawer, and its lockup (a time, an epoch, and the
 // custodian who alone can lift it before then), in force while its time or its epoch is still ahead, as the Stake
 // program reads it; with no clock, or no time known, whenever it has one. Its data: kind, rent reserve, staker,
 // withdrawer, time, epoch, custodian.
-function stake(state: State, clock?: Clock): { withdrawer: Address; custodian: Address; locked: boolean; lockup: string } | null {
+function stake(state: State, clock?: Clock): { staker: Address; withdrawer: Address; custodian: Address; locked: boolean; lockup: string } | null {
     if (!state || state.token || state.program !== STAKE_PROGRAM || state.data.length < 124 || ![1, 2].includes(getU32Decoder().decode(state.data, 0))) return null;
     const d = state.data;
     const [time, epoch, custodian] = [getI64Decoder().decode(d, 76), getU64Decoder().decode(d, 84), getAddressDecoder().decode(d, 92)];
     const ahead = (clock?.now ?? null) === null ? time !== 0n : time > BigInt(clock!.now!);
-    return { withdrawer: getAddressDecoder().decode(d, 44), custodian, locked: ahead || epoch > (clock?.epoch ?? 0n), lockup: `${time}:${epoch}:${custodian}` };
+    return { staker: getAddressDecoder().decode(d, 12), withdrawer: getAddressDecoder().decode(d, 44), custodian, locked: ahead || epoch > (clock?.epoch ?? 0n), lockup: `${time}:${epoch}:${custodian}` };
 }
 
 /** The calls made inside a transaction's instructions (`tops`: each one's program), each with its caller, the latest
