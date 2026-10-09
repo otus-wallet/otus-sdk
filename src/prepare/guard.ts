@@ -19,10 +19,11 @@ export type Meta = { staker: Address; withdrawer: Address; time: bigint; epoch: 
 export const SLACK = { trade: 1_000n, drift: 100n };
 
 /** Your accounts the transaction can write, and others it can write with your address in them → their holds. The
- *  wallet's `atLeast` is before fees: whoever builds the transaction takes off what it pays. */
-export function holds(yours: Changes, wallet: Address, keyed: Change[] = []): Hold[] {
+ *  wallet's `atLeast` is before fees: whoever builds the transaction takes off what it pays. `trade`: the slack of a
+ *  trade, in basis points; a swap the wallet builds itself holds it to the slippage it asked, tighter than a site's. */
+export function holds(yours: Changes, wallet: Address, keyed: Change[] = [], trade = SLACK.trade): Hold[] {
     const key = getAddressEncoder().encode(wallet);
-    const slack = trades(yours) ? SLACK.trade : SLACK.drift;
+    const slack = trades(yours) ? trade : SLACK.drift;
     const floor = (before: bigint, after: bigint) => max(0n, after - ((after > before ? after - before : before - after) * slack + 9_999n) / 10_000n);
     return [...yours.accounts, ...keyed].flatMap(({ address, before, after }): Hold[] => {
         if (!after) return [];

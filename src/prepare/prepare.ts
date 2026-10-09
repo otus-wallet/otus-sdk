@@ -47,10 +47,10 @@ const ROOM_STEP = 32 * 1024; // bytes: a v1 data limit is rounded up to this, th
  * to the simulation and, unless the site set one, a priority fee from recent fees; then it is simulated again. Otherwise,
  * or if that would fail, it stays as the site sent it, and says so. `own`: a transfer made in Otus, whose limits are
  * the most there is for its review, fitted here as if it set none. `bare`: why it gets no guards, only its limits and
- * fee. Never throws.
+ * fee. `trade`: a trade's slack in basis points, when the wallet holds its own swap to its slippage. Never throws.
  */
-export async function prepare(r: Review, wallet: Address, chain: Chain, own = false, bare?: string): Promise<Prepared> {
-    const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed);
+export async function prepare(r: Review, wallet: Address, chain: Chain, own = false, bare?: string, trade?: bigint): Promise<Prepared> {
+    const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade);
     // As the site sent it, without guards: why, for the review's Guards line; and what else was found on the way.
     const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null });
     if (r.signers.length > 1) return asIs("Another account signs it too, so Otus can't lock it");

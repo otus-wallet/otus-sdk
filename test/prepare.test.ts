@@ -166,6 +166,15 @@ test('in a trade, amounts may land a tenth away from the simulation; nothing els
     assert.deepEqual(p.holds.map((h) => h.atLeast), [3_900_000n - 5_000n, 135_000_000n]);
 });
 
+test('a trade the wallet builds itself is held to the slippage it asked, not a tenth', async () => {
+    const usdc = (amount: bigint) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount }));
+    const before = [account(PAYER, SYSTEM, 5_000_000n), usdc(0n)];
+    const chain = fakeChain(before, [account(PAYER, SYSTEM, 3_995_000n), usdc(150_000_000n)]);
+    const p = await prepare(await review(transaction([touching(USER_TOKEN)]), context, chain), PAYER, chain, false, undefined, 50n);
+    // At 0.5%: 1 SOL out may cost up to 1.005 SOL; 150 tokens in must bring at least 149.25.
+    assert.deepEqual(p.holds.map((h) => h.atLeast), [3_995_000n - 5_000n, 149_250_000n]);
+});
+
 test('holds a token account of yours that the simulation leaves untouched, its delegate and close authority too', async () => {
     const held = account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1000n }));
     const p = await preparedOver(transaction([touching(USER_TOKEN)]), [account(PAYER, SYSTEM, 5_000_000n), held], [account(PAYER, SYSTEM, 4_995_000n), held]);
