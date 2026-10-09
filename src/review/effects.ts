@@ -28,7 +28,10 @@ export type Names = {
     payer: Address;
     changes(address: Address): string[]; // what the simulation changed in an account of yours, in words
     icon?(mint: Address): string | null; // a verified token's logo
+    holds?(tokenAccount: Address): bigint | null; // the units a token account held before the transaction
 };
+
+const NO_LIMIT = 2n ** 64n - 1n; // an allowance that can never run out
 
 const DEFAULT_ADDRESS = '11111111111111111111111111111111'; // an unset address in a struct: no one
 
@@ -89,8 +92,18 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
                 return { args: `${tokens(big('amount'), mint, decimals)} → ${who(to)}`, effects: [line(`${tokens(big('amount'), mint, decimals)} from ${who(from)} to ${who(to)}`, to && n.mine(to) && !(from && n.mine(from)) ? 'ok' : hurts(from) === 'danger' ? 'danger' : 'plain')] };
             }
             case 'Approve':
-            case 'ApproveChecked':
-                return { args: `${who(acc('delegate'))}, up to ${tokens(big('amount'), mint, decimals)}`, effects: [line(`${Who(acc('delegate'))} may move up to ${tokens(big('amount'), mint, decimals)} from ${who(acc('source'))}`, hurts(acc('source')))] };
+            case 'ApproveChecked': {
+                const [delegate, source] = [acc('delegate'), acc('source')];
+                const units = big('amount');
+                // Without limit: all the account holds, now and whatever comes to it, until the allowance is revoked.
+                if (units === NO_LIMIT) {
+                    const what = source && n.mine(source) ? `all your ${n.token(mint).symbol}` : `all the ${n.token(mint).symbol} in ${who(source)}`;
+                    return { args: `${who(delegate)} · no limit`, effects: [line(`${Who(delegate)} may move ${what}, with no limit and at any time`, hurts(source))] };
+                }
+                const held = source ? (n.holds?.(source) ?? null) : null;
+                const all = held !== null && held > 0n && units >= held ? ' (all you hold)' : '';
+                return { args: `${who(delegate)}, up to ${tokens(units, mint, decimals)}`, effects: [line(`${Who(delegate)} may move up to ${tokens(units, mint, decimals)}${all} from ${who(source)}`, hurts(source))] };
+            }
             case 'Revoke':
                 return { args: who(acc('source')), effects: [line(`Takes back any allowance on ${who(acc('source'))}`, 'ok')] };
             case 'SetAuthority': {

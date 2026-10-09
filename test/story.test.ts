@@ -144,3 +144,13 @@ test('stake instructions in words: who withdraws, a validator, a withdraw author
     assert.deepEqual(story(ix('DelegateStake', { stake: account, vote, stakeAuthority: me }), n).effects, [{ text: 'Stakes 8qbH with validator 2VDW', tone: 'plain' }]);
     assert.deepEqual(story(ix('Authorize', { stake: account, authority: me }, { arg0: stranger, arg1: '1' }), n).effects, [{ text: 'The right to withdraw 8qbH goes to 2RJD', tone: 'danger' }]);
 });
+
+test('an approval without limit says so in words; one as large as the balance says it takes all', () => {
+    const TOKEN = address('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+    const [me, account, delegate, mint] = ['4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi', '8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR', '2RJDBUrb8WrDoLbnkd6uqmPbqVbXTUa3cE25yngrgzmr', '2VDW9dFE1ZXz4zWAbaBDQFynNVdRpQ73HyfSHMzBSL6Z'].map((a) => address(a));
+    const approve = (amount: string): Explained => ({ program: TOKEN, programName: 'Token Program', source: 'plugin', data: new Uint8Array(), name: 'Approve', accounts: [{ role: 'source', address: account }, { role: 'delegate', address: delegate }, { role: 'owner', address: me }], args: [{ name: 'amount', value: amount }] });
+    const n = { wallet: me, who: (a: Address) => (a === account ? 'your LAB account' : a.slice(0, 4)), mine: (a: Address) => a === me || a === account, mintOf: () => mint, token: () => ({ symbol: 'LAB', decimals: 0, verified: false }), holds: () => 1_000n } as unknown as Names;
+    assert.deepEqual(story(approve('18446744073709551615'), n), { args: '2RJD · no limit', effects: [{ text: '2RJD may move all your LAB, with no limit and at any time', tone: 'warn' }] });
+    assert.equal(story(approve('1000'), n).effects[0].text, '2RJD may move up to 1,000 LAB (all you hold) from your LAB account');
+    assert.equal(story(approve('100'), n).effects[0].text, '2RJD may move up to 100 LAB from your LAB account');
+});
