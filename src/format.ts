@@ -23,6 +23,18 @@ export const quantity = (units: bigint, decimals: number | null) => (decimals ==
 /** A count and its word: "1 signature", "3 signatures". */
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Whether two addresses look alike as people check them, by their ends: at least six characters alike between the start
+ *  and the end, two or more at each, as wallets shorten addresses and address poisoners forge them ("7xKX…gAsU" passes
+ *  for the other). Two random addresses are, about once in 10^10. */
+export function alike(a: string, b: string): boolean {
+    const n = Math.min(a.length, b.length);
+    let head = 0;
+    while (head < n && a[head] === b[head]) head++;
+    let tail = 0;
+    while (tail < n - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+    return head >= 2 && tail >= 2 && head + tail >= 6;
+}
+
 /** The first letter up. */
 // Only a plain first word ("you", "your", "an"): an address, cut short or whole, is never changed.
 export const cap = (s: string) => (/^[a-z]{1,12}(\s|$)/.test(s) ? s[0].toUpperCase() + s.slice(1) : s);

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { getTransferSolInstruction } from '@solana-program/system';
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { AccountRole, address, createNoopSigner, generateKeyPairSigner, getProgramDerivedAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
+import { AccountRole, address, createNoopSigner, generateKeyPairSigner, getProgramDerivedAddress, isAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import type { Context } from '../src/review/assess.ts';
 import { review } from '../src/review/review.ts';
@@ -101,4 +101,28 @@ test('out of a program’s custody to an account no key holds, with nothing back
     const receipt = key(48);
     const deposit = await said([{ ...swap, accounts: [...swap.accounts!.slice(0, 3), { address: receipt, role: W }] }], [...before.slice(0, 3), held(receipt, OTHER, pool, 0n)], [...after.slice(0, 3), held(receipt, OTHER, pool, 100n)]);
     assert.deepEqual(deposit.findings, []);
+});
+
+test('your funds, or a say over them, going to an address only like one you keep or one of your wallets: critical', async () => {
+    const like = (a: string) => Array.from({ length: 60 }, (_, i) => `${a.slice(0, 5)}${key(80 + i).slice(5, -5)}${a.slice(-5)}`).find((x) => x !== a && isAddress(x)) as Address;
+    const copy = like(THIEF);
+    const lookalikes = async (ixs: Instruction[], before: MaybeEncodedAccount[], after: MaybeEncodedAccount[], context: Partial<Context>) => {
+        const r = await review(transaction(ixs), { wallet: PAYER, signedBefore: 0, host: 'app.example.com', ...context }, fakeChain(before, after));
+        return r.assessment.findings.filter((f) => f.code === 'lookalike-address').map((f) => `${f.level}:${f.text}:${f.note}`);
+    };
+    const pay = (to: Address) => [[getTransferSolInstruction({ source: createNoopSigner(PAYER), destination: to, amount: SOL })], [account(PAYER, SYSTEM, 2n * SOL), account(to, SYSTEM, 0n)], [account(PAYER, SYSTEM, SOL - 5000n), account(to, SYSTEM, SOL)]] as const;
+    const ana = { contacts: new Map([[THIEF, 'Ana']]) };
+    assert.deepEqual(await lookalikes(...pay(copy), ana), [`danger:This address looks like Ana's:${copy} is not Ana's`]); // your SOL, to a copy of Ana's
+    assert.deepEqual(await lookalikes(...pay(THIEF), ana), []); // to Ana's own
+    assert.deepEqual(await lookalikes(...pay(copy), {}), []); // like no address you keep
+    assert.deepEqual(await lookalikes(...pay(copy), { wallets: [THIEF] }), [`danger:This address looks like one of your wallets:${copy} is not one of your wallets`]);
+    assert.deepEqual(await lookalikes(...pay(copy), { contacts: new Map([[THIEF, 'A‮na\u0000']]) }), [`danger:This address looks like Ana's:${copy} is not Ana's`]); // your name for it, without what moves or hides letters
+    // Funds out of a program's custody, to a copy of Ana's: the same.
+    assert.deepEqual((await withdraw(copy, ana)).findings, ['warn:Funds go to someone else, not to you']);
+    const out = await review(transaction([{ programAddress: MARGINFI, accounts: [{ address: PAYER, role: WS }, { address: VAULT, role: W }, { address: DEST, role: W }] }]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com', ...ana }, fakeChain([account(PAYER, SYSTEM, SOL), tokens(VAULT, await vaultOwner(), 5_000n * USDC), tokens(DEST, copy, 0n)], [account(PAYER, SYSTEM, SOL - 5000n), tokens(VAULT, await vaultOwner(), 4_000n * USDC), tokens(DEST, copy, 1_000n * USDC)]));
+    assert.ok(out.assessment.findings.some((f) => f.code === 'lookalike-address' && f.subject === copy));
+    // A delegate over a token account of yours, a copy of Ana's.
+    const delegate: Instruction = { programAddress: key(70), accounts: [{ address: PAYER, role: WS }, { address: YOURS, role: W }] };
+    const given = account(YOURS, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 5n * USDC, delegate: copy, delegated: 5n * USDC }));
+    assert.deepEqual(await lookalikes([delegate], [account(PAYER, SYSTEM, SOL), tokens(YOURS, PAYER, 5n * USDC)], [account(PAYER, SYSTEM, SOL - 5000n), given], ana), [`danger:This address looks like Ana's:${copy} is not Ana's`]);
 });

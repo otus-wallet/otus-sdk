@@ -11,6 +11,7 @@ import {
     type ReadonlyUint8Array,
 } from '@solana/kit';
 
+import { alike, told } from '../format.ts';
 import { STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
 import { BRANDS, HOLDS, PROGRAM_NAMES } from '../programs/known.ts';
 import { holdings, offsetsOf, plain, read, units, type Change, type Changes, type State } from './changes.ts';
@@ -97,6 +98,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     const findings: Finding[] = [];
     const add = (level: Level, code: string, text: string, subject?: Address, note?: string) =>
         findings.push({ level, code, text, ...(note !== undefined && { note }), ...(subject !== undefined && { subject }) });
+    const given = new Set<Address>(); // who gets your funds, or a say over them: checked against the addresses you keep
 
     // What the simulation shows. A failed one shows nothing, and a site can make it fail on purpose.
     const failed = s.simulation.error !== null;
@@ -111,6 +113,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             if (mine.has(address)) add('danger', 'owner-change', 'An account of yours changes owner', address, `New owner ${name(after.program)}. You lose control of it.`);
             else add('danger', 'owner-change', 'An account with your address in it changes owner', address, `New owner ${name(after.program)}. Your place in it may go.`);
         }
+        if (from && to && from.owner !== to.owner) given.add(to.owner);
+        if (to?.delegate) given.add(to.delegate);
+        if (to?.closer) given.add(to.closer);
         if (from && to && from.owner !== to.owner) add('danger', 'token-owner-change', 'A token account of yours changes owner', address, `New owner ${to.owner}. You lose control of it.`);
         if (to?.delegate && (to.delegate !== from?.delegate || to.delegated > (from?.delegated ?? 0n))) {
             // Someone's key allowed all the account holds, or without end, takes all of it whenever it likes; a
@@ -127,6 +132,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         // Your stake under a lockup in force that someone else keeps: made so now, or getting your SOL, as into a stake
         // account made for you beforehand. You can't withdraw until it ends, or they lift it.
         const [was, is] = [stake(before, clock), stake(after, clock)];
+        if (is) for (const a of [is.staker, is.withdrawer, is.custodian]) given.add(a);
         const kept = is !== null && is.locked && is.custodian !== wallet && (was ?? is).withdrawer === wallet;
         const fed = (after?.lamports ?? 0n) > (before?.lamports ?? 0n);
         if (kept && (is.lockup !== was?.lockup || fed)) {
@@ -153,6 +159,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     for (const flow of flows.filter((f) => f.asset === 'SOL' && f.change < 0n)) {
         for (const o of flow.others) {
             const is = stake(changes.accounts.find((c) => c.address === o.address)?.after ?? null);
+            if (is) given.add(is.withdrawer);
             if (is && o.amount <= -flow.change && !isOffCurveAddress(is.withdrawer)) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
         }
     }
@@ -204,6 +211,16 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     for (const p of payouts) {
         const [level, code, text]: [Level, string, string] = p.known ? ['notice', 'pays-known', `Funds go to ${p.known}`] : ['warn', 'pays-others', p.program ? "Funds go to a program's account, not to you" : 'Funds go to someone else, not to you'];
         findings.push({ level, code, text, subject: p.holder, programs: p.programs });
+        given.add(p.holder);
+    }
+    for (const flow of flows) if (flow.change < 0n) for (const o of flow.others) given.add(o.holder); // where yours goes
+    for (const f of findings) if (f.code === 'sends-to-wallet' && f.subject) given.add(f.subject);
+    if (context.to) given.add(context.to);
+    // An address that only looks like one you keep, or like one of your wallets, getting your funds or a say over them:
+    // what address poisoning counts on.
+    for (const a of given) {
+        const like = lookalikeOf(a, context);
+        if (like) add('danger', 'lookalike-address', `This address looks like ${like}`, a, `${a} is not ${like}`);
     }
 
     // Where the request comes from. A site becomes known a day after its first transaction you signed: a site can ask
@@ -519,6 +536,15 @@ function leaving(programs: ProgramUse[], explained: Explained[], changes: Change
     const assets = new Set(hidden.map(({ f }) => f.asset)).size;
     const text = small ? 'A small part of your assets goes to someone else' : assets === 1 ? 'An asset of yours goes to someone else' : `${assets} of your assets go to someone else`;
     return [{ level: critical ? 'danger' : 'warn', code: 'sends-to-wallet', text, subject, note: `Through ${by}, which Otus cannot read${small ? ': a fee, maybe' : ''}`, programs: (strange ? blind.filter((p) => p.name === null) : blind).map((p) => p.program) }];
+}
+
+// Whose an address only looks like: a contact's (by your name for it) or one of your wallets', the same ends and other
+// characters between; null for one you keep, or like none.
+function lookalikeOf(a: Address, context: Context): string | null {
+    const own = [context.wallet, ...(context.wallets ?? [])];
+    if (own.includes(a) || context.contacts?.has(a)) return null;
+    for (const [kept, label] of context.contacts ?? []) if (alike(a, kept)) return `${told(label, 32) || 'a contact'}'s`;
+    return own.some((w) => alike(a, w)) ? 'one of your wallets' : null;
 }
 
 // What lands with someone else (not your accounts in Otus, nor token accounts any of them owns, ATA or not), by asset,
