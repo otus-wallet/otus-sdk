@@ -30,8 +30,12 @@ export type Landed = {
     tokens: { before: TokenBalance[]; after: TokenBalance[] };
 };
 
+/** A transaction that does not hold: why, and what its envelope still shows plainly when it reads (its slot, its id and
+ *  each signer's signature, by its address). */
+export type Unreadable = { unreadable: string; slot?: bigint; signature?: string; signatures?: Readonly<Record<Address, string>> };
+
 /** One page: what was read, each in its place, and where the next one starts (null: no more). */
-export type Page = { items: (Landed | { unreadable: string })[]; next: string | null };
+export type Page = { items: (Landed | Unreadable)[]; next: string | null };
 
 /** The RPC has no getTransactionsForAddress: it is Helius' own. */
 export class NoHistory extends Error {}
@@ -83,7 +87,7 @@ export async function readPage(reply: unknown, limit = PAGE): Promise<Page> {
     if (!Array.isArray(data)) throw new Error('the RPC answered without transactions');
     const token = r.result?.paginationToken;
     const next = typeof token === 'string' && /^\d{1,20}:\d{1,10}$/.test(token) && data.length > 0 ? token : null;
-    const items = await Promise.all(data.slice(0, Math.min(limit, MAX_PAGE)).map((item) => landed(item).catch((e: unknown) => ({ unreadable: e instanceof Error ? e.message : 'unreadable' }))));
+    const items = await Promise.all(data.slice(0, Math.min(limit, MAX_PAGE)).map((item) => landed(item).catch((e: unknown): Unreadable => ({ unreadable: e instanceof Error ? e.message : 'unreadable', ...envelope(item) }))));
     return { items, next };
 }
 
@@ -120,6 +124,22 @@ async function landed(item: unknown): Promise<Landed> {
         lamports: { before: lamports(meta.preBalances), after: lamports(meta.postBalances) },
         tokens: { before: balances(meta.preTokenBalances, accounts.length), after: balances(meta.postTokenBalances, accounts.length) },
     };
+}
+
+// What a transaction that does not hold still shows: its slot and its signers' signatures, when its envelope reads; the
+// first is its id. Nothing when it doesn't.
+function envelope(item: unknown): Omit<Unreadable, 'unreadable'> {
+    try {
+        const t = item as { transaction?: unknown; slot?: unknown };
+        const [base64] = Array.isArray(t?.transaction) ? t.transaction : [];
+        if (typeof base64 !== 'string' || base64.length > Math.ceil(MAX_BYTES / 3) * 4) return {};
+        const signed = getTransactionDecoder().decode(getBase64Encoder().encode(base64)).signatures;
+        const signatures: Record<Address, string> = Object.fromEntries(Object.entries(signed).flatMap(([a, s]) => (s ? [[a, getBase58Decoder().decode(s)]] : [])));
+        const id = Object.values(signatures)[0];
+        return { slot: u64(t.slot), signatures, ...(id && { signature: id }) };
+    } catch {
+        return {};
+    }
 }
 
 // The accounts a lookup table gave: as many as the message asks for, each an address.
