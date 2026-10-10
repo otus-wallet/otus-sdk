@@ -211,18 +211,30 @@ export function metadataState(terms: MintTerms, metaplex: MaybeEncodedAccount, m
     return inMint || fromMetaplex ? 'immutable' : null;
 }
 
-/** A token's terms and whether its metadata can change, read onchain: its mint and Metaplex's account for it in one
- *  request, and the epoch when its transfer fee is about to change (which one holds hangs on it). Throws when the RPC
- *  does not answer; `terms` null when the mint is no mint. */
-export async function tokenTerms(rpc: OtusRpc, mint: Address): Promise<{ terms: MintTerms | null; metadata: MetadataState | null; epoch: bigint | null }> {
-    const metaplexAt = await metaplexAddress(mint);
-    const { accounts } = await rpcChain(rpc).accounts([mint, metaplexAt]);
-    const terms = mintTerms(accounts[0]);
-    if (!terms) return { terms, metadata: null, epoch: null };
+/** A token's terms, whether its metadata can change, and the epoch when its transfer fee is about to change (which one
+ *  holds hangs on it); `terms` null when the mint is no mint. */
+export type TokenTerms = { terms: MintTerms | null; metadata: MetadataState | null; epoch: bigint | null };
+
+/** Tokens' terms, read onchain: their mints and Metaplex's accounts for them, 100 accounts a request, and the epoch when
+ *  a transfer fee is about to change. Throws when the RPC does not answer. */
+export async function tokensTerms(rpc: OtusRpc, mints: readonly Address[]): Promise<Map<Address, TokenTerms>> {
+    const metaplexAt = await Promise.all(mints.map(metaplexAddress));
+    const { accounts } = await rpcChain(rpc).accounts(mints.flatMap((mint, i) => [mint, metaplexAt[i]]));
+    const read = mints.map((mint, i) => {
+        const terms = mintTerms(accounts[2 * i]);
+        return { mint, terms, metadata: terms ? metadataState(terms, accounts[2 * i + 1], metaplexAt[i], mint) : null, changing: terms ? feeChanging(terms) : false };
+    });
+    const epoch = read.some((r) => r.changing) ? (await rpc.getEpochInfo({ commitment: 'confirmed' }).send()).epoch : null;
+    return new Map(read.map(({ mint, terms, metadata, changing }) => [mint, { terms, metadata, epoch: changing ? epoch : null }]));
+}
+
+/** One token's terms: see tokensTerms. */
+export const tokenTerms = async (rpc: OtusRpc, mint: Address): Promise<TokenTerms> => (await tokensTerms(rpc, [mint])).get(mint)!;
+
+// Whether a transfer fee is changing: the older one holds until the newer's epoch.
+function feeChanging(terms: MintTerms): boolean {
     const fee = terms.extensions.find((e) => e.kind === 'transferFee');
-    const changing = fee && (fee.older.bps !== fee.newer.bps || fee.older.max !== fee.newer.max);
-    const epoch = changing ? (await rpc.getEpochInfo({ commitment: 'confirmed' }).send()).epoch : null;
-    return { terms, metadata: metadataState(terms, accounts[1], metaplexAt, mint), epoch };
+    return !!fee && (fee.older.bps !== fee.newer.bps || fee.older.max !== fee.newer.max);
 }
 
 // A COption's tag at `at`: 0 or 1, as a u32.

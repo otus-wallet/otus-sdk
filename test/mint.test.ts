@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { getAddressEncoder, type Address } from '@solana/kit';
+import { getAddressEncoder, getBase64Decoder, type Address, type MaybeEncodedAccount } from '@solana/kit';
 
-import { METAPLEX_METADATA, metadataState, metaplexMetadata, mintTerms } from '../src/access/mint.ts';
+import { METAPLEX_METADATA, metadataState, metaplexAddress, metaplexMetadata, mintTerms, tokensTerms } from '../src/access/mint.ts';
 import { TOKEN_2022_PROGRAM_ADDRESS } from '../src/programs/addresses.ts';
 import { account, key, MINT } from './helpers.ts';
 
@@ -187,6 +187,28 @@ test('whether its metadata can change: mutable when any of it can, unreadable wh
     // Pointing at the mint with none there yet: the mint authority can still write it.
     assert.equal(state([pointer(null, MINT)], fixed, base({ minter: MINTER })), 'mutable');
     assert.equal(state([pointer(null, MINT)], fixed), 'immutable');
+});
+
+test('many tokens’ terms in one request, the epoch read once and only for a fee that is changing', async () => {
+    const SECOND = key(44);
+    const changing = [...fees.slice(0, 90), ...u64(900n), ...u64(9_000n), ...u16(200)]; // newer: 2%
+    const accounts = new Map<string, MaybeEncodedAccount>([
+        [MINT, spl(base({ freezer: FREEZER }))],
+        [await metaplexAddress(MINT), metaplex({ mutable: 0 })],
+        [SECOND, account(SECOND, TOKEN_2022_PROGRAM_ADDRESS, 1n, extended([[1, changing]]))],
+    ]);
+    const asked: string[][] = [];
+    let epochs = 0;
+    const wire = (a: MaybeEncodedAccount | undefined) => (a?.exists ? { data: [getBase64Decoder().decode(a.data), 'base64'], executable: false, lamports: a.lamports, owner: a.programAddress, space: a.space } : null);
+    const rpc = {
+        getMultipleAccounts: (addresses: string[]) => ({ send: async () => (asked.push(addresses), { context: { slot: 1n }, value: addresses.map((a) => wire(accounts.get(a))) }) }),
+        getEpochInfo: () => ({ send: async () => (epochs++, { epoch: 850n }) }),
+    } as never;
+    const read = await tokensTerms(rpc, [MINT, SECOND]);
+    assert.equal(asked.length, 1); // one request, the mints and their metadata accounts
+    assert.equal(epochs, 1);
+    assert.deepEqual([read.get(MINT)?.terms?.freezeAuthority, read.get(MINT)?.metadata, read.get(MINT)?.epoch], [FREEZER, 'immutable', null]);
+    assert.deepEqual([read.get(SECOND)?.terms?.extensions[0]?.kind, read.get(SECOND)?.metadata, read.get(SECOND)?.epoch], ['transferFee', null, 850n]);
 });
 
 test('garbage of any length never throws, and is read as none or as what it says', () => {
