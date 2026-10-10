@@ -217,7 +217,7 @@ test('a program Otus doesn’t know that touches nothing of yours is a notice: w
     assert.equal(r.assessment.verdict, 'ok');
     assert.deepEqual(problems(r), ['notice:unknown-program']);
     const found = r.assessment.findings.find((f) => f.code === 'unknown-program')!;
-    assert.deepEqual([found.text, found.note], [`${key(30).slice(0, 4)}…${key(30).slice(-4)} is not a program Otus knows`, 'It touches nothing of yours']);
+    assert.deepEqual([found.text, found.note], [`${key(30)} is not a program Otus knows`, 'It touches nothing of yours']);
 });
 
 test('an unknown program that gets your signature is a warning: what it does decides the rest', async () => {

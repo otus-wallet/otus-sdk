@@ -7,7 +7,6 @@ import { isNode, pascalCase, VALUE_NODE_KINDS, type InstructionNode, type Progra
 import { getRecordLinkablesVisitor, LinkableDictionary, NodeStack, visit } from '@codama/visitors-core';
 import { isAddress, type Address, type ReadonlyUint8Array } from '@solana/kit';
 
-import { short } from '../format.ts';
 import type { Idl, Source } from './read.ts';
 
 /** An instruction as its program's IDL tells it. `program`: what the IDL calls the program; `from`: where it was. */
@@ -177,11 +176,12 @@ function emptiness(types: Map<string, unknown>): (type: unknown) => boolean {
     return empty;
 }
 
-// A decoded value in a few words: a number as it is, an address short, bytes by their size, what nests a level in.
+// A decoded value in a few words: a number as it is, an address whole (the caller cuts it as it likes), bytes by their
+// size, what nests a level in.
 function shown(value: unknown, depth = 0): string {
     if (typeof value === 'bigint' || typeof value === 'number') return Number.isInteger(value) || typeof value === 'bigint' ? value.toLocaleString('en-US') : String(value);
     if (typeof value === 'boolean') return String(value);
-    if (typeof value === 'string') return isAddress(value) ? short(value) : `"${clean(value, TEXT)}"`;
+    if (typeof value === 'string') return isAddress(value) ? value : `"${clean(value, TEXT)}"`;
     if (value === null || value === undefined) return 'none';
     if (value instanceof Uint8Array) return `${value.length} bytes`;
     if (value instanceof Map) return `{${value.size} entries}`;

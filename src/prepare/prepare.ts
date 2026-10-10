@@ -12,7 +12,6 @@ import { callsIn, HIGH_FEE, HUGE_FEE, type Finding } from '../review/assess.ts';
 import { budgetIndex, dataLimit, defaultUnits, fee, lamportsFor, MAX_ROOM, priorityFee, SET_LOADED_DATA, SET_UNIT_LIMIT, SET_UNIT_PRICE, unitLimit, unitPrice } from '../review/budget.ts';
 import { decode, durable, encode, type Message } from '../review/decode.ts';
 import type { Review } from '../review/review.ts';
-import { short } from '../format.ts';
 import { LIGHTHOUSE } from '../programs/addresses.ts';
 import { PROGRAM_NAMES } from '../programs/known.ts';
 import { assertions, holds, type Hold } from './guard.ts';
@@ -200,7 +199,7 @@ function differs(r: Review, guarded: Message, check: Simulation): Finding[] {
     const seen = new Set(callsIn(r.simulation.inner, r.message.instructions.map((ix) => r.accounts[ix.programAddressIndex].address)).map(pair));
     const fresh = callsIn(check.inner, guarded.instructions.map((ix) => guarded.staticAccounts[ix.programAddressIndex]))
         .filter((c) => !seen.has(pair(c)) && !(PROGRAM_NAMES.has(c.caller) && PROGRAM_NAMES.has(c.program)));
-    const programs = [...new Set(fresh.map((c) => c.program))].map((q) => PROGRAM_NAMES.get(q) ?? short(q));
+    const programs = [...new Set(fresh.map((c) => c.program))].map((q) => PROGRAM_NAMES.get(q) ?? q);
     return programs.length ? [{ level: 'danger', code: 'guards-differ', text: 'It acts differently once guarded', note: `It then calls ${programs.join(', ')}, which the review did not see` }] : [];
 }
 

@@ -133,7 +133,7 @@ test('refuses types that would take forever to build or to read, and tells the r
     // What is fine is told.
     const fine = await idl([{ name: 'amount', type: 'u64' }, { name: 'memo', type: 'string' }, { name: 'to', type: 'pubkey' }, { name: 'list', type: { vec: 'u8' } }, { name: 'maybe', type: { option: 'u16' } }]);
     const args = [...new Uint8Array(new BigUint64Array([1_000_000n]).buffer), 2, 0, 0, 0, 104, 105, ...getAddressEncoder().encode(PAYER), 2, 0, 0, 0, 7, 8, 1, 5, 0];
-    assert.deepEqual(tellWith([fine], data(...args), [PAYER]), { name: 'Boom', args: `amount 1,000,000 · memo "hi" · to ${PAYER.slice(0, 4)}…${PAYER.slice(-4)} · maybe 5 · list [7, 8]`, accounts: [{ role: 'user', address: PAYER }], program: 'evil', from: 'anchor' });
+    assert.deepEqual(tellWith([fine], data(...args), [PAYER]), { name: 'Boom', args: `amount 1,000,000 · memo "hi" · to ${PAYER} · maybe 5 · list [7, 8]`, accounts: [{ role: 'user', address: PAYER }], program: 'evil', from: 'anchor' });
 });
 
 test('names from an IDL are shown without characters that move or hide others, and kept short', async () => {

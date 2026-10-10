@@ -58,7 +58,7 @@ test('guarded, a program Otus doesn’t know calling what it didn’t in the rev
     };
     assert.deepEqual(await prepared(STRANGER, [[TOKEN, 2]], [[TOKEN, 2]]), []);
     assert.deepEqual(await prepared(STRANGER, [[TOKEN, 2]], [[TOKEN, 2], [KAMINO, 2]]), ['danger:guards-differ It then calls Kamino Lend, which the review did not see']);
-    assert.deepEqual(await prepared(JUPITER, [[TOKEN, 2]], [[STRANGER, 2], [TOKEN, 3]]), [`danger:guards-differ It then calls ${STRANGER.slice(0, 4)}…${STRANGER.slice(-4)}, Token Program, which the review did not see`]);
+    assert.deepEqual(await prepared(JUPITER, [[TOKEN, 2]], [[STRANGER, 2], [TOKEN, 3]]), [`danger:guards-differ It then calls ${STRANGER}, Token Program, which the review did not see`]);
     // Jupiter filling through Phoenix this time: both known.
     assert.deepEqual(await prepared(JUPITER, [[TOKEN, 2]], [[PHOENIX, 2], [TOKEN, 3]]), []);
     // A review whose RPC listed no calls has nothing to compare with: the review says so itself.

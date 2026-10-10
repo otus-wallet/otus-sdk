@@ -11,7 +11,6 @@ import {
     type ReadonlyUint8Array,
 } from '@solana/kit';
 
-import { short } from '../format.ts';
 import { STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
 import { BRANDS, HOLDS, PROGRAM_NAMES } from '../programs/known.ts';
 import { holdings, offsetsOf, plain, read, units, type Change, type Changes, type State } from './changes.ts';
@@ -175,7 +174,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         const getsYou = p.signature || p.writable;
         if (p.name === null) {
             const what = p.accounts > 0 ? `It uses ${p.accounts} of your accounts` : 'It uses your signature';
-            add(getsYou ? 'warn' : 'notice', 'unknown-program', `${short(p.program)} is not a program Otus knows`, p.program, getsYou ? what : 'It touches nothing of yours');
+            add(getsYou ? 'warn' : 'notice', 'unknown-program', `${p.program} is not a program Otus knows`, p.program, getsYou ? what : 'It touches nothing of yours');
             if (p.unseen) add('danger', 'reach-unseen', "Otus can't see what an unknown program does with your signature", p.program, 'The RPC did not list what it calls');
         }
         const d = context.deployments?.get(p.program);
@@ -255,7 +254,7 @@ export function described(findings: Finding[], named: Map<Address, string>, prog
         const core = name && p.name === null && !brand ? posingAs(name) : null; // a plain word, as a crate may be called
         if (!name || !(brand || core)) return [];
         const level = brand && (p.signature || p.writable) ? 'danger' : 'warn';
-        return [{ level, code: 'imitation-program', text: `An unknown program calls itself ${name}`, subject: p.program, note: `It is not the ${brand ?? core} program Otus knows: ${short(p.program)}` }];
+        return [{ level, code: 'imitation-program', text: `An unknown program calls itself ${name}`, subject: p.program, note: `It is not the ${brand ?? core} program Otus knows: ${p.program}` }];
     });
     return [...told, ...posing];
 }
