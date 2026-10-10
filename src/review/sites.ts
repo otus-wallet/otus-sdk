@@ -17,15 +17,50 @@ const ALIASES: Record<string, string> = { pumpfun: 'pump.fun', jupiter: 'jup.ag'
 const DISTINCT = new Set(['raydium', 'phantom', 'solflare', 'magiceden', 'meteora', 'marginfi', 'kamino', 'solscan', 'dexscreener', 'birdeye', 'helius']);
 const ENDINGS = new Set(['jup', 'jito']); // short brands that count at the end of a name ("claimjup")
 const WORDS = new Set(['exchange']); // brands that are plain words: only the site itself counts
-// Where anyone can have a name: the label before one of these is the site's own. A short list of the public suffix
-// list: country domains with a second level, and hosting that gives out free subdomains.
-const SUFFIXES = [
-    'co.uk', 'org.uk', 'me.uk', 'com.au', 'net.au', 'com.br', 'com.ar', 'com.mx', 'com.tr', 'com.cn', 'com.hk', 'com.sg', 'co.jp', 'co.kr', 'co.in', 'co.za', 'co.nz', 'co.id',
-    'vercel.app', 'pages.dev', 'workers.dev', 'netlify.app', 'github.io', 'gitlab.io', 'web.app', 'firebaseapp.com', 'herokuapp.com', 'onrender.com', 'fly.dev', 'replit.app',
-    'repl.co', 'glitch.me', 'surge.sh', 'gitbook.io', 'webflow.io', 'framer.app', 'framer.website', 'wixsite.com', 'blogspot.com', 'azurewebsites.net', 'amplifyapp.com',
-    'cloudfront.net', 'ngrok.io', 'ngrok-free.app', 'ngrok.app', 'lovable.app', 'railway.app', 'up.railway.app', 'deno.dev', 'r2.dev', 'appspot.com', 'carrd.co', 'myshopify.com',
-    'translate.goog', 'ipfs.dweb.link', 'on-fleek.app', 'vercel.dev', 'bolt.host', 'pinata.cloud', 'b-cdn.net',
+// Country domains with a second level: the label before one is the site's own.
+const COUNTRY = ['co.uk', 'org.uk', 'me.uk', 'com.au', 'net.au', 'com.br', 'com.ar', 'com.mx', 'com.tr', 'com.cn', 'com.hk', 'com.sg', 'co.jp', 'co.kr', 'co.in', 'co.za', 'co.nz', 'co.id'];
+
+/**
+ * Where anyone can put up a site in a minute, under a name of its own: app platforms, clouds, site builders, code
+ * previews, tunnels and web3 gateways. Most are in the public suffix list's private part; a few, there or not, serve
+ * everyone's sites from one host, under paths (storage.googleapis.com, ipfs.io).
+ */
+export const HOSTS = [
+    // App platforms
+    'vercel.app', 'vercel.dev', 'vercel.run', 'v0.build', 'vusercontent.net', 'tmp.now', 'now.sh', 'netlify.app', 'netlify.com', 'pages.dev', 'workers.dev', 'r2.dev',
+    'cloudflare.app', 'trycloudflare.com', 'herokuapp.com', 'onrender.com', 'fly.dev', 'sprites.app', 'railway.app', 'up.railway.app', 'koyeb.app', 'ondigitalocean.app',
+    'digitaloceanspaces.com', 'zeabur.app', 'deno.dev', 'deno.net', 'northflank.app', 'code.run', 'onporter.run', 'upsun.app', 'upsunapp.com', 'platformsh.site',
+    'cleverapps.io', 'meteorapp.com', 'pantheonsite.io', 'convex.app', 'convex.site', 'appwrite.network', 'appwrite.run', 'edgecompute.app', 'linodeobjects.com',
+    'amazonlightsail.com', 'lovable.app', 'lovableproject.com', 'lovable.run', 'lovable.sh', 'base44.app', 'bolt.host', 'expo.app', 'val.run', 'retool.app',
+    // Clouds
+    'amazonaws.com', 'on.aws', 'cloudfront.net', 'amplifyapp.com', 'elasticbeanstalk.com', 'awsapprunner.com', 'azurewebsites.net', 'azurestaticapps.net', 'azurefd.net',
+    'azureedge.net', 'azurecontainer.io', 'cloudapp.net', 'cloudapp.azure.com', 'trafficmanager.net', 'web.core.windows.net', 'blob.core.windows.net', 'web.app',
+    'firebaseapp.com', 'hosted.app', 'run.app', 'cloud.run', 'appspot.com', 'cloudfunctions.net', 'gateway.dev', 'storage.googleapis.com', 'googleusercontent.com',
+    'usercontent.goog', 'translate.goog', 'sites.google.com', 'b-cdn.net',
+    // Site builders
+    'wixsite.com', 'wixstudio.com', 'wixstudio.io', 'editorx.io', 'webflow.io', 'framer.app', 'framer.website', 'framer.ai', 'framer.media', 'framer.photos',
+    'framercanvas.com', 'carrd.co', 'crd.co', 'notion.site', 'gitbook.io', 'typedream.app', 'bubbleapps.io', 'glideos.app', 'myshopify.com', 'square.site',
+    'squarespace.com', 'wordpress.com', 'weebly.com', 'godaddysites.com', 'tilda.ws', 'site123.me', 'neocities.org', 'leadpages.co', 'lpages.co', 'blogspot.com',
+    // Code and its previews
+    'github.io', 'githubusercontent.com', 'githubpreview.dev', 'github.app', 'app.github.dev', 'gitlab.io', 'bitbucket.io', 'codeberg.page', 'csb.app', 'stackblitz.io',
+    'webcontainer.io', 'w-staticblitz.com', 'gitpod.io', 'replit.app', 'replit.dev', 'repl.co', 'glitch.me', 'surge.sh', 'hf.space', 'streamlit.app', 'observablehq.cloud',
+    'pythonanywhere.com',
+    // Tunnels to someone's own computer
+    'ngrok.io', 'ngrok.app', 'ngrok-free.app', 'ngrok.dev', 'ngrok-free.dev', 'ngrok.pizza', 'ngrok.pro', 'loca.lt', 'serveo.net', 'tunnelmole.net', 'ts.net',
+    // Web3 gateways
+    'ipfs.io', 'dweb.link', 'inbrowser.link', 'inbrowser.dev', 'w3s.link', 'nftstorage.link', 'cf-ipfs.com', 'cloudflare-ipfs.com', 'on-fleek.app', '4everland.app',
+    'eth.limo', 'eth.link', 'pinata.cloud', 'mypinata.cloud', 'arweave.net',
 ];
+// Where anyone can have a name: the label before one of these is the site's own.
+const SUFFIXES = [...COUNTRY, ...HOSTS];
+
+/** Where a site is put up, when anyone can put one up there (vercel.app…): the one a host is under, the shortest that
+ *  names it; null for a site on a domain of its own. */
+export function hostedOn(host: string): string | null {
+    const name = host.toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+    const under = HOSTS.filter((h) => name === h || name.endsWith(`.${h}`));
+    return under.sort((a, b) => a.length - b.length)[0] ?? null;
+}
 
 /** The known site a host seems to imitate, or null when it is one, or resembles none. */
 export function lookalike(host: string): string | null {

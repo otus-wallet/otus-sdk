@@ -19,7 +19,7 @@ import { holdings, offsetsOf, plain, read, units, type Change, type Changes, typ
 import { durable } from './decode.ts';
 import type { Explained } from './explain.ts';
 import type { Deployment } from './programs.ts';
-import { lookalike, programsCalled } from './sites.ts';
+import { hostedOn, lookalike, programsCalled } from './sites.ts';
 import type { Simulated } from './simulate.ts';
 
 /** How much a finding matters. A notice is worth knowing and changes nothing: the verdict is the worst of the rest. */
@@ -236,6 +236,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     } else {
         const imitated = context.host ? lookalike(context.host) : null;
         if (imitated) add('warn', 'lookalike', `This site looks like ${imitated}`, undefined, `${context.host} is not ${imitated}`);
+        // Put up where anyone can put one up in a minute: what a scam site, made and dropped by the day, is put up on.
+        const hosted = context.host ? hostedOn(context.host) : null;
+        if (hosted) add('warn', 'shared-host', `Hosted on ${hosted}`, undefined, 'Anyone can put up a site there');
         const since = context.signedBefore;
         const age = since !== null && context.now !== undefined ? Math.max(0, context.now - since) : null;
         if (since === null) add('warn', 'first-visit', 'First transaction for this site', undefined, 'You never signed one for it from this wallet');

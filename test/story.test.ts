@@ -13,7 +13,7 @@ import { deployments } from '../src/review/programs.ts';
 import { resolve } from '../src/review/resolve.ts';
 import { review } from '../src/review/review.ts';
 import { decode } from '../src/review/decode.ts';
-import { lookalike } from '../src/review/sites.ts';
+import { hostedOn, lookalike } from '../src/review/sites.ts';
 import { account, ATTACKER, EVIL_PROGRAM, fakeChain, key, MINT, PAYER, SYSTEM, tokenAccountData, transaction, USER_TOKEN } from './helpers.ts';
 
 const THIEF = address('HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk'); // a key someone holds: on the curve
@@ -38,6 +38,19 @@ test('tells a site that imitates a known one', () => {
     ];
     for (const [name, like] of cases) assert.equal(lookalike(name), like, name);
     assert.match(host('раydium.io'), /^xn--/);
+});
+
+test('tells a site put up where anyone can put one up, by the host it is under', () => {
+    const cases: [string, string | null][] = [
+        ['example.vercel.app', 'vercel.app'], ['Claim.Vercel.App', 'vercel.app'], ['claim.vercel.app.', 'vercel.app'], ['x.pages.dev:8443', 'pages.dev'],
+        ['my-app.up.railway.app', 'railway.app'], ['a.b.c.netlify.app', 'netlify.app'], ['x.ngrok-free.app', 'ngrok-free.app'], ['abc.eth.limo', 'eth.limo'],
+        ['bafybeigdyr.ipfs.dweb.link', 'dweb.link'], ['ipfs.io', 'ipfs.io'], ['storage.googleapis.com', 'storage.googleapis.com'], ['b.storage.googleapis.com', 'storage.googleapis.com'],
+        ['sites.google.com', 'sites.google.com'], ['bucket.s3.us-east-1.amazonaws.com', 'amazonaws.com'], ['x.github.io', 'github.io'],
+        // A domain of its own, or one that only has the host's name in it.
+        ['jup.ag', null], ['app.squads.so', null], ['vercel.com', null], ['notvercel.app', null], ['vercel.app.claim.com', null], ['mysites.google.com', null],
+        ['www.googleapis.com', null], ['localhost:8787', null], ['example.com', null], ['', null],
+    ];
+    for (const [name, on] of cases) assert.equal(hostedOn(name), on, name);
 });
 
 test('a notice is worth knowing and leaves the verdict as it was', () => {

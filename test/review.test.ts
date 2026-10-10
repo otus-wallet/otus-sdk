@@ -233,6 +233,14 @@ test('a failed simulation is danger: a site can make it fail to hide what it doe
     assert.deepEqual(problems(r), ['danger:simulation-failed', 'warn:high-fee', 'warn:first-visit']);
 });
 
+test('a site hosted where anyone can put one up is a warning, with the host it is on', async () => {
+    const r = await review(transfer(), context({ host: 'claim.vercel.app' }), fakeChain([]));
+    const found = r.assessment.findings.find((f) => f.code === 'shared-host');
+    assert.deepEqual([found?.level, found?.text, found?.note], ['warn', 'Hosted on vercel.app', 'Anyone can put up a site there']);
+    const own = await review(transfer(), context({ host: 'jup.ag' }), fakeChain([]));
+    assert.equal(own.assessment.findings.some((f) => f.code === 'shared-host'), false);
+});
+
 test('refuses a transaction this wallet does not sign', async () => {
     await assert.rejects(review(transfer(), context({ wallet: key(50) }), fakeChain([])), Refused);
 });
