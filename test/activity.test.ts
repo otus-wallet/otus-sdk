@@ -117,6 +117,21 @@ test('a page: each transaction whole, its signature and accounts, exact lamports
     assert.equal((await readPage({ result: { data: [item([send(WALLET, FRIEND, 1n)], WALLET)], paginationToken: 'x' } })).next, null);
 });
 
+test('each signer’s signature, by its address, and a page as long as asked, up to 100', async () => {
+    const [t] = await landed(item([send(WALLET, FRIEND, 1n)], FRIEND)); // FRIEND pays the fee, WALLET signs the transfer
+    assert.deepEqual(t.signatures, { [FRIEND]: getBase58Decoder().decode(SIGNATURE), [WALLET]: getBase58Decoder().decode(SIGNATURE) });
+    assert.equal(t.slot, 400_000_000n);
+    // One signer still to sign: only those that did.
+    const compiled = compileTransaction(pipe(createTransactionMessage({ version: 0 }), (m) => setTransactionMessageFeePayer(FRIEND, m), (m) => setTransactionMessageLifetimeUsingBlockhash({ blockhash: blockhash(key(9)), lastValidBlockHeight: 0n }, m), (m) => appendTransactionMessageInstructions([send(WALLET, FRIEND, 1n)], m)));
+    const half = { ...item([send(WALLET, FRIEND, 1n)], FRIEND), transaction: [getBase64Decoder().decode(getTransactionEncoder().encode({ ...compiled, signatures: { ...compiled.signatures, [FRIEND]: SIGNATURE } } as never)), 'base64'] };
+    const [partly] = await landed(half);
+    assert.deepEqual(Object.keys(partly.signatures), [FRIEND]);
+    const many = Array.from({ length: 120 }, () => item([send(WALLET, FRIEND, 1n)], WALLET));
+    assert.equal((await readPage({ result: { data: many } })).items.length, 10);
+    assert.equal((await readPage({ result: { data: many } }, 25)).items.length, 25);
+    assert.equal((await readPage({ result: { data: many } }, 500)).items.length, 100);
+});
+
 test('an RPC without the method says so; what does not hold is unreadable, the rest read', async () => {
     await assert.rejects(readPage({ error: { code: -32601, message: 'Method not found' } }), NoHistory);
     await assert.rejects(readPage({ error: { code: -32005, message: 'rate limited' } }), /rate limited/);

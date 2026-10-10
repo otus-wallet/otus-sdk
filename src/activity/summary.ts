@@ -38,6 +38,8 @@ export type Held = { address: Address; mint: Address; decimals: number; owner: A
  *  receipt got. `main`: its first program that is not one of Solana's own. */
 export type Activity = {
     signature: string;
+    signatures: Readonly<Record<Address, string>>; // each signer's, by its address
+    slot: bigint;
     time: number | null;
     error: string | null;
     kind: Kind;
@@ -114,6 +116,8 @@ export function summarize(t: Landed, wallet: Address): Activity {
     const programs = [...new Set(t.message.instructions.map((ix) => accounts[ix.programAddressIndex]))];
     return {
         signature: t.signature,
+        signatures: t.signatures,
+        slot: t.slot,
         time: t.time,
         error: t.error,
         kind,

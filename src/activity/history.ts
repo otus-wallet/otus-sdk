@@ -9,15 +9,17 @@ import { told } from '../format.ts';
 import { RPC_WAIT } from '../rpc.ts';
 import { decode, type Message } from '../review/decode.ts';
 
-export const PAGE = 10; // transactions a request
+export const PAGE = 10; // transactions a request, unless asked for more
+const MAX_PAGE = 100; // the most Helius gives in one
 
 /** A token balance a transaction shows, before or after it: of the account at `account`, among its accounts. */
 export type TokenBalance = { account: number; mint: Address; owner: Address | null; units: bigint; decimals: number };
 
 /** A transaction as it landed: its message, every account it used (lookup tables' included, in the runtime's order),
- *  and what it changed. `time`: seconds since 1970, when the node knows. */
+ *  and what it changed. `time`: seconds since 1970, when the node knows. `signatures`: each signer's, by its address. */
 export type Landed = {
     signature: string;
+    signatures: Readonly<Record<Address, string>>;
     slot: bigint;
     time: number | null;
     message: Message;
@@ -37,12 +39,13 @@ export class NoHistory extends Error {}
 const MAX_BYTES = 4096; // a transaction, v1's limit
 const MAX_BALANCES = 512; // token balances listed a side
 
-/** The page of `address`'s transactions after `from` (a page's `next`), or the newest; `stop` gives up on it. Throws
- *  NoHistory, or as the network does. */
-export async function historyPage(rpcUrl: string, address: Address, from?: string, stop?: AbortSignal): Promise<Page> {
+/** The page of `address`'s transactions after `from` (a page's `next`), or the newest; `stop` gives up on it. `limit`:
+ *  how many, up to 100 (a request costs the same). Throws NoHistory, or as the network does. */
+export async function historyPage(rpcUrl: string, address: Address, from?: string, stop?: AbortSignal, limit = PAGE): Promise<Page> {
+    const size = Math.min(Math.max(1, Math.floor(limit) || PAGE), MAX_PAGE);
     const options = {
         transactionDetails: 'full',
-        limit: PAGE,
+        limit: size,
         sortOrder: 'desc',
         encoding: 'base64',
         maxSupportedTransactionVersion: 1,
@@ -59,7 +62,7 @@ export async function historyPage(rpcUrl: string, address: Address, from?: strin
         signal: stop ? AbortSignal.any([stop, AbortSignal.timeout(RPC_WAIT)]) : AbortSignal.timeout(RPC_WAIT),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return readPage(exactJson(await response.text()));
+    return readPage(exactJson(await response.text()), size);
 }
 
 /** JSON with every whole number past 2^53 as a bigint, read from its digits: lamports run past it. */
@@ -68,8 +71,8 @@ export const exactJson = (text: string): unknown =>
         typeof value === 'number' && !Number.isSafeInteger(value) && /^\d+$/.test(context.source ?? '') ? BigInt(context.source!) : value,
     );
 
-/** The RPC's answer → a page. Pure; throws NoHistory, or an Error with the RPC's words. */
-export async function readPage(reply: unknown): Promise<Page> {
+/** The RPC's answer → a page of at most `limit`. Pure; throws NoHistory, or an Error with the RPC's words. */
+export async function readPage(reply: unknown, limit = PAGE): Promise<Page> {
     const r = reply as { error?: { code?: unknown; message?: unknown }; result?: { data?: unknown; paginationToken?: unknown } };
     if (r?.error) {
         const message = typeof r.error.message === 'string' ? told(r.error.message, 120) : 'the RPC refused';
@@ -80,7 +83,7 @@ export async function readPage(reply: unknown): Promise<Page> {
     if (!Array.isArray(data)) throw new Error('the RPC answered without transactions');
     const token = r.result?.paginationToken;
     const next = typeof token === 'string' && /^\d{1,20}:\d{1,10}$/.test(token) && data.length > 0 ? token : null;
-    const items = await Promise.all(data.slice(0, PAGE).map((item) => landed(item).catch((e: unknown) => ({ unreadable: e instanceof Error ? e.message : 'unreadable' }))));
+    const items = await Promise.all(data.slice(0, Math.min(limit, MAX_PAGE)).map((item) => landed(item).catch((e: unknown) => ({ unreadable: e instanceof Error ? e.message : 'unreadable' }))));
     return { items, next };
 }
 
@@ -91,7 +94,8 @@ async function landed(item: unknown): Promise<Landed> {
     if (typeof base64 !== 'string' || encoding !== 'base64' || base64.length > Math.ceil(MAX_BYTES / 3) * 4) throw new Error('no transaction');
     const bytes = new Uint8Array(getBase64Encoder().encode(base64));
     const decoded = await decode(bytes);
-    const signature = getTransactionDecoder().decode(bytes).signatures[decoded.signers[0]];
+    const signed = getTransactionDecoder().decode(bytes).signatures;
+    const signature = signed[decoded.signers[0]];
     if (!signature) throw new Error('unsigned');
     const meta = t.meta;
     if (!meta || typeof meta !== 'object') throw new Error('no meta');
@@ -106,6 +110,7 @@ async function landed(item: unknown): Promise<Landed> {
     };
     return {
         signature: getBase58Decoder().decode(signature),
+        signatures: Object.fromEntries(decoded.signers.flatMap((a) => (signed[a] ? [[a, getBase58Decoder().decode(signed[a]!)]] : []))),
         slot: u64(t.slot),
         time: typeof t.blockTime === 'number' && Number.isSafeInteger(t.blockTime) && t.blockTime > 0 ? t.blockTime : null,
         message: decoded.message,
