@@ -18,7 +18,7 @@ export type Story = { args: string; effects: Effect[] };
 /** What the words need to know about the accounts and tokens of the transaction. */
 export type Names = {
     wallet: Address;
-    who(address: Address): string; // "you", "your USDC account", "4Vn8…Qe2T", a program's name
+    who(address: Address): string; // "you", "your USDC account", a program's name, the address whole or short
     mine(address: Address): boolean;
     existed(address: Address): boolean; // before the transaction
     mintOf(tokenAccount: Address): Address | null;
