@@ -1,14 +1,14 @@
 // Who besides a wallet can move, burn, freeze or close what it holds, without asking it again: a delegate or a close
-// authority on one of its token accounts, what the mint of a token it holds lets the issuer do, and a transaction it
+// authority on one of its token accounts, what the mint of a token it holds lets its authorities do, and a transaction it
 // signed that waits on a durable nonce. What it keeps elsewhere (stake accounts, deposits a program holds) is not read.
 import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
-import { getAddressDecoder, getBase58Decoder, parseBase64RpcAccount, type Address, type MaybeEncodedAccount, type ReadonlyUint8Array } from '@solana/kit';
+import { getAddressDecoder, getBase58Decoder, parseBase64RpcAccount, type Address, type MaybeEncodedAccount } from '@solana/kit';
 
 import { rpcChain } from '../chain.ts';
 import { TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
-import { isMint } from '../review/assess.ts';
 import { read, type Changes } from '../review/changes.ts';
 import { durable, type Message } from '../review/decode.ts';
+import { mintTerms } from './mint.ts';
 import type { OtusRpc } from '../rpc.ts';
 
 /** What someone besides you can do with what you hold, each with whom. */
@@ -23,7 +23,7 @@ export type Grant =
 /** A transaction you signed on a durable nonce: the nonce account, and the nonce it held then. */
 export type Waiting = { account: Address; nonce: string };
 
-/** The grants, worst first; `unchecked`: tokens you hold whose mint was not read, past MAX_MINTS. */
+/** The grants, worst first; `unchecked`: tokens you hold whose mint was not read, past MAX_MINTS, or did not fit. */
 export type Access = { grants: Grant[]; unchecked: number };
 
 export const MAX_MINTS = 300; // mints read, 100 a request
@@ -40,7 +40,9 @@ export async function access(rpc: OtusRpc, owner: Address, waiting: Waiting[] = 
     const asked = held.slice(0, MAX_MINTS);
     const { accounts } = await rpcChain(rpc).accounts([owner, ...asked, ...waiting.map((w) => w.account)]);
     const nonces = waiting.map((w, i) => ({ waiting: w, account: accounts[1 + asked.length + i] }));
-    return { grants: grantsOf(owner, tokens, accounts.slice(1, 1 + asked.length), nonces, accounts[0]), unchecked: held.length - asked.length };
+    const mints = accounts.slice(1, 1 + asked.length);
+    const misfits = mints.filter((m) => !mintTerms(m)).length; // read, but not mints as their layout says: unchecked too
+    return { grants: grantsOf(owner, tokens, mints, nonces, accounts[0]), unchecked: held.length - asked.length + misfits };
 }
 
 /** The mints of the tokens `owner` holds some of, in its token accounts: Token-2022's first, as only they can give an
@@ -69,12 +71,11 @@ export function grantsOf(owner: Address, tokens: MaybeEncodedAccount[], mints: M
     }
     const held = new Set(heldMints(owner, tokens));
     for (const a of mints) {
-        const s = read(a);
-        if (!s || !isMint(s) || !held.has(a.address)) continue;
-        const permanent = s.program === TOKEN_2022_PROGRAM_ADDRESS ? permanentDelegate(s.data) : null;
+        const terms = held.has(a.address) ? mintTerms(a) : null;
+        if (!terms) continue;
+        const permanent = terms.extensions.find((e) => e.kind === 'permanentDelegate')?.delegate;
         if (permanent && permanent !== owner) grants.push({ kind: 'permanent', mint: a.address, to: permanent });
-        const freezer = optionalAddress(s.data, 46);
-        if (freezer) grants.push({ kind: 'freeze', mint: a.address, to: freezer });
+        if (terms.freezeAuthority) grants.push({ kind: 'freeze', mint: a.address, to: terms.freezeAuthority });
     }
     for (const { waiting, account } of nonces) {
         const held = nonceOf(account);
@@ -108,24 +109,3 @@ export function nonceOf(a: MaybeEncodedAccount): { authority: Address; nonce: st
     return { authority: getAddressDecoder().decode(a.data, 8), nonce: getBase58Decoder().decode(a.data.subarray(40, 72)) };
 }
 
-// An address kept as a COption: a 4-byte tag, 1 when there is one, then the address.
-function optionalAddress(d: ReadonlyUint8Array, at: number): Address | null {
-    if (d.length < at + 36 || d[at] !== 1 || d[at + 1] !== 0 || d[at + 2] !== 0 || d[at + 3] !== 0) return null;
-    return getAddressDecoder().decode(d, at + 4);
-}
-
-const PERMANENT_DELEGATE = 12; // Token-2022's extension type
-
-// A Token-2022 mint's permanent delegate: its extensions follow the account type byte at 165, each a type (u16), a
-// length (u16) and its data; the permanent delegate's data is an address, all zeros for none. A list that does not fit
-// its account reads as none.
-function permanentDelegate(d: ReadonlyUint8Array): Address | null {
-    for (let at = 166; at + 4 <= d.length; ) {
-        const type = d[at] | (d[at + 1] << 8);
-        const length = d[at + 2] | (d[at + 3] << 8);
-        if (at + 4 + length > d.length) return null;
-        if (type === PERMANENT_DELEGATE) return length === 32 && d.subarray(at + 4, at + 36).some((b) => b !== 0) ? getAddressDecoder().decode(d, at + 4) : null;
-        at += 4 + length;
-    }
-    return null;
-}

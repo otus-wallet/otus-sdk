@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { getAddressEncoder, type Address } from '@solana/kit';
 
-import { METAPLEX_METADATA, metaplexMetadata, mintTerms } from '../src/access/mint.ts';
+import { METAPLEX_METADATA, metadataState, metaplexMetadata, mintTerms } from '../src/access/mint.ts';
 import { TOKEN_2022_PROGRAM_ADDRESS } from '../src/programs/addresses.ts';
 import { account, key, MINT } from './helpers.ts';
 
@@ -15,6 +15,7 @@ const bytes = (a: Address) => getAddressEncoder().encode(a);
 const u16 = (n: number) => [n & 0xff, n >> 8];
 const u32 = (n: number) => [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, n >>> 24];
 const u64 = (n: bigint) => [...new Uint8Array(new BigUint64Array([n]).buffer)];
+const f64 = (n: number) => [...new Uint8Array(new Float64Array([n]).buffer)];
 const text = (s: string) => {
     const b = new TextEncoder().encode(s);
     return [...u32(b.length), ...b];
@@ -67,7 +68,8 @@ test('Token-2022’s extensions on a mint, each as its layout says', () => {
                 [19, metadataValue(null)],
                 [26, [...bytes(OTHER), 1]],
                 [28, [...bytes(OTHER)]],
-                [10, new Array(52).fill(3)],
+                [10, [...bytes(OTHER), ...new Array(18).fill(0), ...u16(500)]],
+                [25, [...new Array(32).fill(0), ...f64(1.5), ...u64(1_800_000_000n), ...f64(2)]],
                 [40, [1, 2, 3]],
             ]),
         ),
@@ -83,7 +85,8 @@ test('Token-2022’s extensions on a mint, each as its layout says', () => {
         { kind: 'metadata', updateAuthority: null, name: 'Otus', symbol: 'OTUS', uri: 'https://otus.sh/t.json' },
         { kind: 'pausable', authority: OTHER, paused: true },
         { kind: 'permissionedBurn', authority: OTHER },
-        { kind: 'other', name: 'Interest-bearing' },
+        { kind: 'interestBearing', authority: OTHER, bps: 500 },
+        { kind: 'scaledUiAmount', authority: null, multiplier: 1.5, next: 2, nextAt: 1_800_000_000n },
     ]);
     assert.deepEqual(terms?.unknown, [40]); // newer than Otus knows: said, not read
     // A type of 0 ends the list, as does a last byte alone; what follows is not read.
@@ -115,6 +118,9 @@ test('a mint that does not fit its layout reads as none', () => {
         ['an account’s extension', t22(extended([[7, []]]))],
         ['a permanent delegate of 31 bytes', t22(extended([[12, new Array(31).fill(1)]]))],
         ['a transfer fee of 107 bytes', t22(extended([[1, fees.slice(1)]]))],
+        ['a transfer fee over 100%', t22(extended([[1, [...fees.slice(0, 106), ...u16(10_001)]]]))],
+        ['interest of 51 bytes', t22(extended([[10, new Array(51).fill(0)]]))],
+        ['a multiplier that is not a number', t22(extended([[25, [...new Array(32).fill(0), ...f64(NaN), ...u64(0n), ...f64(1)]]]))],
         ['a default state of 0', t22(extended([[6, [0]]]))],
         ['a default state of 3', t22(extended([[6, [3]]]))],
         ['non-transferable with a value', t22(extended([[9, [0]]]))],
@@ -138,8 +144,8 @@ function metaplex(o: { mutable?: number; mint?: Address; key?: number; name?: st
 }
 
 test('Metaplex metadata: whether it can change, and its update authority', () => {
-    assert.deepEqual(metaplexMetadata(metaplex(), MINT), { mutable: true, updateAuthority: FREEZER, where: 'metaplex' });
-    assert.deepEqual(metaplexMetadata(metaplex({ mutable: 0, creators: [0] }), MINT), { mutable: false, updateAuthority: FREEZER, where: 'metaplex' });
+    assert.deepEqual(metaplexMetadata(metaplex(), MINT), { mutable: true, updateAuthority: FREEZER });
+    assert.deepEqual(metaplexMetadata(metaplex({ mutable: 0, creators: [0] }), MINT), { mutable: false, updateAuthority: FREEZER });
     const bad: [string, ReturnType<typeof account>][] = [
         ['another mint’s', metaplex({ mint: OTHER })],
         ['an edition’s key', metaplex({ key: 6 })],
@@ -153,6 +159,34 @@ test('Metaplex metadata: whether it can change, and its update authority', () =>
         ['empty', account(key(50), METAPLEX_METADATA, 1n, new Uint8Array())],
     ];
     for (const [what, a] of bad) assert.equal(metaplexMetadata(a, MINT), null, what);
+});
+
+test('whether its metadata can change: mutable when any of it can, unreadable when some cannot be read, immutable only when all is', () => {
+    const AT = key(50); // Metaplex's account for the mint
+    const none = { exists: false, address: AT } as never;
+    const pointer = (authority: Address | null, to: Address | null) => [18, [...(authority ? bytes(authority) : new Array(32).fill(0)), ...(to ? bytes(to) : new Array(32).fill(0))]] as [number, number[]];
+    const state = (extensions: [number, number[]][], metaplexAccount: ReturnType<typeof account> = none, b = base()) => metadataState(mintTerms(t22(extended(extensions, b)))!, metaplexAccount, AT, MINT);
+    const fixed = metaplex({ mutable: 0 });
+    // Metaplex's alone, on a plain mint.
+    assert.equal(metadataState(mintTerms(spl(base()))!, fixed, AT, MINT), 'immutable');
+    assert.equal(metadataState(mintTerms(spl(base()))!, metaplex(), AT, MINT), 'mutable');
+    assert.equal(metadataState(mintTerms(spl(base()))!, none, AT, MINT), null);
+    // Lamports someone sent to that address make no metadata; Metaplex's that does not fit is unreadable.
+    assert.equal(metadataState(mintTerms(spl(base()))!, account(AT, key(0), 1n), AT, MINT), null);
+    assert.equal(metadataState(mintTerms(spl(base()))!, metaplex({ key: 6 }), AT, MINT), 'unreadable');
+    // In the mint, fixed, with a locked pointer to it.
+    assert.equal(state([pointer(null, MINT), [19, metadataValue(null)]]), 'immutable');
+    // A pointer its authority can move: whatever it points at now can be swapped.
+    assert.equal(state([pointer(OTHER, MINT), [19, metadataValue(null)]]), 'mutable');
+    assert.equal(state([pointer(OTHER, AT)], fixed), 'mutable');
+    // Pointing at an account Otus does not read: wallets show that one.
+    assert.equal(state([pointer(null, OTHER), [19, metadataValue(null)]]), 'unreadable');
+    assert.equal(state([pointer(null, AT)], fixed), 'immutable');
+    // Fixed in the mint, but Metaplex's can change: some wallets show that one.
+    assert.equal(state([pointer(null, MINT), [19, metadataValue(null)]], metaplex()), 'mutable');
+    // Pointing at the mint with none there yet: the mint authority can still write it.
+    assert.equal(state([pointer(null, MINT)], fixed, base({ minter: MINTER })), 'mutable');
+    assert.equal(state([pointer(null, MINT)], fixed), 'immutable');
 });
 
 test('garbage of any length never throws, and is read as none or as what it says', () => {

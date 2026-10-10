@@ -24,6 +24,8 @@ export type Extension =
     | { kind: 'metadata'; updateAuthority: Address | null; name: string; symbol: string; uri: string } // its name and logo, in the mint
     | { kind: 'pausable'; authority: Address | null; paused: boolean } // `authority` can stop every transfer, mint and burn
     | { kind: 'permissionedBurn'; authority: Address | null } // burning it needs `authority` too
+    | { kind: 'interestBearing'; authority: Address | null; bps: number } // amounts show with interest at this yearly rate, which `authority` may change
+    | { kind: 'scaledUiAmount'; authority: Address | null; multiplier: number; next: number; nextAt: bigint } // amounts show multiplied; `next` from `nextAt` (Unix seconds) on
     | { kind: 'other'; name: string };
 
 /** A transfer fee, from `epoch` on: basis points, and at most `max` units a transfer. */
@@ -32,8 +34,11 @@ export type Fee = { epoch: bigint; max: bigint; bps: number };
 /** What a mint says. `unknown`: extension types newer than Otus knows, by number. */
 export type MintTerms = { program: Address; supply: bigint; decimals: number; mintAuthority: Address | null; freezeAuthority: Address | null; extensions: Extension[]; unknown: number[] };
 
-/** Whether a token's name and logo can still change: by whom, when they can; where they live. */
-export type Metadata = { mutable: boolean; updateAuthority: Address | null; where: 'mint' | 'metaplex' };
+/** Metaplex's metadata of a token: whether it can still change, and by whom. */
+export type Metadata = { mutable: boolean; updateAuthority: Address };
+
+/** Whether a token's name and logo can still change, wherever they live; `unreadable` when Otus cannot tell. */
+export type MetadataState = 'mutable' | 'immutable' | 'unreadable';
 
 const MINT_SIZE = 82;
 const ACCOUNT_SIZE = 165; // where Token-2022 puts the account type, past a token account's room
@@ -42,14 +47,12 @@ const MULTISIG_SIZE = 355; // no account with extensions is this long: it would 
 // Token-2022's mint extensions whose content Otus does not read: by name only.
 const NAMED: Record<number, string> = {
     4: 'Confidential transfers',
-    10: 'Interest-bearing',
     16: 'Confidential transfer fees',
     20: 'Group pointer',
     21: 'Token group',
     22: 'Group member pointer',
     23: 'Group member',
     24: 'Confidential mint and burn',
-    25: 'Scaled UI amount',
 };
 // Extensions only token accounts carry: in a mint, it does not fit.
 const ACCOUNT_ONLY = new Set([2, 5, 7, 8, 11, 13, 15, 17, 27]);
@@ -106,8 +109,21 @@ function extension(type: number, v: ReadonlyUint8Array, mint: Address): Extensio
     const named = NAMED[type];
     if (named) return { kind: 'other', name: named };
     switch (type) {
-        case 1: // TransferFeeConfig: its authority and the withdraw authority, what is withheld, the older fee, the newer
-            return v.length === 108 ? { kind: 'transferFee', authority: maybe(v, 0), older: fee(v, 72), newer: fee(v, 90) } : null;
+        case 1: {
+            // TransferFeeConfig: its authority and the withdraw authority, what is withheld, the older fee, the newer; a fee
+            // of at most 10,000 basis points
+            if (v.length !== 108) return null;
+            const [older, newer] = [fee(v, 72), fee(v, 90)];
+            return older.bps <= MAX_BPS && newer.bps <= MAX_BPS ? { kind: 'transferFee', authority: maybe(v, 0), older, newer } : null;
+        }
+        case 10: // InterestBearingConfig: its authority, when it began, the average rate before the last change, when that was, the rate (i16)
+            return v.length === 52 ? { kind: 'interestBearing', authority: maybe(v, 0), bps: view(v).getInt16(50, true) } : null;
+        case 25: {
+            // ScaledUiAmountConfig: its authority, the multiplier (f64), when the next one starts (i64), the next one
+            if (v.length !== 56) return null;
+            const [multiplier, next] = [view(v).getFloat64(32, true), view(v).getFloat64(48, true)];
+            return Number.isFinite(multiplier) && Number.isFinite(next) ? { kind: 'scaledUiAmount', authority: maybe(v, 0), multiplier, next, nextAt: view(v).getBigInt64(40, true) } : null;
+        }
         case 3: // MintCloseAuthority
             return v.length === 32 ? { kind: 'closeAuthority', authority: maybe(v, 0) } : null;
         case 6: // DefaultAccountState: 1 initialized, 2 frozen
@@ -175,32 +191,53 @@ export function metaplexMetadata(a: MaybeEncodedAccount, mint: Address): Metadat
     } else if (creators !== 0) return null;
     const [sold, mutable] = [r.byte(), r.byte()];
     if (strings.includes(null) || sold === null || sold > 1 || mutable === null || mutable > 1 || !r.ok()) return null;
-    return { mutable: mutable === 1, updateAuthority: getAddressDecoder().decode(d, 1), where: 'metaplex' };
+    return { mutable: mutable === 1, updateAuthority: getAddressDecoder().decode(d, 1) };
 }
 
-/** A token's terms and its metadata, read onchain in one request: its mint and Metaplex's account for it. `metadata`:
- *  null when it has none Otus reads (Token-2022's in the mint come first). Throws when the RPC does not answer; `terms`
- *  null when the mint is no mint. */
-export async function tokenTerms(rpc: OtusRpc, mint: Address): Promise<{ terms: MintTerms | null; metadata: Metadata | null }> {
-    const { accounts } = await rpcChain(rpc).accounts([mint, await metaplexAddress(mint)]);
+/** Whether a token's name and logo can still change, from its mint's terms and Metaplex's account for it (`metaplex`, at
+ *  `metaplexAt`); null when it has none. Token-2022's pointer says where they live and can be moved by its authority;
+ *  a mint can hold them and have Metaplex's too, and wallets differ on which they show: mutable when any of them can
+ *  change, unreadable when one cannot be read, immutable only when every one is. */
+export function metadataState(terms: MintTerms, metaplex: MaybeEncodedAccount, metaplexAt: Address, mint: Address): MetadataState | null {
+    const inMint = terms.extensions.find((e) => e.kind === 'metadata');
+    const pointer = terms.extensions.find((e) => e.kind === 'metadataPointer');
+    // Metaplex's own account at that address; one anyone else made there (lamports sent to it) is none.
+    const theirs = metaplex.exists && metaplex.programAddress === METAPLEX_METADATA;
+    const fromMetaplex = theirs ? metaplexMetadata(metaplex, mint) : null;
+    if (pointer?.authority || inMint?.updateAuthority || fromMetaplex?.mutable) return 'mutable';
+    if (pointer?.metadata === mint && !inMint && terms.mintAuthority) return 'mutable'; // the mint authority can still write them in the mint
+    if (theirs && !fromMetaplex) return 'unreadable';
+    if (pointer?.metadata && pointer.metadata !== mint && pointer.metadata !== metaplexAt) return 'unreadable'; // an account Otus does not read
+    return inMint || fromMetaplex ? 'immutable' : null;
+}
+
+/** A token's terms and whether its metadata can change, read onchain: its mint and Metaplex's account for it in one
+ *  request, and the epoch when its transfer fee is about to change (which one holds hangs on it). Throws when the RPC
+ *  does not answer; `terms` null when the mint is no mint. */
+export async function tokenTerms(rpc: OtusRpc, mint: Address): Promise<{ terms: MintTerms | null; metadata: MetadataState | null; epoch: bigint | null }> {
+    const metaplexAt = await metaplexAddress(mint);
+    const { accounts } = await rpcChain(rpc).accounts([mint, metaplexAt]);
     const terms = mintTerms(accounts[0]);
-    const inMint = terms?.extensions.find((e) => e.kind === 'metadata');
-    if (inMint) return { terms, metadata: { mutable: inMint.updateAuthority !== null, updateAuthority: inMint.updateAuthority, where: 'mint' } };
-    return { terms, metadata: terms ? metaplexMetadata(accounts[1], mint) : null };
+    if (!terms) return { terms, metadata: null, epoch: null };
+    const fee = terms.extensions.find((e) => e.kind === 'transferFee');
+    const changing = fee && (fee.older.bps !== fee.newer.bps || fee.older.max !== fee.newer.max);
+    const epoch = changing ? (await rpc.getEpochInfo({ commitment: 'confirmed' }).send()).epoch : null;
+    return { terms, metadata: metadataState(terms, accounts[1], metaplexAt, mint), epoch };
 }
 
 // A COption's tag at `at`: 0 or 1, as a u32.
 const tag = (d: ReadonlyUint8Array, at: number) => d[at] <= 1 && d[at + 1] === 0 && d[at + 2] === 0 && d[at + 3] === 0;
 
+const MAX_BPS = 10_000;
+
 const u16 = (d: ReadonlyUint8Array, at: number) => d[at] | (d[at + 1] << 8);
+
+const view = (d: ReadonlyUint8Array) => new DataView(d.buffer, d.byteOffset, d.byteLength);
 
 // An address that is all zeros for none.
 const maybe = (d: ReadonlyUint8Array, at: number): Address | null => (d.subarray(at, at + 32).some((b) => b !== 0) ? getAddressDecoder().decode(d, at) : null);
 
-const fee = (d: ReadonlyUint8Array, at: number): Fee => {
-    const view = new DataView(d.buffer, d.byteOffset, d.byteLength);
-    return { epoch: view.getBigUint64(at, true), max: view.getBigUint64(at + 8, true), bps: view.getUint16(at + 16, true) };
-};
+const fee = (d: ReadonlyUint8Array, at: number): Fee => ({ epoch: view(d).getBigUint64(at, true), max: view(d).getBigUint64(at + 8, true), bps: view(d).getUint16(at + 16, true) });
 
 // Reads borsh from `start` on; once anything does not fit, every read after gives null and ok() says false.
 function reader(d: ReadonlyUint8Array, start: number) {
@@ -230,7 +267,7 @@ function reader(d: ReadonlyUint8Array, start: number) {
             const from = take(n);
             if (from === null) return null;
             try {
-                return new TextDecoder('utf-8', { fatal: true }).decode(d.subarray(from, from + n));
+                return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(d.subarray(from, from + n));
             } catch {
                 return (ok = false), null;
             }

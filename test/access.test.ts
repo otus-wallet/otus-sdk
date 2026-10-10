@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { getAddressEncoder, getBase58Decoder, type Address } from '@solana/kit';
+import { getAddressEncoder, getBase58Decoder, getBase64Decoder, type Address, type MaybeEncodedAccount } from '@solana/kit';
 
-import { delegatesGiven, grantsOf, heldMints, waitingOn, type Waiting } from '../src/access/access.ts';
+import { access, delegatesGiven, grantsOf, heldMints, waitingOn, type Waiting } from '../src/access/access.ts';
 import { read } from '../src/review/changes.ts';
 import type { Message } from '../src/review/decode.ts';
 import { TOKEN_2022_PROGRAM_ADDRESS } from '../src/programs/addresses.ts';
@@ -67,6 +67,22 @@ test('what a token’s issuer can do, only for a token you hold', () => {
     ]);
     assert.deepEqual(heldMints(PAYER, [tokens({ amount: 0n })]), []);
     assert.deepEqual(grantsOf(PAYER, [tokens({ amount: 0n })], [mint({ freezer: ISSUER })], []), []); // none of it held
+});
+
+test('a mint that does not fit its layout is never read as one no one can freeze: its token counts as unchecked', async () => {
+    // An RPC answering with the wallet's token account, then the wallet and the mint.
+    const rpcWith = (mintAccount: MaybeEncodedAccount) => {
+        const wire = (a: MaybeEncodedAccount) => (a.exists ? { data: [getBase64Decoder().decode(a.data), 'base64'], executable: false, lamports: a.lamports, owner: a.programAddress, space: a.space } : null);
+        const held = tokens({});
+        return {
+            getTokenAccountsByOwner: (_: Address, { programId }: { programId: Address }) => ({ send: async () => ({ value: programId === TOKEN_PROGRAM_ADDRESS ? [{ pubkey: TOKEN, account: wire(held) }] : [] }) }),
+            getMultipleAccounts: () => ({ send: async () => ({ context: { slot: 1n }, value: [wire(account(PAYER, SYSTEM, 1n)), wire(mintAccount)] }) }),
+        } as never;
+    };
+    assert.deepEqual(await access(rpcWith(mint({ freezer: ISSUER })), PAYER), { grants: [{ kind: 'freeze', mint: MINT, to: ISSUER }], unchecked: 0 });
+    const bent = (mint({ freezer: ISSUER }) as { data: Uint8Array }).data.slice();
+    bent[46] = 2; // a freeze tag that is neither 0 nor 1
+    assert.deepEqual(await access(rpcWith(account(MINT, TOKEN_PROGRAM_ADDRESS, 1n, bent)), PAYER), { grants: [], unchecked: 1 });
 });
 
 test('a transaction you signed on a nonce can run while its nonce account holds that nonce', () => {
