@@ -83,6 +83,19 @@ test('a mint that does not fit its layout is never read as one no one can freeze
     const bent = (mint({ freezer: ISSUER }) as { data: Uint8Array }).data.slice();
     bent[46] = 2; // a freeze tag that is neither 0 nor 1
     assert.deepEqual(await access(rpcWith(account(MINT, TOKEN_PROGRAM_ADDRESS, 1n, bent)), PAYER), { grants: [], unchecked: 1 });
+    // A Token-2022 mint that does not fit, and one with an extension newer than Otus reads, which might move yours.
+    const cut = (mint({ permanent: ISSUER }) as { data: Uint8Array }).data.slice(0, -1);
+    assert.deepEqual(await access(rpcWith(account(MINT, TOKEN_2022_PROGRAM_ADDRESS, 1n, cut)), PAYER), { grants: [], unchecked: 1 });
+    const newer = new Uint8Array([...(mint({ permanent: ISSUER, freezer: ISSUER }) as { data: Uint8Array }).data, 40, 0, 1, 0, 7]);
+    assert.deepEqual(await access(rpcWith(account(MINT, TOKEN_2022_PROGRAM_ADDRESS, 1n, newer)), PAYER), {
+        grants: [
+            { kind: 'permanent', mint: MINT, to: ISSUER },
+            { kind: 'freeze', mint: MINT, to: ISSUER },
+        ],
+        unchecked: 1,
+    });
+    // A mint missing altogether.
+    assert.deepEqual(await access(rpcWith({ exists: false, address: MINT } as never), PAYER), { grants: [], unchecked: 1 });
 });
 
 test('a transaction you signed on a nonce can run while its nonce account holds that nonce', () => {

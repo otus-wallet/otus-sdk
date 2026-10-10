@@ -37,7 +37,8 @@ export type MintTerms = { program: Address; supply: bigint; decimals: number; mi
 /** Metaplex's metadata of a token: whether it can still change, and by whom. */
 export type Metadata = { mutable: boolean; updateAuthority: Address };
 
-/** Whether a token's name and logo can still change, wherever they live; `unreadable` when Otus cannot tell. */
+/** Whether a token's onchain metadata (its name, symbol and the URI of its logo) can still change, wherever it lives;
+ *  `unreadable` when Otus cannot tell. What the URI points to can change apart, by whoever serves it. */
 export type MetadataState = 'mutable' | 'immutable' | 'unreadable';
 
 const MINT_SIZE = 82;
@@ -122,7 +123,7 @@ function extension(type: number, v: ReadonlyUint8Array, mint: Address): Extensio
             // ScaledUiAmountConfig: its authority, the multiplier (f64), when the next one starts (i64), the next one
             if (v.length !== 56) return null;
             const [multiplier, next] = [view(v).getFloat64(32, true), view(v).getFloat64(48, true)];
-            return Number.isFinite(multiplier) && Number.isFinite(next) ? { kind: 'scaledUiAmount', authority: maybe(v, 0), multiplier, next, nextAt: view(v).getBigInt64(40, true) } : null;
+            return multiplierFits(multiplier) && multiplierFits(next) ? { kind: 'scaledUiAmount', authority: maybe(v, 0), multiplier, next, nextAt: view(v).getBigInt64(40, true) } : null;
         }
         case 3: // MintCloseAuthority
             return v.length === 32 ? { kind: 'closeAuthority', authority: maybe(v, 0) } : null;
@@ -194,18 +195,21 @@ export function metaplexMetadata(a: MaybeEncodedAccount, mint: Address): Metadat
     return { mutable: mutable === 1, updateAuthority: getAddressDecoder().decode(d, 1) };
 }
 
-/** Whether a token's name and logo can still change, from its mint's terms and Metaplex's account for it (`metaplex`, at
- *  `metaplexAt`); null when it has none. Token-2022's pointer says where they live and can be moved by its authority;
- *  a mint can hold them and have Metaplex's too, and wallets differ on which they show: mutable when any of them can
- *  change, unreadable when one cannot be read, immutable only when every one is. */
+/** Whether a token's onchain metadata can still change, from its mint's terms and Metaplex's account for it (`metaplex`,
+ *  read at `metaplexAt`); null when it has none and none can be made. Token-2022's pointer says where it lives and can be
+ *  moved by its authority; a mint can hold it and have Metaplex's too, and wallets differ on which they show: mutable
+ *  when any of it can change or be made, unreadable when some cannot be read, immutable only when every one is. */
 export function metadataState(terms: MintTerms, metaplex: MaybeEncodedAccount, metaplexAt: Address, mint: Address): MetadataState | null {
+    if (metaplex.address !== metaplexAt) return 'unreadable'; // not the account asked for
     const inMint = terms.extensions.find((e) => e.kind === 'metadata');
     const pointer = terms.extensions.find((e) => e.kind === 'metadataPointer');
     // Metaplex's own account at that address; one anyone else made there (lamports sent to it) is none.
     const theirs = metaplex.exists && metaplex.programAddress === METAPLEX_METADATA;
     const fromMetaplex = theirs ? metaplexMetadata(metaplex, mint) : null;
     if (pointer?.authority || inMint?.updateAuthority || fromMetaplex?.mutable) return 'mutable';
-    if (pointer?.metadata === mint && !inMint && terms.mintAuthority) return 'mutable'; // the mint authority can still write them in the mint
+    // The mint authority can still write it in the mint (Token-2022 asks only for a pointer, wherever it points), and make
+    // Metaplex's while there is none (one made by anyone else is lamports alone, which Metaplex takes over).
+    if (terms.mintAuthority && ((pointer && !inMint) || !theirs)) return 'mutable';
     if (theirs && !fromMetaplex) return 'unreadable';
     if (pointer?.metadata && pointer.metadata !== mint && pointer.metadata !== metaplexAt) return 'unreadable'; // an account Otus does not read
     return inMint || fromMetaplex ? 'immutable' : null;
@@ -225,6 +229,7 @@ export async function tokensTerms(rpc: OtusRpc, mints: readonly Address[]): Prom
         return { mint, terms, metadata: terms ? metadataState(terms, accounts[2 * i + 1], metaplexAt[i], mint) : null, changing: terms ? feeChanging(terms) : false };
     });
     const epoch = read.some((r) => r.changing) ? (await rpc.getEpochInfo({ commitment: 'confirmed' }).send()).epoch : null;
+    if (epoch !== null && typeof epoch !== 'bigint') throw new Error('The RPC answered no epoch');
     return new Map(read.map(({ mint, terms, metadata, changing }) => [mint, { terms, metadata, epoch: changing ? epoch : null }]));
 }
 
@@ -241,6 +246,9 @@ function feeChanging(terms: MintTerms): boolean {
 const tag = (d: ReadonlyUint8Array, at: number) => d[at] <= 1 && d[at + 1] === 0 && d[at + 2] === 0 && d[at + 3] === 0;
 
 const MAX_BPS = 10_000;
+
+// A multiplier Token-2022 takes: positive and normal (not 0, not subnormal, not infinite or NaN).
+const multiplierFits = (m: number) => m >= 2 ** -1022 && m < Infinity;
 
 const u16 = (d: ReadonlyUint8Array, at: number) => d[at] | (d[at + 1] << 8);
 

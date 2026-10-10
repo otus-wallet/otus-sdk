@@ -41,7 +41,8 @@ export async function access(rpc: OtusRpc, owner: Address, waiting: Waiting[] = 
     const { accounts } = await rpcChain(rpc).accounts([owner, ...asked, ...waiting.map((w) => w.account)]);
     const nonces = waiting.map((w, i) => ({ waiting: w, account: accounts[1 + asked.length + i] }));
     const mints = accounts.slice(1, 1 + asked.length);
-    const misfits = mints.filter((m) => !mintTerms(m)).length; // read, but not mints as their layout says: unchecked too
+    // Read, but not mints as their layout says, or with an extension newer than Otus reads (it might move yours): unchecked too.
+    const misfits = mints.map(mintTerms).filter((t) => !t || t.unknown.length > 0).length;
     return { grants: grantsOf(owner, tokens, mints, nonces, accounts[0]), unchecked: held.length - asked.length + misfits };
 }
 

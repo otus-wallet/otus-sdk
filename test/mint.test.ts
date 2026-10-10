@@ -121,6 +121,18 @@ test('a mint that does not fit its layout reads as none', () => {
         ['a transfer fee over 100%', t22(extended([[1, [...fees.slice(0, 106), ...u16(10_001)]]]))],
         ['interest of 51 bytes', t22(extended([[10, new Array(51).fill(0)]]))],
         ['a multiplier that is not a number', t22(extended([[25, [...new Array(32).fill(0), ...f64(NaN), ...u64(0n), ...f64(1)]]]))],
+        ...[0, -0, -1.5, 5e-324, Infinity].map((m): [string, ReturnType<typeof account>] => [`a multiplier of ${m}`, t22(extended([[25, [...new Array(32).fill(0), ...f64(m), ...u64(0n), ...f64(1)]]]))]),
+        ['a next multiplier of 0', t22(extended([[25, [...new Array(32).fill(0), ...f64(1), ...u64(0n), ...f64(0)]]]))],
+        ['a multiplier of 55 bytes', t22(extended([[25, new Array(55).fill(0)]]))],
+        ['a multiplier of 57 bytes', t22(extended([[25, [...new Array(32).fill(0), ...f64(1), ...u64(0n), ...f64(1), 0]]]))],
+        ['interest of 53 bytes', t22(extended([[10, new Array(53).fill(0)]]))],
+        ['a transfer fee of 109 bytes', t22(extended([[1, [...fees, 0]]]))],
+        ['an older transfer fee over 100%', t22(extended([[1, [...fees.slice(0, 88), ...u16(10_001), ...fees.slice(90)]]]))],
+        ['pausable of 32 bytes', t22(extended([[26, [...bytes(OTHER)]]]))],
+        ['pausable of 34 bytes', t22(extended([[26, [...bytes(OTHER), 0, 0]]]))],
+        ['a pointer of 63 bytes', t22(extended([[18, new Array(63).fill(1)]]))],
+        ['a pointer of 65 bytes', t22(extended([[18, new Array(65).fill(1)]]))],
+        ['a newer extension twice', t22(extended([[40, [1]], [40, [1]]]))],
         ['a default state of 0', t22(extended([[6, [0]]]))],
         ['a default state of 3', t22(extended([[6, [3]]]))],
         ['non-transferable with a value', t22(extended([[9, [0]]]))],
@@ -133,6 +145,8 @@ test('a mint that does not fit its layout reads as none', () => {
         ['a missing account', { exists: false, address: MINT } as never],
     ];
     for (const [what, a] of bad) assert.equal(mintTerms(a), null, what);
+    // A fee of exactly 100% fits.
+    assert.equal(mintTerms(t22(extended([[1, [...fees.slice(0, 106), ...u16(10_000)]]])))?.extensions[0]?.kind, 'transferFee');
 });
 
 // Metaplex's metadata: its key (4), update authority, mint, name, symbol, URI, royalty, creators, first sale, mutable,
@@ -187,6 +201,21 @@ test('whether its metadata can change: mutable when any of it can, unreadable wh
     // Pointing at the mint with none there yet: the mint authority can still write it.
     assert.equal(state([pointer(null, MINT)], fixed, base({ minter: MINTER })), 'mutable');
     assert.equal(state([pointer(null, MINT)], fixed), 'immutable');
+    // Token-2022 lets the mint authority write it in the mint wherever the pointer points, or with none set.
+    assert.equal(state([pointer(null, AT)], fixed, base({ minter: MINTER })), 'mutable');
+    assert.equal(state([pointer(null, null)], fixed, base({ minter: MINTER })), 'mutable');
+    assert.equal(state([pointer(null, null)], none, base({ minter: MINTER })), 'mutable');
+    assert.equal(state([pointer(null, null)]), null); // none, and no one can make it
+    assert.equal(state([pointer(null, AT)]), null);
+    // With no Metaplex account yet (or lamports alone there), the mint authority can make one.
+    assert.equal(metadataState(mintTerms(spl(base({ minter: MINTER })))!, none, AT, MINT), 'mutable');
+    assert.equal(metadataState(mintTerms(spl(base({ minter: MINTER })))!, account(AT, key(0), 1n), AT, MINT), 'mutable');
+    assert.equal(metadataState(mintTerms(spl(base({ minter: MINTER })))!, fixed, AT, MINT), 'immutable');
+    assert.equal(state([pointer(null, MINT), [19, metadataValue(null)]], none, base({ minter: MINTER })), 'mutable');
+    // In the mint with an update authority.
+    assert.equal(state([pointer(null, MINT), [19, metadataValue(OTHER)]], fixed), 'mutable');
+    // An account read at another address than Metaplex's for this mint is not its metadata.
+    assert.equal(metadataState(mintTerms(spl(base()))!, metaplex({ mutable: 0 }), key(51), MINT), 'unreadable');
 });
 
 test('many tokens’ terms in one request, the epoch read once and only for a fee that is changing', async () => {
@@ -209,6 +238,82 @@ test('many tokens’ terms in one request, the epoch read once and only for a fe
     assert.equal(epochs, 1);
     assert.deepEqual([read.get(MINT)?.terms?.freezeAuthority, read.get(MINT)?.metadata, read.get(MINT)?.epoch], [FREEZER, 'immutable', null]);
     assert.deepEqual([read.get(SECOND)?.terms?.extensions[0]?.kind, read.get(SECOND)?.metadata, read.get(SECOND)?.epoch], ['transferFee', null, 850n]);
+});
+
+// An RPC holding `accounts`, answering each request for them in order; `epoch` as getEpochInfo answers, or throwing.
+async function rpcOf(accounts: Map<string, MaybeEncodedAccount>, o: { epoch?: unknown; short?: boolean; failAfter?: number } = {}) {
+    const wire = (a: MaybeEncodedAccount | undefined) => (a?.exists ? { data: [getBase64Decoder().decode(a.data), 'base64'], executable: false, lamports: a.lamports, owner: a.programAddress, space: a.space } : null);
+    const asked: string[][] = [];
+    let epochs = 0;
+    const rpc = {
+        getMultipleAccounts: (addresses: string[]) => ({
+            send: async () => {
+                asked.push(addresses);
+                if (o.failAfter !== undefined && asked.length > o.failAfter) throw new Error('down');
+                const value = addresses.map((a) => wire(accounts.get(a)));
+                return { context: { slot: 1n }, value: o.short ? value.slice(1) : value };
+            },
+        }),
+        getEpochInfo: () => ({
+            send: async () => {
+                epochs++;
+                if (o.epoch instanceof Error) throw o.epoch;
+                return o.epoch === undefined ? { epoch: 850n } : o.epoch;
+            },
+        }),
+    } as never;
+    return { rpc, asked, epochs: () => epochs };
+}
+
+test('many tokens’ terms: each mint’s own across requests of 100, refused whole when the RPC answers short or fails', async () => {
+    // 60 mints, each with its own freeze authority, and a Metaplex account for every other one.
+    const mints = Array.from({ length: 60 }, (_, i) => key(100 + i));
+    const accounts = new Map<string, MaybeEncodedAccount>();
+    for (const [i, m] of mints.entries()) {
+        accounts.set(m, account(m, TOKEN_PROGRAM_ADDRESS, 1n, base({ freezer: key(170 + i) })));
+        const at = await metaplexAddress(m);
+        if (i % 2 === 0) accounts.set(at, account(at, METAPLEX_METADATA, 1n, (metaplex({ mutable: 0, mint: m }) as { data: Uint8Array }).data));
+    }
+    const { rpc, asked, epochs } = await rpcOf(accounts);
+    const read = await tokensTerms(rpc, mints);
+    assert.deepEqual(
+        asked.map((a) => a.length),
+        [100, 20],
+    );
+    assert.equal(epochs(), 0); // no fee changing: no epoch asked
+    for (const [i, m] of mints.entries()) assert.deepEqual([read.get(m)?.terms?.freezeAuthority, read.get(m)?.metadata], [key(170 + i), i % 2 === 0 ? 'immutable' : null], `mint ${i}`);
+    // The same mint twice reads the same.
+    const twice = await tokensTerms((await rpcOf(accounts)).rpc, [mints[0], mints[1], mints[0]]);
+    assert.equal(twice.get(mints[0])?.terms?.freezeAuthority, key(170));
+    // An answer one account short, or a second request that fails: no terms at all, never another mint's.
+    await assert.rejects(tokensTerms((await rpcOf(accounts, { short: true })).rpc, mints));
+    await assert.rejects(tokensTerms((await rpcOf(accounts, { failAfter: 1 })).rpc, mints));
+});
+
+test('many tokens’ terms: a mint or a Metaplex account that does not fit reads as such, and a changing fee needs the epoch', async () => {
+    const [GOOD, BENT, ODD, LAMPORTS, FEE] = [key(60), key(61), key(62), key(63), key(64)];
+    const changing = [...fees.slice(0, 90), ...u64(900n), ...u64(9_000n), ...u16(200)];
+    const accounts = new Map<string, MaybeEncodedAccount>([
+        [GOOD, account(GOOD, TOKEN_PROGRAM_ADDRESS, 1n, base({ freezer: FREEZER }))],
+        [BENT, account(BENT, TOKEN_PROGRAM_ADDRESS, 1n, new Uint8Array(83))],
+        [ODD, account(ODD, TOKEN_PROGRAM_ADDRESS, 1n, base())],
+        [LAMPORTS, account(LAMPORTS, TOKEN_PROGRAM_ADDRESS, 1n, base())],
+        [FEE, account(FEE, TOKEN_2022_PROGRAM_ADDRESS, 1n, extended([[1, changing]]))],
+    ]);
+    const odd = await metaplexAddress(ODD);
+    accounts.set(odd, account(odd, METAPLEX_METADATA, 1n, new Uint8Array([4, 1, 2])));
+    const lamports = await metaplexAddress(LAMPORTS);
+    accounts.set(lamports, account(lamports, key(0), 1n));
+    const read = await tokensTerms((await rpcOf(accounts)).rpc, [GOOD, BENT, ODD, LAMPORTS]);
+    assert.equal(read.get(GOOD)?.terms?.freezeAuthority, FREEZER);
+    assert.deepEqual(read.get(BENT), { terms: null, metadata: null, epoch: null });
+    assert.equal(read.get(ODD)?.metadata, 'unreadable');
+    assert.equal(read.get(LAMPORTS)?.metadata, null);
+    // The epoch: asked once a fee is changing; an RPC that fails it, or answers none, fails the read.
+    assert.equal((await tokensTerms((await rpcOf(accounts)).rpc, [FEE])).get(FEE)?.epoch, 850n);
+    await assert.rejects(tokensTerms((await rpcOf(accounts, { epoch: new Error('down') })).rpc, [FEE]));
+    await assert.rejects(tokensTerms((await rpcOf(accounts, { epoch: {} })).rpc, [FEE]));
+    await assert.rejects(tokensTerms((await rpcOf(accounts, { epoch: { epoch: 850 } })).rpc, [FEE]));
 });
 
 test('garbage of any length never throws, and is read as none or as what it says', () => {
