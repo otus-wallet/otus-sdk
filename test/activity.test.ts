@@ -148,7 +148,7 @@ test('an RPC without the method says so; what does not hold is unreadable, the r
     );
     // What does not hold keeps what its envelope shows plainly: its slot, its id and its signers' signatures; garbage none.
     const sig = getBase58Decoder().decode(SIGNATURE);
-    assert.deepEqual(page.items[0], { unreadable: 'balances do not match the accounts', slot: 400_000_000n, signature: sig, signatures: { [WALLET]: sig } });
+    assert.deepEqual(page.items[0], { unreadable: 'balances do not match the accounts', slot: 400_000_000n, time: 1_791_236_675, signature: sig, signatures: { [WALLET]: sig } });
     assert.deepEqual(page.items[3], { unreadable: 'malformed transaction' });
 });
 

@@ -30,9 +30,9 @@ export type Landed = {
     tokens: { before: TokenBalance[]; after: TokenBalance[] };
 };
 
-/** A transaction that does not hold: why, and what its envelope still shows plainly when it reads (its slot, its id and
- *  each signer's signature, by its address). */
-export type Unreadable = { unreadable: string; slot?: bigint; signature?: string; signatures?: Readonly<Record<Address, string>> };
+/** A transaction that does not hold: why, and what its envelope still shows plainly when it reads (its slot and time,
+ *  its id and each signer's signature, by its address). */
+export type Unreadable = { unreadable: string; slot?: bigint; time?: number | null; signature?: string; signatures?: Readonly<Record<Address, string>> };
 
 /** One page: what was read, each in its place, and where the next one starts (null: no more). */
 export type Page = { items: (Landed | Unreadable)[]; next: string | null };
@@ -116,7 +116,7 @@ async function landed(item: unknown): Promise<Landed> {
         signature: getBase58Decoder().decode(signature),
         signatures: Object.fromEntries(decoded.signers.flatMap((a) => (signed[a] ? [[a, getBase58Decoder().decode(signed[a]!)]] : []))),
         slot: u64(t.slot),
-        time: typeof t.blockTime === 'number' && Number.isSafeInteger(t.blockTime) && t.blockTime > 0 ? t.blockTime : null,
+        time: timeOf(t.blockTime),
         message: decoded.message,
         accounts,
         error: meta.err == null ? null : failure(meta.err),
@@ -126,17 +126,19 @@ async function landed(item: unknown): Promise<Landed> {
     };
 }
 
+const timeOf = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null);
+
 // What a transaction that does not hold still shows: its slot and its signers' signatures, when its envelope reads; the
 // first is its id. Nothing when it doesn't.
 function envelope(item: unknown): Omit<Unreadable, 'unreadable'> {
     try {
-        const t = item as { transaction?: unknown; slot?: unknown };
+        const t = item as { transaction?: unknown; slot?: unknown; blockTime?: unknown };
         const [base64] = Array.isArray(t?.transaction) ? t.transaction : [];
         if (typeof base64 !== 'string' || base64.length > Math.ceil(MAX_BYTES / 3) * 4) return {};
         const signed = getTransactionDecoder().decode(getBase64Encoder().encode(base64)).signatures;
         const signatures: Record<Address, string> = Object.fromEntries(Object.entries(signed).flatMap(([a, s]) => (s ? [[a, getBase58Decoder().decode(s)]] : [])));
         const id = Object.values(signatures)[0];
-        return { slot: u64(t.slot), signatures, ...(id && { signature: id }) };
+        return { slot: u64(t.slot), time: timeOf(t.blockTime), signatures, ...(id && { signature: id }) };
     } catch {
         return {};
     }
