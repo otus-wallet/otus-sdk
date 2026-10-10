@@ -6,6 +6,7 @@ import {
     getI64Decoder,
     getU32Decoder,
     getU64Decoder,
+    isAddress,
     isOffCurveAddress,
     type Address,
     type ReadonlyUint8Array,
@@ -41,6 +42,7 @@ export type Context = {
     to?: Address; // for a transfer made in Otus: the address typed
     wallets?: Address[]; // every account of yours in Otus, watched ones too: what lands with them, or in their token accounts, is yours
     contacts?: Map<Address, string>; // the addresses you keep, by your names for them
+    sent?: Address[]; // the addresses you sent to: a copy of one is what address poisoning counts on
 };
 
 /** What one program gets from you. `name`: Otus's, for a program it knows; null for one it doesn't. `accounts`: how
@@ -114,8 +116,8 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             else add('danger', 'owner-change', 'An account with your address in it changes owner', address, `New owner ${name(after.program)}. Your place in it may go.`);
         }
         if (from && to && from.owner !== to.owner) given.add(to.owner);
-        if (to?.delegate) given.add(to.delegate);
-        if (to?.closer) given.add(to.closer);
+        if (to?.delegate && to.delegate !== from?.delegate) given.add(to.delegate);
+        if (to?.closer && to.closer !== from?.closer) given.add(to.closer);
         if (from && to && from.owner !== to.owner) add('danger', 'token-owner-change', 'A token account of yours changes owner', address, `New owner ${to.owner}. You lose control of it.`);
         if (to?.delegate && (to.delegate !== from?.delegate || to.delegated > (from?.delegated ?? 0n))) {
             // Someone's key allowed all the account holds, or without end, takes all of it whenever it likes; a
@@ -132,7 +134,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         // Your stake under a lockup in force that someone else keeps: made so now, or getting your SOL, as into a stake
         // account made for you beforehand. You can't withdraw until it ends, or they lift it.
         const [was, is] = [stake(before, clock), stake(after, clock)];
-        if (is) for (const a of [is.staker, is.withdrawer, is.custodian]) given.add(a);
+        if (is) for (const a of [is.staker, is.withdrawer, is.custodian]) if (a !== was?.staker && a !== was?.withdrawer && a !== was?.custodian) given.add(a);
         const kept = is !== null && is.locked && is.custodian !== wallet && (was ?? is).withdrawer === wallet;
         const fed = (after?.lamports ?? 0n) > (before?.lamports ?? 0n);
         if (kept && (is.lockup !== was?.lockup || fed)) {
@@ -146,6 +148,8 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (before && after && !from) {
             for (const offset of offsetsOf(key, before).filter((o) => !offsetsOf(key, after).includes(o))) {
                 const role = roleAt(before, offset);
+                const now = after.data.length >= offset + 32 ? after.data.slice(offset, offset + 32) : null;
+                if (role && now && now.some((b) => b !== 0)) given.add(getAddressDecoder().decode(now)); // who has it now
                 if (role) add('danger', 'authority-change', `You would lose your ${role}`, address);
                 else add('warn', 'authority-change', 'Your address would leave an account that held it, maybe as its authority', address);
             }
@@ -213,15 +217,12 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         findings.push({ level, code, text, subject: p.holder, programs: p.programs });
         given.add(p.holder);
     }
-    for (const flow of flows) if (flow.change < 0n) for (const o of flow.others) given.add(o.holder); // where yours goes
+    // Where yours goes: who holds it, and the very account (any account's address can be ground to look like another).
+    for (const flow of flows) if (flow.change < 0n) for (const o of flow.others) given.add(o.holder).add(o.address);
     for (const f of findings) if (f.code === 'sends-to-wallet' && f.subject) given.add(f.subject);
+    for (const a of namedTo(explained)) given.add(a); // what balances can't show: a failed simulation, a payment in a trade
     if (context.to) given.add(context.to);
-    // An address that only looks like one you keep, or like one of your wallets, getting your funds or a say over them:
-    // what address poisoning counts on.
-    for (const a of given) {
-        const like = lookalikeOf(a, context);
-        if (like) add('danger', 'lookalike-address', `This address looks like ${like}`, a, `${a} is not ${like}`);
-    }
+    findings.push(...lookalikes([...given], context));
 
     // Where the request comes from. A site becomes known a day after its first transaction you signed: a site can ask
     // for a harmless one first, but a scam rarely waits a day.
@@ -538,13 +539,41 @@ function leaving(programs: ProgramUse[], explained: Explained[], changes: Change
     return [{ level: critical ? 'danger' : 'warn', code: 'sends-to-wallet', text, subject, note: `Through ${by}, which Otus cannot read${small ? ': a fee, maybe' : ''}`, programs: (strange ? blind.filter((p) => p.name === null) : blind).map((p) => p.program) }];
 }
 
-// Whose an address only looks like: a contact's (by your name for it) or one of your wallets', the same ends and other
-// characters between; null for one you keep, or like none.
-function lookalikeOf(a: Address, context: Context): string | null {
+/**
+ * Of addresses getting your funds or a say over them, each that only looks like one you keep, one of your wallets, or
+ * one you sent to (the same ends, other characters between, as address poisoning grinds them): critical, said whole.
+ * One you keep or sent to itself is not.
+ */
+export function lookalikes(addresses: Address[], context: Pick<Context, 'wallet' | 'wallets' | 'contacts' | 'sent'>): Finding[] {
     const own = [context.wallet, ...(context.wallets ?? [])];
-    if (own.includes(a) || context.contacts?.has(a)) return null;
-    for (const [kept, label] of context.contacts ?? []) if (alike(a, kept)) return `${told(label, 32) || 'a contact'}'s`;
-    return own.some((w) => alike(a, w)) ? 'one of your wallets' : null;
+    const sent = context.sent ?? [];
+    return [...new Set(addresses)].flatMap((a): Finding[] => {
+        if (own.includes(a) || context.contacts?.has(a) || sent.includes(a)) return [];
+        const said = (text: string, note: string): Finding[] => [{ level: 'danger', code: 'lookalike-address', text, subject: a, note }];
+        for (const [kept, label] of context.contacts ?? []) {
+            const whose = `${told(label, 32) || 'a contact'}'s`;
+            if (alike(a, kept)) return said(`This address looks like ${whose}`, `${a} is not ${whose}`);
+        }
+        if (own.some((w) => alike(a, w))) return said('This address looks like one of your wallets', `${a} is not one of them`);
+        if (sent.some((s) => alike(a, s))) return said('This address looks like one you sent to', `${a} is not the one you sent to`);
+        return [];
+    });
+}
+
+// Who the instructions Otus reads name as getting your funds or a say over them: a transfer's destination, an account
+// closed into, a delegate, a new authority of a token, a stake or a nonce.
+function namedTo(explained: Explained[]): Address[] {
+    const out: string[] = [];
+    for (const e of explained) {
+        if (e.source === 'unknown') continue;
+        const acc = (role: string) => e.accounts.find((a) => a.role === role)?.address;
+        const arg = (name: string) => e.args.find((a) => a.name === name)?.value;
+        const take = (...found: (string | undefined)[]) => out.push(...found.filter((x): x is string => x !== undefined && isAddress(x)));
+        if (e.program === SYSTEM_PROGRAM_ADDRESS) take(acc('destination'), acc('recipientAccount'), arg('newNonceAuthority'));
+        else if (e.program === STAKE_PROGRAM) take(acc('recipient'), acc('newAuthority'), e.name === 'Authorize' ? arg('arg0') : undefined);
+        else if (TOKEN_PROGRAMS.includes(e.program)) take(acc('destination'), acc('delegate'), arg('newAuthority'));
+    }
+    return out as Address[];
 }
 
 // What lands with someone else (not your accounts in Otus, nor token accounts any of them owns, ATA or not), by asset,

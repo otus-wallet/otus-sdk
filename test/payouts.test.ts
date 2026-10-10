@@ -3,9 +3,11 @@ import { test } from 'node:test';
 
 import { getTransferSolInstruction } from '@solana-program/system';
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { AccountRole, address, createNoopSigner, generateKeyPairSigner, getProgramDerivedAddress, isAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
+import { AccountRole, address, createNoopSigner, generateKeyPairSigner, getAddressEncoder, getProgramDerivedAddress, isAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
+import type { Simulation } from '../src/chain.ts';
 import type { Context } from '../src/review/assess.ts';
+import { alike } from '../src/format.ts';
 import { review } from '../src/review/review.ts';
 import { account, fakeChain, key, MINT, PAYER, SYSTEM, tokenAccountData, transaction } from './helpers.ts';
 
@@ -103,26 +105,65 @@ test('out of a program’s custody to an account no key holds, with nothing back
     assert.deepEqual(deposit.findings, []);
 });
 
-test('your funds, or a say over them, going to an address only like one you keep or one of your wallets: critical', async () => {
-    const like = (a: string) => Array.from({ length: 60 }, (_, i) => `${a.slice(0, 5)}${key(80 + i).slice(5, -5)}${a.slice(-5)}`).find((x) => x !== a && isAddress(x)) as Address;
+test('your funds, or a say over them, going to an address only like one you keep, one of your wallets or one you sent to: critical', async () => {
+    const like = (a: string, from = 80) => Array.from({ length: 60 }, (_, i) => `${a.slice(0, 5)}${key(from + i).slice(5, -5)}${a.slice(-5)}`).find((x) => x !== a && isAddress(x)) as Address;
     const copy = like(THIEF);
-    const lookalikes = async (ixs: Instruction[], before: MaybeEncodedAccount[], after: MaybeEncodedAccount[], context: Partial<Context>) => {
-        const r = await review(transaction(ixs), { wallet: PAYER, signedBefore: 0, host: 'app.example.com', ...context }, fakeChain(before, after));
+    const lookalikes = async (ixs: Instruction[], before: MaybeEncodedAccount[], after: MaybeEncodedAccount[], context: Partial<Context>, simulation?: Partial<Simulation>) => {
+        const r = await review(transaction(ixs), { wallet: PAYER, signedBefore: 0, host: 'app.example.com', ...context }, fakeChain(before, after, simulation));
         return r.assessment.findings.filter((f) => f.code === 'lookalike-address').map((f) => `${f.level}:${f.text}:${f.note}`);
     };
-    const pay = (to: Address) => [[getTransferSolInstruction({ source: createNoopSigner(PAYER), destination: to, amount: SOL })], [account(PAYER, SYSTEM, 2n * SOL), account(to, SYSTEM, 0n)], [account(PAYER, SYSTEM, SOL - 5000n), account(to, SYSTEM, SOL)]] as const;
+    const pay = (to: Address): [Instruction[], MaybeEncodedAccount[], MaybeEncodedAccount[]] => [[getTransferSolInstruction({ source: createNoopSigner(PAYER), destination: to, amount: SOL })], [account(PAYER, SYSTEM, 2n * SOL), account(to, SYSTEM, 0n)], [account(PAYER, SYSTEM, SOL - 5000n), account(to, SYSTEM, SOL)]];
     const ana = { contacts: new Map([[THIEF, 'Ana']]) };
-    assert.deepEqual(await lookalikes(...pay(copy), ana), [`danger:This address looks like Ana's:${copy} is not Ana's`]); // your SOL, to a copy of Ana's
+    const anas = [`danger:This address looks like Ana's:${copy} is not Ana's`];
+    assert.deepEqual(await lookalikes(...pay(copy), ana), anas); // your SOL, to a copy of Ana's
     assert.deepEqual(await lookalikes(...pay(THIEF), ana), []); // to Ana's own
     assert.deepEqual(await lookalikes(...pay(copy), {}), []); // like no address you keep
-    assert.deepEqual(await lookalikes(...pay(copy), { wallets: [THIEF] }), [`danger:This address looks like one of your wallets:${copy} is not one of your wallets`]);
-    assert.deepEqual(await lookalikes(...pay(copy), { contacts: new Map([[THIEF, 'A‮na\u0000']]) }), [`danger:This address looks like Ana's:${copy} is not Ana's`]); // your name for it, without what moves or hides letters
+    assert.deepEqual(await lookalikes(...pay(copy), { wallets: [THIEF] }), [`danger:This address looks like one of your wallets:${copy} is not one of them`]);
+    assert.deepEqual(await lookalikes(...pay(copy), { sent: [THIEF] }), [`danger:This address looks like one you sent to:${copy} is not the one you sent to`]);
+    assert.deepEqual(await lookalikes(...pay(THIEF), { sent: [THIEF] }), []); // the one you sent to itself
+    assert.deepEqual(await lookalikes(...pay(copy), { ...ana, wallets: [THIEF] }), anas); // a contact, by your name for it, before "one of your wallets"
+    assert.deepEqual(await lookalikes(...pay(like(PAYER)), {}), [`danger:This address looks like one of your wallets:${like(PAYER)} is not one of them`]); // a copy of the wallet in use
+    assert.deepEqual(await lookalikes(...pay(copy), { wallets: [THIEF, copy] }), []); // two of your own, alike each other
+    // Your name for it, without what moves or hides letters, kept short; none left, "a contact".
+    assert.deepEqual(await lookalikes(...pay(copy), { contacts: new Map([[THIEF, 'A\u202ena\u0000']]) }), anas);
+    assert.deepEqual(await lookalikes(...pay(copy), { contacts: new Map([[THIEF, '\u202e']]) }), [`danger:This address looks like a contact's:${copy} is not a contact's`]);
+    assert.match((await lookalikes(...pay(copy), { contacts: new Map([[THIEF, 'x'.repeat(50)]]) }))[0], /looks like x{31}…'s/);
+    // A simulation that fails shows no balances: the transfer's own words still name where it goes.
+    const [ixs, before] = pay(copy);
+    assert.deepEqual(await lookalikes(ixs, before, before, ana, { error: { InstructionError: [0, { Custom: 1 }] } }), anas);
     // Funds out of a program's custody, to a copy of Ana's: the same.
     assert.deepEqual((await withdraw(copy, ana)).findings, ['warn:Funds go to someone else, not to you']);
-    const out = await review(transaction([{ programAddress: MARGINFI, accounts: [{ address: PAYER, role: WS }, { address: VAULT, role: W }, { address: DEST, role: W }] }]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com', ...ana }, fakeChain([account(PAYER, SYSTEM, SOL), tokens(VAULT, await vaultOwner(), 5_000n * USDC), tokens(DEST, copy, 0n)], [account(PAYER, SYSTEM, SOL - 5000n), tokens(VAULT, await vaultOwner(), 4_000n * USDC), tokens(DEST, copy, 1_000n * USDC)]));
+    const authority = await vaultOwner();
+    const out = await review(transaction([{ programAddress: MARGINFI, accounts: [{ address: PAYER, role: WS }, { address: VAULT, role: W }, { address: DEST, role: W }] }]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com', ...ana }, fakeChain([account(PAYER, SYSTEM, SOL), tokens(VAULT, authority, 5_000n * USDC), tokens(DEST, copy, 0n)], [account(PAYER, SYSTEM, SOL - 5000n), tokens(VAULT, authority, 4_000n * USDC), tokens(DEST, copy, 1_000n * USDC)]));
     assert.ok(out.assessment.findings.some((f) => f.code === 'lookalike-address' && f.subject === copy));
-    // A delegate over a token account of yours, a copy of Ana's.
-    const delegate: Instruction = { programAddress: key(70), accounts: [{ address: PAYER, role: WS }, { address: YOURS, role: W }] };
-    const given = account(YOURS, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 5n * USDC, delegate: copy, delegated: 5n * USDC }));
-    assert.deepEqual(await lookalikes([delegate], [account(PAYER, SYSTEM, SOL), tokens(YOURS, PAYER, 5n * USDC)], [account(PAYER, SYSTEM, SOL - 5000n), given], ana), [`danger:This address looks like Ana's:${copy} is not Ana's`]);
+    // A token account of yours: a new delegate, a new close authority, a new owner, each a copy of Ana's; one already
+    // there, unchanged, is not said again.
+    const touch: Instruction = { programAddress: key(70), accounts: [{ address: PAYER, role: WS }, { address: YOURS, role: W }] };
+    const mine = (o: { delegate?: Address; closer?: Address; owner?: Address } = {}) => account(YOURS, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: o.owner ?? PAYER, amount: 5n * USDC, ...(o.delegate && { delegate: o.delegate, delegated: 5n * USDC }), ...(o.closer && { closer: o.closer }) }));
+    const wallet = [account(PAYER, SYSTEM, SOL)];
+    for (const change of [{ delegate: copy }, { closer: copy }, { owner: copy }]) assert.deepEqual(await lookalikes([touch], [...wallet, mine()], [...wallet, mine(change)], ana), anas, JSON.stringify(change));
+    assert.deepEqual(await lookalikes([touch], [...wallet, mine({ delegate: copy })], [...wallet, mine({ delegate: copy })], ana), []);
+    // Your mint authority handed to a copy of Ana's: who has it now is checked, as well as that yours is gone.
+    const mintOf = (minter: Address) => {
+        const d = new Uint8Array(82);
+        d.set([1, 0, 0, 0, ...getAddressEncoder().encode(minter)], 0);
+        d[44] = 6;
+        d[45] = 1;
+        return account(MINT, TOKEN_PROGRAM_ADDRESS, 1_461_600n, d);
+    };
+    const hand: Instruction = { programAddress: key(70), accounts: [{ address: PAYER, role: WS }, { address: MINT, role: W }] };
+    assert.deepEqual(await lookalikes([hand], [...wallet, mintOf(PAYER)], [...wallet, mintOf(copy)], ana), anas);
+    // Your own transfer in Otus, typed to a copy.
+    assert.deepEqual(await lookalikes(...pay(copy), { ...ana, own: true, to: copy }), anas);
+});
+
+test('alike: as people check an address, by its ends', () => {
+    const a = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const b = (head: number, tail: number) => `${a.slice(0, head)}${'z'.repeat(a.length - head - tail)}${a.slice(a.length - tail)}`;
+    assert.equal(alike(a, b(3, 3)), true);
+    assert.equal(alike(a, b(2, 4)), true);
+    assert.equal(alike(a, b(2, 3)), false); // five alike: about one in 650 million random pairs, too many
+    assert.equal(alike(a, b(5, 1)), false); // one end only
+    assert.equal(alike(a, b(1, 5)), false);
+    assert.equal(alike(a, a), false); // the very address is no copy of itself
 });
