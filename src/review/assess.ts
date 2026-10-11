@@ -259,10 +259,12 @@ export function siteFindings({ host, signedBefore: since, now }: Pick<Context, '
     // Put up where anyone can put one up in a minute: what a scam site, made and dropped by the day, is put up on.
     const hosted = host ? hostedOn(host) : null;
     if (hosted) add('warn', 'shared-host', `Hosted on ${hosted}`, 'Anyone can put up a site there');
-    const age = since !== null && now !== undefined ? Math.max(0, now - since) : null;
-    if (since === null && connecting) add('warn', 'first-visit', 'New site', 'You never signed a transaction for it in Otus');
-    else if (since === null) add('warn', 'first-visit', 'First transaction for this site', 'You never signed one for it from this wallet');
-    else if (age !== null && age < DAY) add('notice', 'new-site', 'New site', `You first signed a transaction for it ${ago(age)}`);
+    // A time that is no number is none; with no time now, how long ago is unknown: new, not known.
+    const signed = Number.isFinite(since) ? (since as number) : null;
+    const age = signed !== null && Number.isFinite(now) ? Math.max(0, (now as number) - signed) : null;
+    if (signed === null && connecting) add('warn', 'first-visit', 'New site', 'You never signed a transaction for it in Otus');
+    else if (signed === null) add('warn', 'first-visit', 'First transaction for this site', 'You never signed one for it from this wallet');
+    else if (age === null || age < DAY) add('notice', 'new-site', 'New site', age === null ? undefined : `You first signed a transaction for it ${ago(age)}`);
     else add('ok', 'known-site', 'Known site', host ? `${host} · signed for before` : undefined);
     return findings;
 }

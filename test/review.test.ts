@@ -254,6 +254,10 @@ test('asked to connect, a site is told from its host from the first visit, and f
     assert.deepEqual(told('app.pages.dev', 1_700_000_000).map(([level, text]) => `${level}:${text}`), ['warn:Hosted on pages.dev', 'ok:Known site']);
     // For a transaction, the same findings, a first one told as such.
     assert.deepEqual(siteFindings({ host: 'claim.vercel.app', signedBefore: null }).map((f) => f.text), ['Hosted on vercel.app', 'First transaction for this site']);
+    // A time missing or no number is never known: none signed for, or new when how long ago is unknown.
+    const level = (signedBefore: unknown, now?: number) => siteFindings({ host: 'jup.ag', signedBefore: signedBefore as number, now }, true).map((f) => `${f.level}:${f.code}`);
+    for (const never of [undefined, NaN, Infinity, '5', {}]) assert.deepEqual(level(never, 1_800_000_000), ['warn:first-visit'], String(never));
+    assert.deepEqual([level(5), level(5, NaN), level(5, 1_800_000_000)], [['notice:new-site'], ['notice:new-site'], ['ok:known-site']]);
 });
 
 test('refuses a transaction this wallet does not sign', async () => {
