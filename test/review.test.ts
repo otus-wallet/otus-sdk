@@ -19,7 +19,7 @@ import {
 import { AccountRole, address, createNoopSigner, getAddressDecoder, getAddressEncoder, type Address, type Instruction } from '@solana/kit';
 
 import { Refused } from '../src/errors.ts';
-import type { Context } from '../src/review/assess.ts';
+import { siteFindings, type Context } from '../src/review/assess.ts';
 import { review, type Review } from '../src/review/review.ts';
 import {
     account,
@@ -239,6 +239,21 @@ test('a site hosted where anyone can put one up is a warning, with the host it i
     assert.deepEqual([found?.level, found?.text, found?.note], ['warn', 'Hosted on vercel.app', 'Anyone can put up a site there']);
     const own = await review(transfer(), context({ host: 'jup.ag' }), fakeChain([]));
     assert.equal(own.assessment.findings.some((f) => f.code === 'shared-host'), false);
+});
+
+test('asked to connect, a site is told from its host from the first visit, and from your history with it after', () => {
+    const told = (host: string, signedBefore: number | null) => siteFindings({ host, signedBefore, now: 1_800_000_000 }, true).map((f) => [f.level, f.text, f.note]);
+    assert.deepEqual(told('claim.vercel.app', null), [
+        ['warn', 'Hosted on vercel.app', 'Anyone can put up a site there'],
+        ['warn', 'New site', 'You never signed a transaction for it in Otus'],
+    ]);
+    assert.deepEqual(told('jup-claim.app', null)[0], ['warn', 'This site looks like jup.ag', 'jup-claim.app is not jup.ag']);
+    assert.deepEqual(told('jup.ag', 1_800_000_000 - 3 * 3_600), [['notice', 'New site', 'You first signed a transaction for it 3 hours ago']]);
+    assert.deepEqual(told('jup.ag', 1_800_000_000 - 2 * 86_400), [['ok', 'Known site', 'jup.ag · signed for before']]);
+    // Known or not, a host anyone can put a site up on is said.
+    assert.deepEqual(told('app.pages.dev', 1_700_000_000).map(([level, text]) => `${level}:${text}`), ['warn:Hosted on pages.dev', 'ok:Known site']);
+    // For a transaction, the same findings, a first one told as such.
+    assert.deepEqual(siteFindings({ host: 'claim.vercel.app', signedBefore: null }).map((f) => f.text), ['Hosted on vercel.app', 'First transaction for this site']);
 });
 
 test('refuses a transaction this wallet does not sign', async () => {

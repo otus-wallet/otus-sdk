@@ -224,8 +224,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     if (context.to) given.add(context.to);
     findings.push(...lookalikes([...given], context));
 
-    // Where the request comes from. A site becomes known a day after its first transaction you signed: a site can ask
-    // for a harmless one first, but a scam rarely waits a day.
+    // Where the request comes from.
     const kinds = kindsOf(s, changes, mine, wallet);
     if (context.own) {
         add('ok', 'own-transfer', 'Made in Otus', undefined, 'No site asked for it');
@@ -234,16 +233,8 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         const kind = to ? kinds.get(to) : undefined;
         if (to && (kind === 'program-accounts' || kind === 'programs' || kind === 'mints' || (kind === 'new' && isOffCurveAddress(to)))) add('warn', 'to-program', 'You send to a program’s account', to, 'Not to someone with a key: what you send may not come back');
     } else {
-        const imitated = context.host ? lookalike(context.host) : null;
-        if (imitated) add('warn', 'lookalike', `This site looks like ${imitated}`, undefined, `${context.host} is not ${imitated}`);
-        // Put up where anyone can put one up in a minute: what a scam site, made and dropped by the day, is put up on.
-        const hosted = context.host ? hostedOn(context.host) : null;
-        if (hosted) add('warn', 'shared-host', `Hosted on ${hosted}`, undefined, 'Anyone can put up a site there');
+        findings.push(...siteFindings(context));
         const since = context.signedBefore;
-        const age = since !== null && context.now !== undefined ? Math.max(0, context.now - since) : null;
-        if (since === null) add('warn', 'first-visit', 'First transaction for this site', undefined, 'You never signed one for it from this wallet');
-        else if (age !== null && age < DAY) add('notice', 'new-site', 'New site', undefined, `You first signed a transaction for it ${ago(age)}`);
-        else add('ok', 'known-site', 'Known site', undefined, context.host ? `${context.host} · signed for before` : undefined);
         // A program none of the transactions you signed for it called: worth knowing, as a site taken over would ask for
         // one. A first transaction has nothing to go by, nor one for a site whose programs Otus did not keep yet.
         const before = context.programsBefore;
@@ -252,6 +243,28 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     }
 
     return { ...ranked(findings), mine, yours, keyed, programs, flows, payouts, kinds };
+}
+
+/**
+ * What is known of the site a request comes from: whether its host imitates a known site's, whether it is put up where
+ * anyone can put one up, and your history with it. A site becomes known a day after the first transaction you signed
+ * for it (`signedBefore`): a site can ask for a harmless one first, but a scam rarely waits a day. `connecting`: asked
+ * before any transaction, when it asks to connect, and told for that.
+ */
+export function siteFindings({ host, signedBefore: since, now }: Pick<Context, 'host' | 'signedBefore' | 'now'>, connecting = false): Finding[] {
+    const findings: Finding[] = [];
+    const add = (level: Level, code: string, text: string, note?: string) => findings.push({ level, code, text, ...(note !== undefined && { note }) });
+    const imitated = host ? lookalike(host) : null;
+    if (imitated) add('warn', 'lookalike', `This site looks like ${imitated}`, `${host} is not ${imitated}`);
+    // Put up where anyone can put one up in a minute: what a scam site, made and dropped by the day, is put up on.
+    const hosted = host ? hostedOn(host) : null;
+    if (hosted) add('warn', 'shared-host', `Hosted on ${hosted}`, 'Anyone can put up a site there');
+    const age = since !== null && now !== undefined ? Math.max(0, now - since) : null;
+    if (since === null && connecting) add('warn', 'first-visit', 'New site', 'You never signed a transaction for it in Otus');
+    else if (since === null) add('warn', 'first-visit', 'First transaction for this site', 'You never signed one for it from this wallet');
+    else if (age !== null && age < DAY) add('notice', 'new-site', 'New site', `You first signed a transaction for it ${ago(age)}`);
+    else add('ok', 'known-site', 'Known site', host ? `${host} · signed for before` : undefined);
+    return findings;
 }
 
 /**
