@@ -3,11 +3,12 @@
 import { address, getAddressDecoder, getU32Decoder, getU64Decoder, type Address } from '@solana/kit';
 
 import type { Chain } from '../chain.ts';
+import { PROGRAM_NAMES } from '../programs/known.ts';
 import type { Resolved } from './resolve.ts';
 
 /** `slot`: the slot of its last deploy, null when unknown; `deployed`: when that slot was made, seconds since 1970, asked
- *  of the network only for a deploy recent enough to be fresh (see `DATED`), null otherwise or when unknown;
- *  `upgradeable`: whether its upgrade authority can still change it. */
+ *  of the network only where a review could call the program fresh: a program it can't name, deployed recently enough
+ *  (see `DATED`); null otherwise or when unknown. `upgradeable`: whether its upgrade authority can still change it. */
 export type Deployment = { slot: bigint | null; deployed: number | null; upgradeable: boolean | null; builtin: boolean };
 
 const UPGRADEABLE_LOADER = address('BPFLoaderUpgradeab1e11111111111111111111111');
@@ -16,7 +17,7 @@ const NATIVE_LOADER = address('NativeLoader1111111111111111111111111111111');
 const PROGRAM_DATA_HEAD = 45; // kind (4), slot (8), upgrade authority (an option: 1 + 32)
 // Slots back a deploy is dated within. One further back is more than eight days old even if each slot took 100 ms, half
 // what Solana's shortest take, so no review calls it fresh (a week): most programs skip asking, and an old slot's time is
-// slow to find, as the node keeps it far.
+// slow to find, as the node keeps it far. A program Otus names is never called fresh (they redeploy often): not dated.
 const DATED = BigInt((8 * 86_400 * 1_000) / 100);
 
 /** Resolved → each called program's deployment. Asks the network for what the transaction's accounts do not hold. */
@@ -42,8 +43,8 @@ export async function deployments(r: Resolved, chain: Chain): Promise<Map<Addres
     });
     await Promise.all(
         [...slots].map(async ([program, { slot, upgradeable }]) => {
-            const recent = r.slot - slot <= DATED;
-            found.set(program, { slot, deployed: recent ? await chain.blockTime(slot).catch(() => null) : null, upgradeable, builtin: false });
+            const dated = r.slot - slot <= DATED && !PROGRAM_NAMES.has(program);
+            found.set(program, { slot, deployed: dated ? await chain.blockTime(slot).catch(() => null) : null, upgradeable, builtin: false });
         }),
     );
     return found;

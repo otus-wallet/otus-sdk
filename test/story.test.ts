@@ -115,6 +115,11 @@ test('reads when an upgradeable program was deployed, from its program data acco
     assert.deepEqual(await deployments({ ...resolved, slot: 123_456n + DATED + 1n }, counting), new Map([[EVIL_PROGRAM, { slot: 123_456n, deployed: null, upgradeable: true, builtin: false }]]));
     assert.deepEqual((await deployments({ ...resolved, slot: 123_456n + DATED }, counting)).get(EVIL_PROGRAM)?.deployed, 1_700_000_000);
     assert.deepEqual(asked, [123_456n]);
+    // A program Otus names, however recent: never called fresh, so not dated.
+    const JUPITER = address('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4');
+    const named = { ...resolved, accounts: resolved.accounts.map((a) => (a.address === EVIL_PROGRAM ? { ...a, address: JUPITER } : a)) };
+    assert.deepEqual(await deployments(named, counting), new Map([[JUPITER, { slot: 123_456n, deployed: null, upgradeable: true, builtin: false }]]));
+    assert.deepEqual(asked, [123_456n]);
 });
 
 // What each instruction says, given how the transaction's accounts read.
