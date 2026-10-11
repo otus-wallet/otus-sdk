@@ -215,13 +215,13 @@ test('says why it leaves a transaction as the site sent it, for the review’s G
         },
     });
     const cases: [Uint8Array, Promise<Prepared>, RegExp, string[]][] = [
-        [cosigned, prepared(cosigned), /^Another account signs it too/, []],
+        [cosigned, prepared(cosigned), /another account's signature/, []],
         [transfer(), prepared(transfer(), { error: 'AccountNotFound' }), /simulation failed/, []],
-        [transfer('legacy', new Uint8Array(1000)), prepared(transfer('legacy', new Uint8Array(1000))), /too full/, []],
-        [tabled, prepare(await review(tabled, context, chain), PAYER, chain), /format/, ['warn:blocks-guards']],
+        [transfer('legacy', new Uint8Array(1000)), prepared(transfer('legacy', new Uint8Array(1000))), /no room left/, []],
+        [tabled, prepare(await review(tabled, context, chain), PAYER, chain), /lookup tables/, ['warn:blocks-guards']],
         [transfer(), prepared(transfer(), { unitsConsumed: 1n }, { fees: async () => Promise.reject(new Error('429')) }), /network didn't answer/, []],
-        [original, prepare(await review(original, context, failing(false)), PAYER, failing(false)), /fails with guards/, ['danger:guards-fail']],
-        [original, prepare(await review(original, context, failing(true)), PAYER, failing(true)), /fails with guards/, ['danger:simulation-failed']],
+        [original, prepare(await review(original, context, failing(false)), PAYER, failing(false)), /fails with them/, ['danger:guards-fail']],
+        [original, prepare(await review(original, context, failing(true)), PAYER, failing(true)), /fails with them/, ['danger:simulation-failed']],
     ];
     for (const [sent, result, reason, findings] of cases) {
         const p = await result;
@@ -292,12 +292,12 @@ test('failing once guarded for what Otus adds goes as the site sent it; a guard 
         const p = await prepared(original, {}, { simulate: failing(error, used) });
         return [p.unguarded, p.findings.map((f) => f.code)];
     };
-    const full = ["It's too full for Otus to lock it", []];
+    const full = ["Otus can't add guards because the transaction has no room left for them", []];
     for (const error of ['MaxLoadedAccountsDataSizeExceeded', 'TooManyAccountLocks', { InsufficientFundsForRent: { account_index: 0 } }] as Simulation['error'][]) assert.deepEqual(await said(error), full, JSON.stringify(error));
     const spent = { InstructionError: [0, 'ComputationalBudgetExceeded'] } as Simulation['error'];
     assert.deepEqual(await said(spent, 1_396_000n), full); // the guards' units on top of nearly all there are
     // 150,000 units as sent, all 1,400,000 once guarded; another account left without its rent; a guard failing.
-    for (const error of [spent, { InsufficientFundsForRent: { account_index: 1 } }, { InstructionError: [2, { Custom: 6400 }] }] as Simulation['error'][]) assert.deepEqual(await said(error), ['it fails with guards', ['guards-fail']], JSON.stringify(error));
+    for (const error of [spent, { InsufficientFundsForRent: { account_index: 1 } }, { InstructionError: [2, { Custom: 6400 }] }] as Simulation['error'][]) assert.deepEqual(await said(error), ["Otus can't add guards because the transaction fails with them", ['guards-fail']], JSON.stringify(error));
 });
 
 test('short of units at the limit set, it gets the most there is and keeps its guards; a fee Otus adds that leaves the wallet without rent is dropped', async () => {

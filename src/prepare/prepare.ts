@@ -52,10 +52,10 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade);
     // As the site sent it, without guards: why, for the review's Guards line; and what else was found on the way.
     const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null });
-    if (r.signers.length > 1) return asIs("Another account signs it too, so Otus can't lock it");
+    if (r.signers.length > 1) return asIs("Otus can't add guards without breaking another account's signature");
     if (r.simulation.error !== null) return asIs('the simulation failed');
     const loaded = r.accounts.filter((a) => a.table).map((a) => a.address);
-    if ([LIGHTHOUSE, COMPUTE_BUDGET_PROGRAM_ADDRESS].some((p) => loaded.includes(p))) return asIs("Its format doesn't let Otus lock it", [TABLED]);
+    if ([LIGHTHOUSE, COMPUTE_BUDGET_PROGRAM_ADDRESS].some((p) => loaded.includes(p))) return asIs("Otus can't add guards because its lookup tables load the programs they need", [TABLED]);
 
     const guards = gross.map((h) => ({ hold: h, data: assertions(h, wallet) }));
     const added = guards.reduce((n, g) => n + g.data.length, 0);
@@ -76,7 +76,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     // priority fee leaves the wallet without, units the guards could have used up), it goes as the site sent it;
     // otherwise it acts other than reviewed. `limit`: the units it had.
     const failed = async (error: NonNullable<Simulation['error']>, limit: number) =>
-        ours(error, { used: r.simulation.unitsConsumed, limit, added }) ? asIs("It's too full for Otus to lock it") : asIs('it fails with guards', [await whyFailed(r, chain)]);
+        ours(error, { used: r.simulation.unitsConsumed, limit, added }) ? asIs("Otus can't add guards because the transaction has no room left for them") : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
     const sitePrice = r.message.version === 1 ? r.message.config.priorityFeeLamports : unitPrice(r.message);
     // The price asked of the network while the limit is measured, which needs none.
     const pricingAsked = sitePrice == null ? pricing(r, chain) : Promise.resolve(null);
@@ -99,7 +99,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         if (siteLimit === null || (roomed && added > 0)) {
             if (roomed) room = MAX_ROOM;
             const probe = await wired(unpriced(signable(MAX_COMPUTE_UNIT_LIMIT, false).message), r.signers);
-            if (probe === null) return asIs("It's too full for Otus to lock it");
+            if (probe === null) return asIs("Otus can't add guards because the transaction has no room left for them");
             const measured = await chain.simulate(probe.bytes, [], r.slot);
             if (measured.error !== null) return failed(measured.error, MAX_COMPUTE_UNIT_LIMIT);
             // An RPC that does not say what it used: the runtime's default for the site's instructions, and the guards'
@@ -122,14 +122,14 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         let tried = await attempt(limit, true);
         if (tried?.check.error && spent(tried.check.error) && limit < MAX_COMPUTE_UNIT_LIMIT) tried = await attempt((limit = MAX_COMPUTE_UNIT_LIMIT), true);
         if (tried?.check.error && rentShort(tried.check.error) && tried.price > 0n) tried = await attempt(limit, false);
-        if (tried === null) return asIs("It's too full for Otus to lock it");
+        if (tried === null) return asIs("Otus can't add guards because the transaction has no room left for them");
         const { message, held, price, bytes, hash, check } = tried;
         if (check.error !== null) return failed(check.error, limit);
         const total = check.fee ?? fee(message);
         return { bytes, hash, fee: total, holds: held, unguarded: held.length > 0 ? null : (bare ?? 'nothing of yours to hold'), findings: [...feeFindings(r, wallet, total), ...differs(r, message, check)], units: limit, priced: price > 0n && market ? market.from : null, room: room !== siteRoom ? room : null, priority: price > 0n && market ? priorityFee(message) : null };
     } catch (cause) {
         console.error('Otus: preparing', cause);
-        return asIs("The network didn't answer, so Otus couldn't lock it");
+        return asIs("Otus couldn't add guards because the network didn't answer");
     }
 }
 
