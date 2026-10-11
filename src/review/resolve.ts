@@ -51,6 +51,7 @@ function loaded(lookups: Message['lookups'], tables: Address[][], kind: 'writabl
 }
 
 const TABLE_HEADER = 56; // type, deactivation slot, last extended slot and index, authority, padding
+const TABLE_ENTRIES = 256; // the most a lookup table holds: an index is one byte
 
 /** Lookup tables → the addresses each holds. Throws Refused for one that is not a live table. `reach`: the highest
  *  entry asked of each; a table the chain keeps (`chain.tables`) with that many entries is not read again. */
@@ -78,6 +79,7 @@ function entriesOf(a: MaybeEncodedAccount): Address[] {
         a.programAddress === LOOKUP_TABLE_PROGRAM &&
         a.data.length >= TABLE_HEADER &&
         (a.data.length - TABLE_HEADER) % 32 === 0 &&
+        (a.data.length - TABLE_HEADER) / 32 <= TABLE_ENTRIES &&
         getU32Decoder().decode(a.data) === 1;
     if (!ok) throw new Refused(`lookup table ${a.address} not found`);
     return getArrayDecoder(getAddressDecoder(), { size: 'remainder' }).decode(a.data, TABLE_HEADER);

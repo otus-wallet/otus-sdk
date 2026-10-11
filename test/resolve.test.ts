@@ -6,7 +6,7 @@ import type { Address } from '@solana/kit';
 import type { Chain } from '../src/chain.ts';
 import { Refused } from '../src/errors.ts';
 import { decode } from '../src/review/decode.ts';
-import { LOOKUP_TABLE_PROGRAM, resolve, type Resolved } from '../src/review/resolve.ts';
+import { loadTables, LOOKUP_TABLE_PROGRAM, resolve, type Resolved } from '../src/review/resolve.ts';
 import { account, fakeChain, key, lookupTable, PAYER, RECIPIENT, SYSTEM, TABLE, transfer, transferWithTable } from './helpers.ts';
 
 const roles = (r: Resolved) => r.accounts.map((a) => [a.address, a.signer, a.writable, a.table]);
@@ -70,4 +70,21 @@ test('a lookup table the chain keeps is read once; again only when an entry past
     assert.equal(kept.size, 0);
     const broken = { ...counting([RECIPIENT]), tables: { get: () => Promise.reject(new Error('storage')), set: () => {} } };
     assert.equal((await resolve(tx, broken)).accounts.at(-1)?.address, RECIPIENT);
+});
+
+test('tables kept and read come back each in its own place, one asked twice too; none holds more than 256 entries', async () => {
+    const [kept, read] = [key(81), key(82)];
+    const tables = { get: async (t: Address) => (t === kept ? [key(1), key(2)] : undefined), set: () => {} };
+    const asked: Address[][] = [];
+    const chain: Chain = { ...fakeChain([account(read, LOOKUP_TABLE_PROGRAM, 1n, lookupTable([key(3)]))]), tables };
+    const counting: Chain = { ...chain, accounts: (a) => (asked.push([...a]), chain.accounts(a)) };
+    assert.deepEqual(await loadTables([kept, read, kept], counting, [1, 0, 0]), [[key(1), key(2)], [key(3)], [key(1), key(2)]]);
+    assert.deepEqual(asked, [[read]]);
+    // Asked past what was kept of it: read, in its place.
+    const grown = { ...counting, accounts: async (a: readonly Address[]) => ({ slot: 1n, accounts: a.map((x) => account(x, LOOKUP_TABLE_PROGRAM, 1n, lookupTable(x === kept ? [key(1), key(2), key(4)] : [key(3)]))) }) };
+    assert.deepEqual(await loadTables([read, kept], grown, [0, 2]), [[key(3)], [key(1), key(2), key(4)]]);
+    // 257 entries: no table holds that many.
+    const huge = fakeChain([account(read, LOOKUP_TABLE_PROGRAM, 1n, lookupTable(Array.from({ length: 257 }, () => key(5))))]);
+    await assert.rejects(loadTables([read], huge), /not found/);
+    assert.equal((await loadTables([read], fakeChain([account(read, LOOKUP_TABLE_PROGRAM, 1n, lookupTable(Array.from({ length: 256 }, () => key(5))))])))[0].length, 256);
 });

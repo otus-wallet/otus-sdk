@@ -25,7 +25,7 @@ export type Prepared = {
     hash: string;
     fee: bigint; // what its fee payer pays
     holds: Hold[]; // the guards it carries
-    unguarded: string | null; // why it carries none
+    unguarded: string | null; // why it carries none: words for the user, or one of the two that go without saying below
     findings: Finding[]; // added to the review's
     units: number | null; // the compute limit Otus set, when it changed the transaction
     priced: Pricing | null; // where the priority fee Otus set comes from, when it set one
@@ -41,6 +41,11 @@ const MAX_PRIORITY_FEE = 1_000_000n; // lamports: the most a priority fee set by
 const FEE_ACCOUNTS = 128; // getRecentPrioritizationFees takes at most 128 addresses, getPriorityFeeEstimate 500
 const ROOM_STEP = 32 * 1024; // bytes: a v1 data limit is rounded up to this, the step the network counts it by
 
+/** Why a transaction carries no guards, when that goes without saying: nothing of yours to hold, or a simulation that
+ *  failed (the review says so already). */
+export const NOTHING_TO_HOLD = 'nothing of yours to hold';
+export const SIMULATION_FAILED = 'the simulation failed';
+
 /**
  * Review → the transaction to sign. When this wallet alone signs, it gets guards on your accounts, a compute limit fitted
  * to the simulation and, unless the site set one, a priority fee from recent fees; then it is simulated again. Otherwise,
@@ -54,7 +59,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null });
     // Changed, the transaction would need every signature again: one another account made, or will make over it as it is.
     if (r.signers.length > 1) return asIs(r.signed.some((a) => a !== wallet) ? "Otus can't add guards because the transaction is already signed by another account" : "Otus can't add guards because another account must sign the transaction too");
-    if (r.simulation.error !== null) return asIs('the simulation failed');
+    if (r.simulation.error !== null) return asIs(SIMULATION_FAILED);
     const loaded = r.accounts.filter((a) => a.table).map((a) => a.address);
     if ([LIGHTHOUSE, COMPUTE_BUDGET_PROGRAM_ADDRESS].some((p) => loaded.includes(p))) return asIs("Otus can't add guards because its lookup tables load the programs they need", [TABLED]);
 
@@ -111,7 +116,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
             if (roomed) room = roomFor(measured.loadedBytes ?? null, siteRoom);
         }
         market = await pricingAsked;
-        if (signable(limit).message === r.message) return asIs('nothing of yours to hold');
+        if (signable(limit).message === r.message) return asIs(NOTHING_TO_HOLD);
         // As it will be signed, simulated once more. Short of units at the limit set (a run may use more than the last,
         // or a program act otherwise at another limit), it gets the most there is rather than losing its guards; left
         // without its rent by Otus's priority fee, it goes without that fee.
@@ -127,7 +132,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         const { message, held, price, bytes, hash, check } = tried;
         if (check.error !== null) return failed(check.error, limit);
         const total = check.fee ?? fee(message);
-        return { bytes, hash, fee: total, holds: held, unguarded: held.length > 0 ? null : (bare ?? 'nothing of yours to hold'), findings: [...feeFindings(r, wallet, total), ...differs(r, message, check)], units: limit, priced: price > 0n && market ? market.from : null, room: room !== siteRoom ? room : null, priority: price > 0n && market ? priorityFee(message) : null };
+        return { bytes, hash, fee: total, holds: held, unguarded: held.length > 0 ? null : (bare ?? NOTHING_TO_HOLD), findings: [...feeFindings(r, wallet, total), ...differs(r, message, check)], units: limit, priced: price > 0n && market ? market.from : null, room: room !== siteRoom ? room : null, priority: price > 0n && market ? priorityFee(message) : null };
     } catch (cause) {
         console.error('Otus: preparing', cause);
         return asIs("Otus couldn't add guards because the network didn't answer");
