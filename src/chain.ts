@@ -4,7 +4,9 @@ import {
     getBase64Decoder,
     getBase64Encoder,
     isAddress,
+    isSolanaError,
     parseBase64RpcAccount,
+    SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
     type Address,
     type Base64EncodedWireTransaction,
     type Blockhash,
@@ -57,10 +59,43 @@ export type Tables = { get(table: Address): Promise<readonly Address[] | undefin
 const RECENT_BLOCKHASHES = address('SysvarRecentB1ockHashes11111111111111111111');
 
 const BATCH = 100; // getMultipleAccounts takes at most 100 addresses
+const BEHIND_TRIES = 5; // a simulation asked of a node behind the slot it must see: it catches up in a slot or two
+const BEHIND_WAIT = 150; // ms between tries
 
 /** A Chain over a Solana JSON-RPC endpoint: `rpcChain(rpcAt(url))`. */
 export function rpcChain(rpc: OtusRpc): Chain {
     const wire = (transaction: Uint8Array) => getBase64Decoder().decode(transaction) as Base64EncodedWireTransaction;
+    // One simulation, as the RPC gives it.
+    const simulated = async (transaction: Uint8Array, watch: readonly Address[], minContextSlot: bigint): Promise<Simulation> => {
+        const { value: v } = await rpc
+            .simulateTransaction(wire(transaction), {
+                encoding: 'base64',
+                sigVerify: false,
+                replaceRecentBlockhash: true,
+                innerInstructions: true,
+                commitment: 'confirmed',
+                minContextSlot,
+                accounts: { addresses: watch, encoding: 'base64' },
+            })
+            .send();
+        if (!('err' in v)) throw new Error('RPC sent a simulation without its result');
+        return {
+            error: v.err,
+            logs: v.logs ?? [],
+            fee: v.fee ?? null,
+            unitsConsumed: v.unitsConsumed ?? null,
+            loaded: v.loadedAddresses ? [...v.loadedAddresses.writable, ...v.loadedAddresses.readonly] : null,
+            loadedBytes: v.loadedAccountsDataSize ?? null,
+            // A failed transaction changes nothing but the fee, so what the RPC sends after it is not read.
+            after: v.err === null ? (v.accounts ?? []).map((a, i) => parseBase64RpcAccount(watch[i], a)) : [],
+            // The RPC names the program of each inner call, and parses the ones it knows.
+            inner: (v.innerInstructions ?? []).map((group) => ({
+                index: group.index,
+                calls: group.instructions.flatMap((ix) => ('programId' in ix ? [{ program: ix.programId, type: 'parsed' in ix ? ix.parsed.type : null, ...(typeof ix.stackHeight === 'number' && { depth: ix.stackHeight }), ...closing(ix) }] : [])),
+            })),
+            innerListed: v.innerInstructions != null && v.innerInstructions.every((group) => group.instructions.every((ix) => 'programId' in ix)),
+        };
+    };
     return {
         async accounts(addresses) {
             let slot = 0n;
@@ -78,34 +113,16 @@ export function rpcChain(rpc: OtusRpc): Chain {
         },
 
         async simulate(transaction, watch, minContextSlot) {
-            const { value: v } = await rpc
-                .simulateTransaction(wire(transaction), {
-                    encoding: 'base64',
-                    sigVerify: false,
-                    replaceRecentBlockhash: true,
-                    innerInstructions: true,
-                    commitment: 'confirmed',
-                    minContextSlot,
-                    accounts: { addresses: watch, encoding: 'base64' },
-                })
-                .send();
-            if (!('err' in v)) throw new Error('RPC sent a simulation without its result');
-            return {
-                error: v.err,
-                logs: v.logs ?? [],
-                fee: v.fee ?? null,
-                unitsConsumed: v.unitsConsumed ?? null,
-                loaded: v.loadedAddresses ? [...v.loadedAddresses.writable, ...v.loadedAddresses.readonly] : null,
-                loadedBytes: v.loadedAccountsDataSize ?? null,
-                // A failed transaction changes nothing but the fee, so what the RPC sends after it is not read.
-                after: v.err === null ? (v.accounts ?? []).map((a, i) => parseBase64RpcAccount(watch[i], a)) : [],
-                // The RPC names the program of each inner call, and parses the ones it knows.
-                inner: (v.innerInstructions ?? []).map((group) => ({
-                    index: group.index,
-                    calls: group.instructions.flatMap((ix) => ('programId' in ix ? [{ program: ix.programId, type: 'parsed' in ix ? ix.parsed.type : null, ...(typeof ix.stackHeight === 'number' && { depth: ix.stackHeight }), ...closing(ix) }] : [])),
-                })),
-                innerListed: v.innerInstructions != null && v.innerInstructions.every((group) => group.instructions.every((ix) => 'programId' in ix)),
-            };
+            // A provider's nodes answer in turn: the one simulating may be a little behind the one that read the
+            // accounts. Asked again, it has caught up.
+            for (let tried = 1; ; tried++) {
+                try {
+                    return await simulated(transaction, watch, minContextSlot);
+                } catch (e) {
+                    if (tried === BEHIND_TRIES || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
+                    await new Promise((done) => setTimeout(done, BEHIND_WAIT));
+                }
+            }
         },
 
         async fees(writable) {

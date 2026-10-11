@@ -56,3 +56,23 @@ test('asks the RPC for the price it recommends, as Helius has it: a fraction rou
     assert.equal(await chainAnswering(() => ({})).chain.recommended([PAYER]), null);
     assert.equal(await chainAnswering(() => ({ priorityFeeEstimate: -1 })).chain.recommended([PAYER]), null);
 });
+
+test('a simulation a node behind the slot asked for refuses is asked again, a few times; any other error at once', async () => {
+    let behind = 2;
+    const calls: string[] = [];
+    const transport = async <T>({ payload }: { payload: unknown }): Promise<T> => {
+        const { id, method } = payload as { id: number; method: string };
+        calls.push(method);
+        if (behind-- > 0) return { jsonrpc: '2.0', id, error: { code: -32016, message: 'Minimum context slot has not been reached', data: { contextSlot: 8 } } } as T;
+        return { jsonrpc: '2.0', id, result: { context: { slot: 9 }, value: { err: null, logs: [], innerInstructions: [], accounts: [wallet] } } } as T;
+    };
+    const chain = rpcChain(rpcFrom(transport));
+    assert.equal((await chain.simulate(new Uint8Array(), [PAYER], 9n)).error, null);
+    assert.equal(calls.length, 3);
+    behind = 10; // never catches up: refused after five
+    await assert.rejects(chain.simulate(new Uint8Array(), [PAYER], 9n), /Minimum context slot/);
+    assert.equal(calls.length, 8);
+    const failing = rpcChain(rpcFrom(async <T>({ payload }: { payload: unknown }) => (calls.push('other'), { jsonrpc: '2.0', id: (payload as { id: number }).id, error: { code: -32005, message: 'Node is behind' } }) as T));
+    await assert.rejects(failing.simulate(new Uint8Array(), [PAYER], 9n));
+    assert.equal(calls.length, 9);
+});
