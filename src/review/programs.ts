@@ -18,6 +18,7 @@ const PROGRAM_DATA_HEAD = 45; // kind (4), slot (8), upgrade authority (an optio
 // Slots back a deploy is dated within. One further back is more than eight days old even if each slot took 100 ms, half
 // what Solana's shortest take, so no review calls it fresh (a week): most programs skip asking, and an old slot's time is
 // slow to find, as the node keeps it far. A program Otus names is never called fresh (they redeploy often): not dated.
+// A local validator warped past this many slots keeps the programs it was started with at slot 0: not dated either.
 const DATED = BigInt((8 * 86_400 * 1_000) / 100);
 
 /** Resolved → each called program's deployment. Asks the network for what the transaction's accounts do not hold. */

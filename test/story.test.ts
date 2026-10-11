@@ -107,6 +107,7 @@ test('reads when an upgradeable program was deployed, from its program data acco
         blockTime: async (slot: bigint) => (slot === 123_456n ? 1_700_000_000 : null),
     };
     const resolved = await resolve(await decode(DRAIN), chain);
+    // Read at slot 1, below the deploy (a node behind, say): dated.
     assert.deepEqual(await deployments(resolved, chain), new Map([[EVIL_PROGRAM, { slot: 123_456n, deployed: 1_700_000_000, upgradeable: true, builtin: false }]]));
     // Further back than eight days at a slot every 100 ms: too old to be fresh, its time is not asked; dated up to there.
     const asked: bigint[] = [];
@@ -120,6 +121,31 @@ test('reads when an upgradeable program was deployed, from its program data acco
     const named = { ...resolved, accounts: resolved.accounts.map((a) => (a.address === EVIL_PROGRAM ? { ...a, address: JUPITER } : a)) };
     assert.deepEqual(await deployments(named, counting), new Map([[JUPITER, { slot: 123_456n, deployed: null, upgradeable: true, builtin: false }]]));
     assert.deepEqual(asked, [123_456n]);
+});
+
+test('a loader v4 program is dated the same way: recent, asked; further back, not', async () => {
+    const v4 = account(EVIL_PROGRAM, address('LoaderV411111111111111111111111111111111111'), 1n, new Uint8Array([...getU64Encoder().encode(123_456n), ...getAddressEncoder().encode(ATTACKER), ...getU64Encoder().encode(0n)]));
+    const asked: bigint[] = [];
+    const chain = { ...fakeChain([{ ...v4, executable: true } as typeof v4]), blockTime: async (slot: bigint) => (asked.push(slot), 1_700_000_000) };
+    const resolved = await resolve(await decode(DRAIN), chain);
+    assert.deepEqual(await deployments({ ...resolved, slot: 123_456n + 6_912_000n }, chain), new Map([[EVIL_PROGRAM, { slot: 123_456n, deployed: 1_700_000_000, upgradeable: true, builtin: false }]]));
+    assert.deepEqual((await deployments({ ...resolved, slot: 123_456n + 6_912_001n }, chain)).get(EVIL_PROGRAM)?.deployed, null);
+    assert.deepEqual(asked, [123_456n]);
+});
+
+test('end to end: an unknown program deployed two hours ago, as the chain tells it, is danger in the review', async () => {
+    const programData = key(41);
+    const program = account(EVIL_PROGRAM, address('BPFLoaderUpgradeab1e11111111111111111111111'), 1_141_440n, new Uint8Array([...getU32Encoder().encode(2), ...getAddressEncoder().encode(programData)]));
+    const head = new Uint8Array([...getU32Encoder().encode(3), ...getU64Encoder().encode(123_456n), 1, ...getAddressEncoder().encode(ATTACKER)]);
+    const base = fakeChain([...BEFORE, { ...program, executable: true } as typeof program], AFTER);
+    const chain = {
+        ...base,
+        accounts: async (addresses: readonly Address[]) => ({ ...(await base.accounts(addresses)), slot: 123_456n + 36_000n }), // two hours on, at 200 ms
+        heads: async (addresses: readonly Address[]) => addresses.map((a) => account(a, address('BPFLoaderUpgradeab1e11111111111111111111111'), 1n, head)),
+        blockTime: async (slot: bigint) => (slot === 123_456n ? 1_700_000_000 : null),
+    };
+    const r = await review(DRAIN, context({ now: 1_700_007_200 }), chain);
+    assert.deepEqual(r.assessment.findings.find((f) => f.code === 'fresh-program'), { level: 'danger', code: 'fresh-program', text: 'An unknown program was deployed 2 hours ago', note: 'Its authority can still change it', subject: EVIL_PROGRAM });
 });
 
 // What each instruction says, given how the transaction's accounts read.
