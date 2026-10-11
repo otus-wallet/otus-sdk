@@ -52,7 +52,8 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade);
     // As the site sent it, without guards: why, for the review's Guards line; and what else was found on the way.
     const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null });
-    if (r.signers.length > 1) return asIs("Otus can't add guards without breaking another account's signature");
+    // Changed, the transaction would need every signature again: one another account made, or will make over it as it is.
+    if (r.signers.length > 1) return asIs(r.signed.some((a) => a !== wallet) ? "Otus can't add guards because the transaction is already signed by another account" : "Otus can't add guards because another account must sign the transaction too");
     if (r.simulation.error !== null) return asIs('the simulation failed');
     const loaded = r.accounts.filter((a) => a.table).map((a) => a.address);
     if ([LIGHTHOUSE, COMPUTE_BUDGET_PROGRAM_ADDRESS].some((p) => loaded.includes(p))) return asIs("Otus can't add guards because its lookup tables load the programs they need", [TABLED]);

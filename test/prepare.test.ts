@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS, getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction, getSetLoadedAccountsDataSizeLimitInstruction } from '@solana-program/compute-budget';
 import { getAdvanceNonceAccountInstruction, getTransferSolInstruction } from '@solana-program/system';
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { AccountRole, address, createNoopSigner, getAddressEncoder, getI64Encoder, getU32Encoder, getU64Encoder, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
+import { AccountRole, address, createNoopSigner, getAddressEncoder, getTransactionDecoder, getTransactionEncoder, getI64Encoder, getU32Encoder, getU64Encoder, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import type { Chain, Simulation } from '../src/chain.ts';
 import type { Context } from '../src/review/assess.ts';
@@ -214,8 +214,12 @@ test('says why it leaves a transaction as the site sent it, for the review’s G
             return { ...(await chain.simulate(tx, watch, slot)), error: watch.length > 0 || (asSent && !alsoOriginal) ? null : { InstructionError: [1, { Custom: 6400 }] } };
         },
     });
+    // The same, with the other account's signature in place already.
+    const decoded = getTransactionDecoder().decode(cosigned);
+    const countersigned = new Uint8Array(getTransactionEncoder().encode({ ...decoded, signatures: { ...decoded.signatures, [key(60)]: new Uint8Array(64).fill(7) as never } }));
     const cases: [Uint8Array, Promise<Prepared>, RegExp, string[]][] = [
-        [cosigned, prepared(cosigned), /another account's signature/, []],
+        [cosigned, prepared(cosigned), /another account must sign the transaction too$/, []],
+        [countersigned, prepared(countersigned), /the transaction is already signed by another account$/, []],
         [transfer(), prepared(transfer(), { error: 'AccountNotFound' }), /simulation failed/, []],
         [transfer('legacy', new Uint8Array(1000)), prepared(transfer('legacy', new Uint8Array(1000))), /no room left/, []],
         [tabled, prepare(await review(tabled, context, chain), PAYER, chain), /lookup tables/, ['warn:blocks-guards']],
