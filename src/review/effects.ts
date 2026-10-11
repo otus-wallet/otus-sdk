@@ -25,6 +25,7 @@ export type Names = {
     token(mint: Address | null): { symbol: string; decimals: number | null; verified: boolean }; // a symbol only for a verified token
     program(address: Address): string;
     priorityFee: bigint | null; // lamports the Compute Budget price comes to
+    unitsUsed?: bigint | null; // compute units the transaction used, as simulated or as it landed; null or none when not said
     payer: Address;
     changes(address: Address): string[]; // what the simulation changed in an account of yours, in words
     icon?(mint: Address): string | null; // a verified token's logo
@@ -175,8 +176,11 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
     }
     if (e.program === COMPUTE_BUDGET_PROGRAM_ADDRESS) {
         switch (e.name) {
-            case 'SetComputeUnitLimit':
-                return { args: `${Number(arg('units')).toLocaleString('en-US')} CU`, effects: [line(`Caps compute at ${Number(arg('units')).toLocaleString('en-US')} units`)] };
+            case 'SetComputeUnitLimit': {
+                // What it used beside what it asks for: a limit far above it costs the fee of units never used.
+                const [units, used] = [Number(arg('units')).toLocaleString('en-US'), n.unitsUsed == null ? null : Number(n.unitsUsed).toLocaleString('en-US')];
+                return { args: used === null ? `${units} CU` : `${units} CU · ${used} used`, effects: [line(used === null ? `Caps compute at ${units} units` : `Caps compute at ${units} units; it uses ${used}`)] };
+            }
             case 'SetComputeUnitPrice':
                 return { args: `${Number(arg('microLamports')).toLocaleString('en-US')} µlamports/CU`, effects: [line(n.priorityFee === null ? 'Sets a priority fee' : `Priority fee ${sol(n.priorityFee)} SOL, paid by ${who(n.payer)}`)] };
             case 'RequestHeapFrame':

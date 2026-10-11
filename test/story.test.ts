@@ -179,6 +179,14 @@ test('tells what an instruction does, in words', async () => {
     assert.deepEqual(blind, { args: 'No plugin reads it · data 0x6f2a9100… · 5 bytes', effects: [{ text: '−0.001 USDC from your USDC account', tone: 'danger' }] });
 });
 
+test('a compute limit says what the transaction used beside it, when that is known', async () => {
+    const { getSetComputeUnitLimitInstruction } = await import('@solana-program/compute-budget');
+    const limit = await explained(getSetComputeUnitLimitInstruction({ units: 1_400_000 }));
+    assert.deepEqual(story(limit, { ...names, unitsUsed: 301_777n }), { args: '1,400,000 CU · 301,777 used', effects: [{ text: 'Caps compute at 1,400,000 units; it uses 301,777', tone: 'plain' }] });
+    assert.deepEqual(story(limit, names), { args: '1,400,000 CU', effects: [{ text: 'Caps compute at 1,400,000 units', tone: 'plain' }] });
+    assert.equal(story(limit, { ...names, unitsUsed: null }).args, '1,400,000 CU');
+});
+
 test('a nonce moved on leads a durable transaction; anywhere else it only takes back what was signed on it', () => {
     const e: Explained = { program: address('11111111111111111111111111111111'), programName: 'System Program', source: 'plugin', data: new Uint8Array([4, 0, 0, 0]), name: 'AdvanceNonceAccount', accounts: [{ role: 'nonceAccount', address: address('11111111111111111111111111111112') }], args: [] };
     const n = { who: (a: Address) => a.slice(0, 4) } as unknown as Names;
