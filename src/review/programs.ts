@@ -5,13 +5,19 @@ import { address, getAddressDecoder, getU32Decoder, getU64Decoder, type Address 
 import type { Chain } from '../chain.ts';
 import type { Resolved } from './resolve.ts';
 
-/** `deployed`: seconds since 1970, null when unknown; `upgradeable`: whether its upgrade authority can still change it. */
-export type Deployment = { deployed: number | null; upgradeable: boolean | null; builtin: boolean };
+/** `slot`: the slot of its last deploy, null when unknown; `deployed`: when that slot was made, seconds since 1970, asked
+ *  of the network only for a deploy recent enough to be fresh (see `DATED`), null otherwise or when unknown;
+ *  `upgradeable`: whether its upgrade authority can still change it. */
+export type Deployment = { slot: bigint | null; deployed: number | null; upgradeable: boolean | null; builtin: boolean };
 
 const UPGRADEABLE_LOADER = address('BPFLoaderUpgradeab1e11111111111111111111111');
 const LOADER_V4 = address('LoaderV411111111111111111111111111111111111');
 const NATIVE_LOADER = address('NativeLoader1111111111111111111111111111111');
 const PROGRAM_DATA_HEAD = 45; // kind (4), slot (8), upgrade authority (an option: 1 + 32)
+// Slots back a deploy is dated within. One further back is more than eight days old even if each slot took 100 ms, half
+// what Solana's shortest take, so no review calls it fresh (a week): most programs skip asking, and an old slot's time is
+// slow to find, as the node keeps it far.
+const DATED = BigInt((8 * 86_400 * 1_000) / 100);
 
 /** Resolved → each called program's deployment. Asks the network for what the transaction's accounts do not hold. */
 export async function deployments(r: Resolved, chain: Chain): Promise<Map<Address, Deployment>> {
@@ -21,22 +27,23 @@ export async function deployments(r: Resolved, chain: Chain): Promise<Map<Addres
     for (const ix of r.message.instructions) {
         const { address: program, state } = r.accounts[ix.programAddressIndex];
         if (found.has(program) || slots.has(program) || programData.has(program)) continue;
-        if (!state.exists) found.set(program, { deployed: null, upgradeable: null, builtin: false });
-        else if (state.programAddress === NATIVE_LOADER) found.set(program, { deployed: null, upgradeable: false, builtin: true });
+        if (!state.exists) found.set(program, { slot: null, deployed: null, upgradeable: null, builtin: false });
+        else if (state.programAddress === NATIVE_LOADER) found.set(program, { slot: null, deployed: null, upgradeable: false, builtin: true });
         else if (state.programAddress === UPGRADEABLE_LOADER && state.data.length >= 36 && getU32Decoder().decode(state.data) === 2) programData.set(program, getAddressDecoder().decode(state.data, 4));
         else if (state.programAddress === LOADER_V4 && state.data.length >= 48) slots.set(program, { slot: getU64Decoder().decode(state.data), upgradeable: getU64Decoder().decode(state.data, 40) !== 2n }); // 2: finalized
-        else found.set(program, { deployed: null, upgradeable: false, builtin: false }); // the first loaders: never changes
+        else found.set(program, { slot: null, deployed: null, upgradeable: false, builtin: false }); // the first loaders: never changes
     }
     const programs = [...programData.keys()];
     const heads = programs.length ? await chain.heads([...programData.values()], PROGRAM_DATA_HEAD) : [];
     heads.forEach((head, i) => {
         // Program data is the loader's own account: an answer naming any other owner is not it.
         if (head.exists && head.programAddress === UPGRADEABLE_LOADER && head.data.length >= 13 && getU32Decoder().decode(head.data) === 3) slots.set(programs[i], { slot: getU64Decoder().decode(head.data, 4), upgradeable: head.data[12] === 1 });
-        else found.set(programs[i], { deployed: null, upgradeable: null, builtin: false });
+        else found.set(programs[i], { slot: null, deployed: null, upgradeable: null, builtin: false });
     });
     await Promise.all(
         [...slots].map(async ([program, { slot, upgradeable }]) => {
-            found.set(program, { deployed: await chain.blockTime(slot).catch(() => null), upgradeable, builtin: false });
+            const recent = r.slot - slot <= DATED;
+            found.set(program, { slot, deployed: recent ? await chain.blockTime(slot).catch(() => null) : null, upgradeable, builtin: false });
         }),
     );
     return found;

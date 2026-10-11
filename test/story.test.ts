@@ -84,7 +84,7 @@ const AFTER = [
 
 test('a drainer: where your tokens go, what each account is, and a program deployed hours ago', async () => {
     const now = 1_800_000_000;
-    const deployed = new Map([[EVIL_PROGRAM, { deployed: now - 7_200, upgradeable: true, builtin: false }]]);
+    const deployed = new Map([[EVIL_PROGRAM, { slot: 123_456n, deployed: now - 7_200, upgradeable: true, builtin: false }]]);
     const chain = fakeChain(BEFORE, AFTER);
     const r = await review(DRAIN, context({ now }), { ...chain, heads: async () => [], blockTime: async () => null });
     const { flows, kinds, findings } = r.assessment;
@@ -107,7 +107,14 @@ test('reads when an upgradeable program was deployed, from its program data acco
         blockTime: async (slot: bigint) => (slot === 123_456n ? 1_700_000_000 : null),
     };
     const resolved = await resolve(await decode(DRAIN), chain);
-    assert.deepEqual(await deployments(resolved, chain), new Map([[EVIL_PROGRAM, { deployed: 1_700_000_000, upgradeable: true, builtin: false }]]));
+    assert.deepEqual(await deployments(resolved, chain), new Map([[EVIL_PROGRAM, { slot: 123_456n, deployed: 1_700_000_000, upgradeable: true, builtin: false }]]));
+    // Further back than eight days at a slot every 100 ms: too old to be fresh, its time is not asked; dated up to there.
+    const asked: bigint[] = [];
+    const counting = { ...chain, blockTime: async (slot: bigint) => (asked.push(slot), chain.blockTime(slot)) };
+    const DATED = 6_912_000n;
+    assert.deepEqual(await deployments({ ...resolved, slot: 123_456n + DATED + 1n }, counting), new Map([[EVIL_PROGRAM, { slot: 123_456n, deployed: null, upgradeable: true, builtin: false }]]));
+    assert.deepEqual((await deployments({ ...resolved, slot: 123_456n + DATED }, counting)).get(EVIL_PROGRAM)?.deployed, 1_700_000_000);
+    assert.deepEqual(asked, [123_456n]);
 });
 
 // What each instruction says, given how the transaction's accounts read.
