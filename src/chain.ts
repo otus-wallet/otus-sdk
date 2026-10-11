@@ -45,7 +45,13 @@ export type Chain = {
     age(blockhash: string): Promise<number | null>; // blocks made since this blockhash, as the RecentBlockhashes sysvar lists them; null when it no longer does
     blockRate(): Promise<number>; // blocks a second, about: slots a second in the network's recent samples
     latest(): Promise<string>; // a blockhash just made (confirmed), for a transaction Otus builds
+    tables?: Tables; // lookup tables read before on this network, kept; without, each is read every time
 };
+
+/** Lookup tables kept by whoever reads them, by address, for one network: what a table holds is only ever added to, and
+ *  a closed table's address can never be made again (it takes a slot as recent as the closing forbids), so the entries
+ *  read of one stay true. A network that starts over (a local validator reset) makes them again: keep none of it. */
+export type Tables = { get(table: Address): Promise<readonly Address[] | undefined>; set(table: Address, entries: readonly Address[]): void };
 
 // The last 150 blockhashes, newest first: a count (u64), then each one and its fee calculator (40 bytes).
 const RECENT_BLOCKHASHES = address('SysvarRecentB1ockHashes11111111111111111111');

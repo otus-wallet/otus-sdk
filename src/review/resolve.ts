@@ -20,7 +20,7 @@ export type Resolved = Decoded & { slot: bigint; accounts: Account[] };
 /** Decoded → Resolved: loads the lookup tables, then every account's state. Throws Refused. */
 export async function resolve(decoded: Decoded, chain: Chain): Promise<Resolved> {
     const { header: h, staticAccounts, lookups } = decoded.message;
-    const tables = await loadTables(lookups.map((l) => l.lookupTableAddress), chain);
+    const tables = await loadTables(lookups.map((l) => l.lookupTableAddress), chain, lookups.map((l) => Math.max(-1, ...l.writableIndexes, ...l.readonlyIndexes)));
     const keys = [
         ...staticAccounts.map((address, i) => ({
             address,
@@ -52,18 +52,33 @@ function loaded(lookups: Message['lookups'], tables: Address[][], kind: 'writabl
 
 const TABLE_HEADER = 56; // type, deactivation slot, last extended slot and index, authority, padding
 
-/** Lookup tables → the addresses each holds. Throws Refused for one that is not a live table. */
-export async function loadTables(addresses: Address[], chain: Chain): Promise<Address[][]> {
+/** Lookup tables → the addresses each holds. Throws Refused for one that is not a live table. `reach`: the highest
+ *  entry asked of each; a table the chain keeps (`chain.tables`) with that many entries is not read again. */
+export async function loadTables(addresses: Address[], chain: Chain, reach?: number[]): Promise<Address[][]> {
     if (addresses.length === 0) return [];
-    const { accounts } = await chain.accounts(addresses);
-    return accounts.map((a) => {
-        const ok =
-            a.exists &&
-            a.programAddress === LOOKUP_TABLE_PROGRAM &&
-            a.data.length >= TABLE_HEADER &&
-            (a.data.length - TABLE_HEADER) % 32 === 0 &&
-            getU32Decoder().decode(a.data) === 1;
-        if (!ok) throw new Refused(`lookup table ${a.address} not found`);
-        return getArrayDecoder(getAddressDecoder(), { size: 'remainder' }).decode(a.data, TABLE_HEADER);
-    });
+    const kept = await Promise.all(
+        addresses.map(async (table, i) => {
+            const highest = reach?.[i];
+            if (!chain.tables || highest === undefined) return undefined;
+            const entries = await chain.tables.get(table).catch(() => undefined);
+            return entries && entries.length > highest ? [...entries] : undefined;
+        }),
+    );
+    const missing = addresses.filter((_, i) => kept[i] === undefined);
+    const read = missing.length === 0 ? [] : (await chain.accounts(missing)).accounts.map(entriesOf);
+    read.forEach((entries, i) => chain.tables?.set(missing[i], entries));
+    let next = 0;
+    return kept.map((entries) => entries ?? read[next++]);
+}
+
+// A lookup table's entries; Refused for an account that is not one.
+function entriesOf(a: MaybeEncodedAccount): Address[] {
+    const ok =
+        a.exists &&
+        a.programAddress === LOOKUP_TABLE_PROGRAM &&
+        a.data.length >= TABLE_HEADER &&
+        (a.data.length - TABLE_HEADER) % 32 === 0 &&
+        getU32Decoder().decode(a.data) === 1;
+    if (!ok) throw new Refused(`lookup table ${a.address} not found`);
+    return getArrayDecoder(getAddressDecoder(), { size: 'remainder' }).decode(a.data, TABLE_HEADER);
 }

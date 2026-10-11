@@ -190,6 +190,7 @@ async function vaultRun(multisig: Address, vaultIndex: number, inner: Inner, cha
     const tables = await loadTables(
         inner.lookups.map((l) => l.table),
         chain,
+        inner.lookups.map((l) => Math.max(-1, ...l.writable, ...l.readonly)),
     ).catch(() => null);
     if (!tables) return { kind: 'unread', why: 'accounts' };
     const loaded = (kind: 'writable' | 'readonly') => inner.lookups.flatMap((l, t) => l[kind].map((i) => ({ address: tables[t][i], signer: false, writable: kind === 'writable' })));
