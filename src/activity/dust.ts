@@ -1,10 +1,16 @@
 // Dust: what comes to a wallet only as noise, or to trick it, told apart so the caller may set it aside. Only what could
-// never have hurt the wallet may be dust: it didn't sign it, nothing of its own left it or closed, no authority,
-// delegate, lock or stake of it changed, and nothing failed. Anything else is news, whatever it looks like.
+// never have hurt the wallet may be dust: it didn't sign it, nothing of its own left it or closed, its stake didn't
+// move, nothing failed, and nothing ran but what is known to give and nothing else (a transfer, a mint, a token account
+// opened, a note). Anything else is news, whatever it looks like.
+import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from '@solana-program/compute-budget';
+import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
+import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
+import { ASSOCIATED_TOKEN_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import type { Address } from '@solana/kit';
 
 import { alike } from '../format.ts';
-import { WEIGHTY, type Activity, type Move } from './summary.ts';
+import { TOKEN_2022_PROGRAM_ADDRESS } from '../programs/addresses.ts';
+import type { Activity, Move } from './summary.ts';
 
 /**
  * Why a transaction is dust:
@@ -30,13 +36,34 @@ export type DustContext = {
     under?: number;
 };
 
+// What may run in dust, by program: what gives (a transfer, a mint), opens (an account, a token, a token account) or
+// notes, and nothing that changes who may do what, freezes or closes. Anything else, a batch of instructions or another
+// program's, could do it unseen.
+const TOKEN = ['Transfer', 'TransferChecked', 'MintTo', 'MintToChecked', 'InitializeMint', 'InitializeMint2', 'InitializeAccount', 'InitializeAccount2', 'InitializeAccount3', 'InitializeImmutableOwner', 'SyncNative'];
+const BUDGET = ['RequestUnits', 'RequestHeapFrame', 'SetComputeUnitLimit', 'SetComputeUnitPrice', 'SetLoadedAccountsDataSizeLimit'];
+const OPENS = ['CreateAssociatedToken', 'CreateAssociatedTokenIdempotent'];
+const GIVES: ReadonlyMap<Address, readonly string[]> = new Map<Address, readonly string[]>([
+    [SYSTEM_PROGRAM_ADDRESS, ['TransferSol', 'CreateAccount']],
+    [TOKEN_PROGRAM_ADDRESS, TOKEN],
+    [TOKEN_2022_PROGRAM_ADDRESS, TOKEN],
+    [ASSOCIATED_TOKEN_PROGRAM_ADDRESS, OPENS],
+    [COMPUTE_BUDGET_PROGRAM_ADDRESS, BUDGET],
+    [MEMO_PROGRAM_ADDRESS, ['AddMemo']],
+    [LEGACY_MEMO_PROGRAM_ADDRESS_V1, ['AddMemo']],
+    [LEGACY_MEMO_PROGRAM_ADDRESS_V3, ['AddMemo']],
+]);
+// What opening a token account runs inside it: the System Program and the token programs, nothing else.
+const OPENING_RUNS = new Set<Address>([SYSTEM_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS, TOKEN_2022_PROGRAM_ADDRESS]);
+
 /** Whether `a` could never have hurt the wallet it was summarized for: the only kind that may be dust. */
 export function harmless(a: Activity): boolean {
     if (a.signed || a.error !== null || a.squads.length > 0) return false;
     if (a.moves.some((m) => m.units < 0n) || a.rent.yours < 0n || a.staked !== 0n) return false;
-    // Who may do what changed: news even when the wallet didn't sign (a token's freeze authority freezes its account;
-    // anyone may name it an authority of their own).
-    return !a.instructions.some((t) => WEIGHTY.test(t.name));
+    if (!a.instructions.every((t) => t.source === 'plugin' && GIVES.get(t.program)?.includes(t.name))) return false;
+    // What ran inside them: only what opening a token account runs, and only under it (a token's transfer hook, under
+    // its transfer, is another program's doing). Unknown: anything may have.
+    if (a.inner === null) return false;
+    return a.inner.every(({ index, programs }) => OPENS.includes(a.instructions[index]?.name ?? '') && a.instructions[index]?.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && programs.every((p) => OPENING_RUNS.has(p)));
 }
 
 /** Why `a` is dust, or null: news. */

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from '@solana-program/compute-budget';
+import { MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
+import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
+import { ASSOCIATED_TOKEN_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { isAddress, type Address } from '@solana/kit';
 
 import { dust, harmless, type DustContext } from '../src/activity/dust.ts';
@@ -37,9 +41,11 @@ const poisoned = (over: Partial<Activity> = {}): Activity => ({
     main: null,
     squads: [],
     memo: null,
+    inner: [],
     ...over,
 });
-const ix = (name: string) => ({ name, program: key(5), source: 'plugin', args: [], accounts: [] }) as unknown as Told;
+// An instruction as the SDK reads it, by its program (the Token Program unless said).
+const ix = (name: string, program: Address = TOKEN_PROGRAM_ADDRESS) => ({ name, program, source: 'plugin', args: [], accounts: [] }) as unknown as Told;
 const known = [WALLET, REAL];
 // Everything a caller may know: SPAM vouched for by no one, MINT a dollar a unit, SOL a hundred, under ten cents.
 const SPAM = key(70);
@@ -70,7 +76,8 @@ test('never dust: what the wallet signed, what left it or closed, a changed auth
         // Spam or a few cents beside it change nothing.
         assert.equal(dust(poisoned({ other: FRIEND, moves: [{ mint: SPAM, units: 1n, decimals: 0 }], ...over }), full), null, why);
     }
-    assert.equal(harmless(poisoned({ instructions: [ix('TransferChecked'), ix('CreateIdempotent'), ix('AddMemo')] })), true);
+    const opened = ix('CreateAssociatedTokenIdempotent', ASSOCIATED_TOKEN_PROGRAM_ADDRESS);
+    assert.equal(harmless(poisoned({ instructions: [ix('SetComputeUnitLimit', COMPUTE_BUDGET_PROGRAM_ADDRESS), opened, ix('TransferChecked'), ix('AddMemo', MEMO_PROGRAM_ADDRESS)] })), true);
 });
 
 test('not dust: the address itself known, alike nothing known, or no one it came from', () => {
@@ -83,11 +90,11 @@ test('not dust: the address itself known, alike nothing known, or no one it came
     assert.equal(dust(poisoned({ other: near }), { known }), null);
 });
 
-const ix2 = (name: string, source: 'plugin' | 'unknown' = 'plugin') => ({ ...ix(name), source }) as Told;
+const ix2 = (name: string, source: 'plugin' | 'unknown' = 'plugin', program: Address = TOKEN_PROGRAM_ADDRESS) => ({ ...ix(name, program), source }) as Told;
 
 test('empty: nothing came, and only Solana\'s own programs ran, every one read', () => {
     const empty = (instructions: Told[]) => dust(poisoned({ other: FRIEND, moves: [], instructions }), full);
-    assert.deepEqual(empty([ix2('TransferChecked'), ix2('AddMemo')]), { empty: true });
+    assert.deepEqual(empty([ix2('TransferChecked'), ix2('AddMemo', 'plugin', MEMO_PROGRAM_ADDRESS)]), { empty: true });
     assert.equal(empty([ix2('TransferChecked'), ix2('Unknown instruction', 'unknown')]), null); // another program: who knows what it did
     assert.equal(empty([]), null);
 });
@@ -111,4 +118,31 @@ test('tiny: what came is worth less than the line, all told; an unknown worth is
     assert.equal(came([{ mint: key(71), units: 1n, decimals: 0 }]), null); // vouched for, no price
     assert.equal(came([{ mint: null, units: 1n, decimals: 9 }], { known, verified: full.verified, usd: full.usd }), null); // no line given
     for (const price of [NaN, -1, Infinity]) assert.equal(came([{ mint: null, units: 1n, decimals: 9 }], { ...full, usd: () => price }), null, String(price));
+});
+
+test('only what is known to give may run in dust: never a batch, another program, a name read elsewhere, or a hook', () => {
+    const opened = ix('CreateAssociatedTokenIdempotent', ASSOCIATED_TOKEN_PROGRAM_ADDRESS);
+    const send = ix('TransferSol', SYSTEM_PROGRAM_ADDRESS);
+    const of = (over: Partial<Activity>) => [harmless(poisoned(over)), dust(poisoned(over), { known })];
+    // The poisoning seen on mainnet: limits, then SOL; nothing ran inside.
+    assert.deepEqual(of({ instructions: [ix('SetComputeUnitLimit', COMPUTE_BUDGET_PROGRAM_ADDRESS), ix('SetComputeUnitPrice', COMPUTE_BUDGET_PROGRAM_ADDRESS), send] }), [true, { copy: COPY, of: REAL }]);
+    const refused: [string, Partial<Activity>][] = [
+        // A freeze in a batch: its parts run inline, unseen.
+        ['a batch', { instructions: [send, ix('Batch')] }],
+        // Another program, which may freeze, lock or unstake through what it calls.
+        ['another program', { instructions: [send, { ...ix('Unknown instruction', key(80)), source: 'unknown' } as Told] }],
+        // A name allowed for one program, read for another.
+        ['a name of another program', { instructions: [send, ix('Transfer', key(81))] }],
+        ['a token instruction off the list', { instructions: [send, ix('UiAmountToAmount')] }],
+        // A token's transfer hook: another program, run inside its transfer.
+        ['a hook', { instructions: [send, ix('TransferChecked')], inner: [{ index: 1, programs: [key(82)] }] }],
+        ['anything run inside a transfer', { instructions: [send, ix('TransferChecked')], inner: [{ index: 1, programs: [SYSTEM_PROGRAM_ADDRESS] }] }],
+        // Opening a token account runs only the System Program and a token program.
+        ['another program under an opening', { instructions: [opened, send], inner: [{ index: 0, programs: [SYSTEM_PROGRAM_ADDRESS, key(83)] }] }],
+        ['an inner index past them', { instructions: [send], inner: [{ index: 5, programs: [SYSTEM_PROGRAM_ADDRESS] }] }],
+        // Not said what ran inside: anything may have.
+        ['inner unknown', { instructions: [send], inner: null }],
+    ];
+    for (const [why, over] of refused) assert.deepEqual(of(over), [false, null], why);
+    assert.deepEqual(of({ instructions: [opened, send], inner: [{ index: 0, programs: [SYSTEM_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS] }] }), [true, { copy: COPY, of: REAL }]);
 });

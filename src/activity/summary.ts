@@ -13,7 +13,7 @@ import { isTokenProgram, isWrappedSol, LIGHTHOUSE } from '../programs/addresses.
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
 import { explain, type Explained } from '../review/explain.ts';
-import type { Landed, TokenBalance } from './history.ts';
+import type { Inner, Landed, TokenBalance } from './history.ts';
 
 /** A change in one of the wallet's balances: SOL (mint null) or a token, in its base units, gained (+) or lost (−). */
 export type Move = { mint: Address | null; units: bigint; decimals: number };
@@ -58,6 +58,7 @@ export type Activity = {
     main: Address | null;
     squads: Step[];
     memo: string | null;
+    inner: Inner[] | null; // what its instructions ran inside them (CPI), by their place; null when unknown
 };
 
 /** The instructions that change who may do what with an account, or close, lock, freeze or unstake it: what a
@@ -140,6 +141,7 @@ export function summarize(t: Landed, wallet: Address): Activity {
         main: programs.find((p) => !CORE_PROGRAMS.has(p) && p !== LIGHTHOUSE) ?? null,
         squads: [...new Set(squadsSteps(t))],
         memo: memo(t),
+        inner: t.inner,
     };
 }
 

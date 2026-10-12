@@ -120,7 +120,7 @@ test('address poisoning: dust from a copy is caught against an address you know,
 });
 
 test('rows: each in a line, opened for all it told; a copy of an address you sent to on the page caught', () => {
-    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], main: null, squads: [], memo: null };
+    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], main: null, squads: [], memo: null, inner: [] };
     const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : m), who: (a) => (a === WALLET ? `${a} (you)` : a === FRIEND ? 'Fio' : a), program: (a) => (a === JUPITER ? 'Jupiter v6' : a), known: [] };
     const real = key(60);
     const copy = Array.from({ length: 30 }, (_, i) => `${real.slice(0, 4)}${key(61 + i).slice(4, -4)}${real.slice(-4)}`).find((a) => a !== real && isAddress(a)) as Address;
@@ -128,7 +128,7 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
         [
             { ...base, signature: 's1', kind: 'swap', other: null, main: JUPITER, programs: [JUPITER], moves: [{ mint: null, units: -1_000_000_000n, decimals: 9 }, { mint: MINT, units: 120_580_000n, decimals: 6 }] },
             { ...base, signature: 's2', kind: 'send', other: real, moves: [{ mint: MINT, units: -12_000_000n, decimals: 6 }], rent: { yours: 0n, theirs: 2_039_280n, opened: 0n } },
-            { ...base, signature: 's3', kind: 'receive', other: copy, payer: copy, moves: [{ mint: MINT, units: 100n, decimals: 6 }] },
+            { ...base, signature: 's3', kind: 'receive', other: copy, payer: copy, signed: false, moves: [{ mint: MINT, units: 100n, decimals: 6 }] },
             { ...base, signature: 's4', kind: 'other', error: 'instruction 2: error 6001', main: JUPITER, programs: [JUPITER], other: null, moves: [] },
             { unreadable: 'no meta' },
         ],
@@ -141,6 +141,9 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.deepEqual(swap.details.map((d) => d.way ?? null).slice(0, 3), ['out', 'in', null]); // its balances, told apart from the rest
     assert.deepEqual([dust.tone, text(dust.title), text(dust.sub)], ['warn', 'Received 0.0001 USDC', `from ${copy} · copies ${real}`]);
     assert.equal(dust.details[1].text, `Dust from ${copy}, made to look like ${real}: never send to it`);
+    // Signed by the wallet, the same copy is no dust: it came with something that could hurt.
+    const [signedCopy] = rows([{ ...base, signature: 's6', kind: 'receive', other: copy, payer: copy, moves: [{ mint: MINT, units: 100n, decimals: 6 }] }, { ...base, signature: 's7', kind: 'send', other: real, moves: [{ mint: MINT, units: -1n, decimals: 6 }] }], naming);
+    assert.equal(signedCopy.details[1].text, `From ${copy}, made to look like ${real}: never send to it`);
     assert.equal(dust.details.find((d) => d.text.startsWith('Fee'))?.text, `Fee 0.000005 SOL, paid by ${copy}`);
     assert.equal(dust.address?.copy, true);
     assert.deepEqual([failed.icon, failed.tone, text(failed.title), failed.details[0].text], ['cross', 'danger', 'Failed · Jupiter v6', 'Failed: instruction 2: error 6001']);
@@ -152,7 +155,7 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
 });
 
 test('a token made and minted, one burned, an account opened: said as such, rent apart', () => {
-    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], main: null, squads: [], memo: null, other: null };
+    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], main: null, squads: [], memo: null, inner: [], other: null };
     const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : 'LAB'), who: (a) => short(a), program: (a) => short(a), known: [] };
     const made = key(62);
     const [minted, burned, opened] = rows(
@@ -175,7 +178,7 @@ test('what moved no balance: told by the review\'s decoders and words; never nam
     const limit = ix(BUDGET, 'SetComputeUnitLimit', {}, { units: '200000' });
     const guard: Told = { program: GUARD, programName: null, source: 'unknown', name: 'Unknown instruction', accounts: [], args: [] };
     const mine = key(70);
-    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], held: [{ address: mine, mint: MINT, decimals: 6, owner: WALLET }], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], main: null, squads: [], memo: null, other: null, kind: 'other' as const, moves: [] };
+    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], held: [{ address: mine, mint: MINT, decimals: 6, owner: WALLET }], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], main: null, squads: [], memo: null, inner: [], other: null, kind: 'other' as const, moves: [] };
     const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : short(m)), who: (a) => (a === FRIEND ? 'Fio' : short(a)), program: (a) => short(a), known: [] };
     const [approved, closer, cancelled, nonceAccount] = rows(
         [

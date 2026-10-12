@@ -12,6 +12,7 @@ import { alike, amount, cap, sol } from '../format.ts';
 import { LIGHTHOUSE } from '../programs/addresses.ts';
 import type { Step } from '../programs/squads.ts';
 import { story, type Names } from '../review/effects.ts';
+import { harmless } from './dust.ts';
 import { WEIGHTY, type Activity, type Move, type Told } from './summary.ts';
 
 export type RowIcon = 'send' | 'receive' | 'swap' | 'plus' | 'trash' | 'key' | 'refresh' | 'shield' | 'box' | 'cross' | 'bang';
@@ -63,7 +64,7 @@ export function rows(read: (Activity | { unreadable: string; signature?: string 
  * The copies among the page's other sides, each with the address it copies. Of two alike (their first and last
  * characters the same, as a poisoner grinds them), the copy is the one that is not known, or, when neither or both
  * are, the one you never sent to and that moved less: dust, against a real payment. Alike addresses are as rare as one
- * in 10^10 by chance, so no amount is needed to tell.
+ * in 10^9 by chance, so no amount is needed to tell.
  */
 function copiesOn(done: Activity[], known: Address[]): Map<Address, Address> {
     const weight = new Map<Address, number>();
@@ -224,10 +225,16 @@ const named = (n: Naming, a: Address) => (n.who(a).includes(a) ? null : n.who(a)
 // How much moved, unsigned, and of what.
 const quantity = (m: Move, n: Naming) => `${amount(m.units < 0n ? -m.units : m.units, m.decimals, false)} ${m.mint === null ? 'SOL' : n.symbol(m.mint)}`;
 
+// A copy of an address on the other side: dust only when nothing else came with it that could hurt.
+function copyWords(a: Activity, other: Address, copies: Address): string {
+    if (a.kind === 'send') return `${other} looks like ${copies}: one of them may be forged`;
+    return harmless(a) ? `Dust from ${other}, made to look like ${copies}: never send to it` : `From ${other}, made to look like ${copies}: never send to it`;
+}
+
 // Opened: every balance it moved, the rent and the fee apart, the warnings, its programs, memo and failure.
 function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
     const out: Detail[] = a.moves.map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out' }));
-    if (copies && a.other) out.push({ text: a.kind === 'send' ? `${a.other} looks like ${copies}: one of them may be forged` : `Dust from ${a.other}, made to look like ${copies}: never send to it`, tone: 'warn' });
+    if (copies && a.other) out.push({ text: copyWords(a, a.other, copies), tone: 'warn' });
     // What it did besides its balances, as the review words each instruction of Solana's own: all of it when it moved
     // no balance, else what to look out for (an approval made on the way). Nothing when it failed: none of it happened.
     if (!a.error) {

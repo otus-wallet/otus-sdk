@@ -28,7 +28,11 @@ export type Landed = {
     fee: bigint;
     lamports: { before: bigint[]; after: bigint[] };
     tokens: { before: TokenBalance[]; after: TokenBalance[] };
+    inner: Inner[] | null; // what its instructions ran inside them; null when the node didn't say
 };
+
+/** What the instruction at `index` ran inside it (CPI): their programs, in order. */
+export type Inner = { index: number; programs: Address[] };
 
 /** A transaction that does not hold: why, and what its envelope still shows plainly when it reads (its slot and time,
  *  its id and each signer's signature, by its address). */
@@ -123,6 +127,7 @@ async function landed(item: unknown): Promise<Landed> {
         fee: u64(meta.fee),
         lamports: { before: lamports(meta.preBalances), after: lamports(meta.postBalances) },
         tokens: { before: balances(meta.preTokenBalances, accounts.length), after: balances(meta.postTokenBalances, accounts.length) },
+        inner: innerOf(meta.innerInstructions, accounts, decoded.message.instructions.length),
     };
 }
 
@@ -160,6 +165,25 @@ function balances(list: unknown, accounts: number): TokenBalance[] {
         if (typeof mint !== 'string' || !isAddress(mint) || (owner != null && (typeof owner !== 'string' || !isAddress(owner)))) throw new Error('bad token balance');
         if (typeof amount !== 'string' || !/^\d{1,20}$/.test(amount) || !Number.isInteger(decimals) || (decimals as number) < 0 || (decimals as number) > 255) throw new Error('bad token amount');
         return { account: accountIndex as number, mint, owner: (owner as Address | undefined) ?? null, units: BigInt(amount), decimals: decimals as number };
+    });
+}
+
+const MAX_INNER = 1024; // instructions one may run inside it
+
+// What each instruction ran inside it, by its place, each program by its place among the accounts: null when not said,
+// and refused when it doesn't fit the message.
+function innerOf(list: unknown, accounts: Address[], instructions: number): Inner[] | null {
+    if (list == null) return null;
+    if (!Array.isArray(list) || list.length > instructions) throw new Error('bad inner instructions');
+    return list.map((e: { index?: unknown; instructions?: unknown }) => {
+        const { index, instructions: ran } = e ?? {};
+        if (!Number.isInteger(index) || (index as number) < 0 || (index as number) >= instructions || !Array.isArray(ran) || ran.length > MAX_INNER) throw new Error('bad inner instructions');
+        const programs = ran.map((i: { programIdIndex?: unknown }) => {
+            const at = i?.programIdIndex;
+            if (!Number.isInteger(at) || (at as number) < 0 || (at as number) >= accounts.length) throw new Error('bad inner program index');
+            return accounts[at as number]!;
+        });
+        return { index: index as number, programs };
     });
 }
 

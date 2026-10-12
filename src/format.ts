@@ -25,7 +25,7 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 
 /** Whether two addresses look alike as people check them, by their ends: at least six characters alike between the start
  *  and the end, two or more at each, as wallets shorten addresses and address poisoners forge them ("7xKX…gAsU" passes
- *  for the other). Two random addresses are, about once in 10^10. */
+ *  for the other). Two random addresses are, about once in 10^9 (their first character is not evenly spread). */
 export function alike(a: string, b: string): boolean {
     const n = Math.min(a.length, b.length);
     let head = 0;

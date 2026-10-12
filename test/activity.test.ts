@@ -152,6 +152,20 @@ test('an RPC without the method says so; what does not hold is unreadable, the r
     assert.deepEqual(page.items[3], { unreadable: 'malformed transaction' });
 });
 
+test('what its instructions ran inside them: each program by its place, refused when it does not fit the message', async () => {
+    const good = item([send(WALLET, FRIEND, 1n)], WALLET); // its accounts: the wallet, its friend, the System Program
+    const ran = (innerInstructions: unknown) => ({ ...good, meta: { ...good.meta, innerInstructions } });
+    const page = await readPage({
+        result: {
+            data: [good, ran([]), ran([{ index: 0, instructions: [{ programIdIndex: 2 }] }]), ran([{ index: 1, instructions: [] }]), ran([{ index: 0, instructions: [{ programIdIndex: 3 }] }]), ran({}), ran([{ index: 0, instructions: 'x' }]), ran([null]), ran([{ index: 0.5, instructions: [] }]), ran([{ index: 0, instructions: [{ programIdIndex: -1 }] }])],
+        },
+    }, 20);
+    assert.deepEqual(
+        page.items.map((i) => ('unreadable' in i ? i.unreadable : i.inner)),
+        [null, [], [{ index: 0, programs: ['11111111111111111111111111111111'] }], 'bad inner instructions', 'bad inner program index', 'bad inner instructions', 'bad inner instructions', 'bad inner instructions', 'bad inner instructions', 'bad inner program index'],
+    );
+});
+
 test('SOL sent and received: the other side, and the fee apart from what moved', async () => {
     const [sent, got, failed] = await landed(
         item([send(WALLET, FRIEND, 1_000_000n)], WALLET, { lamports: { [WALLET]: [5_000_000n, 3_995_000n], [FRIEND]: [0n, 1_000_000n] } }),
