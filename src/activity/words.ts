@@ -21,7 +21,7 @@ export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim' };
 export type Part = { text: string; way?: 'in' | 'out' };
 
 /** One transaction, as a line and its details. `address`: the other side, shown whole; `copy`: made to look like
- *  another. */
+ *  another. `subject`: the instruction the line is about, when it is told by one (its arguments in `sub`). */
 export type Row = {
     signature: string | null;
     time: number | null;
@@ -31,6 +31,7 @@ export type Row = {
     sub: Part[];
     details: Detail[];
     address: { label: string; address: Address; name: string | null; copy: boolean } | null;
+    subject: { program: Address; name: string } | null;
 };
 
 /** What the words need: a token's symbol (a verified one's, else its mint), a name for an address (the wallet's own
@@ -82,7 +83,7 @@ function copiesOn(done: Activity[], known: Address[]): Map<Address, Address> {
     return out;
 }
 
-const unreadable = (why: string, signature: string | null): Row => ({ signature, time: null, icon: 'bang', tone: 'warn', title: [{ text: "Otus couldn't read this one" }], sub: [{ text: why }], details: [], address: null });
+const unreadable = (why: string, signature: string | null): Row => ({ signature, time: null, icon: 'bang', tone: 'warn', title: [{ text: "Otus couldn't read this one" }], sub: [{ text: why }], details: [], address: null, subject: null });
 
 function row(a: Activity, n: Naming, copies: Address | null): Row {
     const [outs, ins] = [a.moves.filter((m) => m.units < 0n), a.moves.filter((m) => m.units > 0n)];
@@ -99,11 +100,12 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
         sub: copies && a.other ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
         details: details(a, n, copies),
         address: a.other ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies } : null,
+        subject: head.subject ? { program: head.subject.program, name: head.subject.name } : null,
     };
 }
 
 // The line: what happened, in a few words, and with whom or through what.
-function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean } {
+function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told } {
     const what = (m: Move, list: Move[]): Part[] => [{ text: quantity(m, n), way: m.units < 0n ? 'out' : 'in' }, ...(list.length > 1 ? [{ text: ` +${list.length - 1}` }] : [])];
     const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent
     const words = (s: string): Part[] => (s ? [{ text: s }] : []);
@@ -132,7 +134,7 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     if (about) {
         const told = story({ ...about.told, data: new Uint8Array() }, namesFor(a, n));
         const title = about.told.name === 'DelegateStake' && a.staked > 0n ? `Staked ${sol(a.staked)} SOL` : titleOf(about.told.name); // how much, when it went into a stake account of yours
-        return { icon: iconOf(about.told.name), title: words(title), sub: words(told.args ? cap(told.args) : ''), danger: told.effects.some((e) => e.tone === 'danger') };
+        return { icon: iconOf(about.told.name), title: words(title), sub: words(told.args ? cap(told.args) : ''), danger: told.effects.some((e) => e.tone === 'danger'), subject: about.told };
     }
     if (a.rent.yours < 0n) return { icon: 'box', title: words('Closed a token account'), sub: words(`${sol(-a.rent.yours)} SOL of rent freed`) };
     if (a.rent.yours > 0n) return { icon: 'box', title: words('Opened a token account'), sub: words(by) };

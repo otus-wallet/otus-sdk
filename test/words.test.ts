@@ -144,6 +144,7 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.equal(dust.address?.copy, true);
     assert.deepEqual([failed.icon, failed.tone, text(failed.title), failed.details[0].text], ['cross', 'danger', 'Failed · Jupiter v6', 'Failed: instruction 2: error 6001']);
     assert.deepEqual([text(unread.title), unread.signature], ["Otus couldn't read this one", null]);
+    assert.deepEqual([swap.subject, failed.subject, unread.subject], [null, null, null]); // told by its balances, its failure, or not at all
 });
 
 test('a token made and minted, one burned, an account opened: said as such, rent apart', () => {
@@ -182,6 +183,7 @@ test('what moved no balance: told by the review\'s decoders and words; never nam
         naming,
     );
     assert.deepEqual([approved.icon, text(approved.title), text(approved.sub)], ['key', 'Approved a delegate', 'Fio, up to 100 USDC']);
+    assert.deepEqual([approved.subject, nonceAccount.subject], [{ program: TOKEN, name: 'Approve' }, { program: SYSTEM, name: 'InitializeNonceAccount' }]); // what the line is about: not the limits or guards around it
     assert.equal(approved.details[0].text, 'Fio may move up to 100 USDC from your USDC account'); // the review's own words
     assert.deepEqual([text(closer.title), text(closer.sub)], ['Changed an authority', 'Right to close → Fio']);
     assert.deepEqual([cancelled.icon, text(cancelled.title)], ['refresh', 'Moved a nonce on']);
