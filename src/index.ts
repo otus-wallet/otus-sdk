@@ -33,3 +33,8 @@ export { dust, harmless, type Dust, type DustContext } from './activity/dust.ts'
 export { access, delegatesGiven, grantsOf, nonceOf, waitingOn, type Access, type Grant, type Waiting } from './access/access.ts';
 
 export { Refused } from './errors.ts';
+
+// A deployed program, as the upgradeable loader keeps it, and its upgrade authority when that is a Squads multisig.
+export { headOf, HEAD_SIZE, programDataAddress, programDataOf, type Head } from './programs/deployed.ts';
+export { multisigOf, SQUADS_V3, squadsAccountsIn, type Member, type Multisig } from './programs/multisig.ts';
+export { accountByIdl } from './idl/account.ts';

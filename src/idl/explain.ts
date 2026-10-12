@@ -31,7 +31,7 @@ export function tellWith(idls: Idl[], data: ReadonlyUint8Array, accounts: Addres
 
 // What an IDL's types link to, recorded once per IDL.
 const recorded = new WeakMap<RootNode, LinkableDictionary>();
-function linkablesOf(root: RootNode): LinkableDictionary {
+export function linkablesOf(root: RootNode): LinkableDictionary {
     let linkables = recorded.get(root);
     if (!linkables) {
         linkables = new LinkableDictionary();
