@@ -47,7 +47,7 @@ test("an upgrade: the program's code replaced with the buffer's", () => {
     assert.deepEqual(told(ix), {
         args: 'The program ← the buffer',
         effects: [
-            { text: 'Replaces the code of the program with what the buffer holds', tone: 'warn' },
+            { text: 'Replaces the code of the program with what the buffer holds', tone: 'danger' }, // your program's
             { text: 'The SOL left in the buffer goes to you', tone: 'plain' },
         ],
     });
@@ -59,6 +59,9 @@ test('an authority given away, or set to no one as the loader takes it (its new 
     // Checked: the new authority signs too; from someone else to you, it is no loss of yours.
     const back = told(getSetAuthorityCheckedInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: createNoopSigner(OTHER), newAuthority: me }));
     assert.deepEqual(back.effects, [{ text: 'You is now the authority of its data', tone: 'warn' }]);
+    // To an account the transaction itself makes yours (whoever made it holds its key): as red as to anyone.
+    const made = story(explained(getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: me, newAuthority: OTHER })), { ...names, mine: (a) => a === PAYER || a === OTHER });
+    assert.equal(made.effects[0]!.tone, 'danger');
     const none = getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: me });
     assert.equal(none.accounts!.length, 3); // its client's stand-in for the one left out
     for (const ix of [none, landed(none)]) {
@@ -71,7 +74,10 @@ test('a close: of a buffer, or of a program, which can never run again', () => {
     const buffer = getCloseInstruction({ bufferOrProgramDataAccount: BUFFER, destinationAccount: PAYER, authority: me });
     assert.deepEqual(told(landed(buffer)).effects, [{ text: 'Closes the buffer; its SOL goes to you', tone: 'plain' }]);
     const program = getCloseInstruction({ bufferOrProgramDataAccount: DATA, destinationAccount: PAYER, authority: me, programAccount: PROGRAM });
-    assert.deepEqual(told(program).effects.at(-1), { text: 'The program can never run again', tone: 'warn' });
+    assert.deepEqual(told(program).effects.at(-1), { text: 'The program can never run again', tone: 'danger' }); // yours, closed
+    // Someone else's program, by its own authority: told, no alarm.
+    const theirs = getUpgradeInstruction({ programDataAccount: DATA, programAccount: PROGRAM, bufferAccount: BUFFER, spillAccount: OTHER, authority: createNoopSigner(OTHER) });
+    assert.equal(told(theirs).effects[0]!.tone, 'warn');
     const extend = getExtendProgramInstruction({ programDataAccount: DATA, programAccount: PROGRAM, additionalBytes: 4096 });
     assert.deepEqual(told(landed(extend)), { args: '4096 bytes', effects: [{ text: 'Gives the program room for 4096 more bytes', tone: 'plain' }] });
 });

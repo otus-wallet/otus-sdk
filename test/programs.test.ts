@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
-import type { Address, MaybeEncodedAccount } from '@solana/kit';
+import type { Address, MaybeEncodedAccount, ReadonlyUint8Array } from '@solana/kit';
 
 import type { Landed } from '../src/activity/history.ts';
 import { readIdl, type Idl } from '../src/idl/read.ts';
@@ -66,6 +66,7 @@ test("Jupiter's upgrade authority: vault 1 of a Squads v3 multisig, four of its 
     const ms = await multisigOf(JUPITER_AUTHORITY, account(v3!), idl);
     assert.ok(ms);
     assert.deepEqual([ms.version, ms.address, ms.program, ms.threshold, ms.timeLock, ms.vault], [3, v3!.address, SQUADS_V3, 4, 0, 1]);
+    assert.equal(ms.configAuthority, null);
     assert.ok(ms.members.length >= 4 && ms.members.every((m) => m.initiate && m.vote && m.execute));
     assert.equal(await vaultOf(ms), JUPITER_AUTHORITY);
     // Not one of its vaults; not Squads'; another account; read by the other version's IDL; bytes changed or cut.
@@ -83,6 +84,12 @@ test('a Squads v4 multisig: each member with what it may do, its time lock, the 
     const ms = await multisigOf(vault0, account(v4!), idl);
     assert.ok(ms);
     assert.deepEqual([ms.version, ms.program, ms.threshold, ms.timeLock, ms.vault], [4, SQUADS_V4, 3, 0, 0]);
+    assert.equal(ms.configAuthority, null); // only a vote changes it
+    // With a config authority: that one key changes its members alone, and is said.
+    const controlled = bytes(v4!);
+    controlled.set(new Uint8Array(32).fill(9), 8 + 32); // after its discriminator and create key
+    const one = await multisigOf(vault0, account(v4!, controlled), idl);
+    assert.ok(one?.configAuthority && one.configAuthority !== '11111111111111111111111111111111');
     assert.equal(ms.members.length, 8);
     assert.equal(await vaultOf(ms), vault0);
     assert.ok(ms.members.some((m) => m.initiate && !m.vote && !m.execute)); // proposes only
@@ -112,4 +119,50 @@ test("the changes a transaction made to a program: Jupiter's last upgrade, run b
     assert.deepEqual(changesIn(t, key(5)), []);
     const garbled = { ...t, inner: t.inner!.map((x) => ({ ...x, instructions: x.instructions.map((i) => ({ ...i, data: new Uint8Array([99]) })) })) };
     assert.deepEqual(changesIn(garbled, DATA), []);
+});
+
+test("a change is counted only where the program data itself is what the loader changes, never named elsewhere", async () => {
+    const { changesIn } = await import('../src/programs/deployed.ts');
+    const { getCloseInstruction, getSetAuthorityInstruction, getUpgradeInstruction, getWriteInstruction, LOADER_V3_PROGRAM_ADDRESS: LOADER } = await import('@solana-program/loader-v3');
+    const { createNoopSigner } = await import('@solana/kit');
+    const DATA = '4Ec7ZxZS6Sbdg5UGSLHbAnM7GQHp2eFd4KYWRexAipQT' as Address;
+    const [attacker, buffer, theirData, theirProgram] = [key(50), key(51), key(52), key(53)];
+    const signer = createNoopSigner(attacker);
+    // A transaction of these instructions, top-level, as the SDK reads one landed.
+    const landedOf = (...ixs: { programAddress: Address; accounts?: readonly { address: Address }[]; data?: Uint8Array | ReadonlyUint8Array }[]) => {
+        const accounts: Address[] = [LOADER];
+        const at = (a: Address) => (accounts.includes(a) ? accounts.indexOf(a) : accounts.push(a) - 1);
+        const instructions = ixs.map((ix) => ({ programAddressIndex: at(ix.programAddress), accountIndices: (ix.accounts ?? []).map((m) => at(m.address)), data: ix.data ?? new Uint8Array() }));
+        return { accounts, message: { instructions }, inner: [] } as unknown as Landed;
+    };
+    const spoofs = [
+        getCloseInstruction({ bufferOrProgramDataAccount: buffer, destinationAccount: DATA, authority: signer }), // its own buffer, the SOL "to" the program data
+        getUpgradeInstruction({ programDataAccount: theirData, programAccount: theirProgram, bufferAccount: buffer, spillAccount: DATA, authority: signer }), // its own program, spilling "to" it
+        getSetAuthorityInstruction({ bufferOrProgramDataAccount: buffer, currentAuthority: signer, newAuthority: DATA }), // its own buffer, given "to" it
+        { ...getWriteInstruction({ bufferAccount: buffer, bufferAuthority: signer, offset: 0, bytes: new Uint8Array([1]) }), accounts: [...getWriteInstruction({ bufferAccount: buffer, bufferAuthority: signer, offset: 0, bytes: new Uint8Array([1]) }).accounts, { address: DATA, role: 0 }] },
+    ];
+    for (const ix of spoofs) assert.deepEqual(changesIn(landedOf(ix), DATA), [], ix.programAddress + ' ' + ix.data[0]);
+    // Its own authority changed: counted.
+    const real = getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: signer, newAuthority: buffer });
+    assert.deepEqual(changesIn(landedOf(...spoofs, real), DATA).map((c) => c.name), ['SetAuthority']);
+});
+
+test("a site asking for the loader is no everyday call: told as one of the programs it calls", async () => {
+    const { programsCalled } = await import('../src/review/sites.ts');
+    const { LOADER_V3_PROGRAM_ADDRESS: LOADER } = await import('@solana-program/loader-v3');
+    const message = { staticAccounts: [key(1), LOADER, '11111111111111111111111111111111' as Address], instructions: [{ programAddressIndex: 1 }, { programAddressIndex: 2 }] };
+    assert.deepEqual(programsCalled(message as never), [LOADER]);
+});
+
+test("an IDL whose account reader could run on without end (a list of nothing, counted by the data) reads nothing", async () => {
+    const { accountByIdl } = await import('../src/idl/account.ts');
+    const idl = await idlOf(SQUADS_V4);
+    const root = structuredClone(idl.root);
+    const account = root.program.accounts!.find((a) => a.name === 'multisig')!;
+    const fields = (account.data as { fields: { name: string; type: unknown }[] }).fields;
+    fields.find((f) => f.name === 'members')!.type = { kind: 'arrayTypeNode', item: { kind: 'structTypeNode', fields: [] }, count: { kind: 'prefixedCountNode', prefix: { kind: 'numberTypeNode', format: 'u32', endian: 'le' } } };
+    const started = Date.now();
+    assert.equal(accountByIdl({ ...idl, root }, 'multisig', bytes(v4!)), null);
+    assert.ok(Date.now() - started < 1000);
+    assert.ok(accountByIdl(idl, 'multisig', bytes(v4!))); // the IDL as published reads it
 });

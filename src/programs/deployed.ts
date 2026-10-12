@@ -49,6 +49,18 @@ const tag = (data: ReadonlyUint8Array) => getU32Decoder().decode(data, 0);
  *  `via`, the program that ran it inside its own (a multisig executing it), or null when it ran on its own. */
 export type ProgramChange = { name: string; accounts: { role: string; address: Address }[]; args: { name: string; value: string }[]; via: Address | null };
 
+// Where each instruction that changes a program takes its program data: an account named elsewhere in it (the
+// destination of a buffer closed, the spill of another program's upgrade) changes nothing of this program. Writing a
+// buffer never does.
+const TARGET: Record<string, string> = {
+    Upgrade: 'programDataAccount',
+    ExtendProgram: 'programDataAccount',
+    DeployWithMaxDataLen: 'programDataAccount',
+    SetAuthority: 'bufferOrProgramDataAccount',
+    SetAuthorityChecked: 'bufferOrProgramDataAccount',
+    Close: 'bufferOrProgramDataAccount',
+};
+
 /** The loader's instructions in `t` that act on `programData`, on their own or run inside another program's, in order.
  *  One the loader's client can't read is left out: nothing is guessed. */
 export function changesIn(t: Landed, programData: Address): ProgramChange[] {
@@ -57,7 +69,7 @@ export function changesIn(t: Landed, programData: Address): ProgramChange[] {
         if (program !== LOADER_V3_PROGRAM_ADDRESS || !accounts.includes(programData)) return;
         try {
             const told = LOADER.explain({ programAddress: program, accounts: accounts.map((address) => ({ address, role: AccountRole.READONLY })), data });
-            if (told?.accounts.some((a) => a.address === programData)) changes.push({ name: told.name, accounts: told.accounts, args: told.args, via });
+            if (told && told.accounts.some((a) => a.role === TARGET[told.name] && a.address === programData)) changes.push({ name: told.name, accounts: told.accounts, args: told.args, via });
         } catch {} // not one its client reads
     };
     t.message.instructions.forEach((ix, index) => {

@@ -100,6 +100,13 @@ function accountsOf(instruction: InstructionNode, accounts: Address[]): IdlInstr
 // (to another program, or of another kind) refuses it, as does an offset, which can move the reader back, and a list
 // of things that can take no bytes, which a count could make go on without reading one.
 function bounded(program: ProgramNode, instruction: InstructionNode): boolean {
+    const constants = (instruction.discriminators ?? []).flatMap((d) => (d.kind === 'constantDiscriminatorNode' ? [d.constant] : []));
+    return boundedTypes(program, [...(instruction.arguments ?? []).map((a) => a.type), ...constants]);
+}
+
+/** Whether the reader of these types (an instruction's, an account's) stays small and comes to an end, as bounded()
+ *  says for an instruction. */
+export function boundedTypes(program: ProgramNode, read: unknown[]): boolean {
     const types = new Map<string, unknown>((program.definedTypes ?? []).map((t) => [t.name, t.type]));
     const empty = emptiness(types);
     let nodes = 0;
@@ -118,8 +125,7 @@ function bounded(program: ProgramNode, instruction: InstructionNode): boolean {
         if (kind === 'mapTypeNode' && empty(n.key) && empty(n.value)) return false;
         return Object.values(n).every((v) => fits(v, links));
     };
-    const constants = (instruction.discriminators ?? []).flatMap((d) => (d.kind === 'constantDiscriminatorNode' ? [d.constant] : []));
-    return fits([...(instruction.arguments ?? []).map((a) => a.type), ...constants], 0);
+    return fits(read, 0);
 }
 
 // Whether a value of a type can take no bytes. In doubt, it can: bytes or a text to the end, an option to the end, a

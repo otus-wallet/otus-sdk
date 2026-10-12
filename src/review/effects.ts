@@ -170,28 +170,31 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
     }
     if (e.program === LOADER_V3_PROGRAM_ADDRESS) {
         // A program's code, and who may change it: its program data (or a buffer of code waiting to be deployed) and
-        // its authority. Giving that away from you is what can cost you the program.
+        // its authority. Your program's code replaced or closed, or your authority given to anyone but your wallet (an
+        // account this very transaction makes is no safer: whoever made it holds its key), is what can cost you the
+        // program: red.
         const program = acc('programAccount');
+        const yours = acc('authority') === n.wallet;
         switch (e.name) {
             case 'Upgrade':
-                return { args: `${Who(program)} ← ${who(acc('bufferAccount'))}`, effects: [line(`Replaces the code of ${who(program)} with what ${who(acc('bufferAccount'))} holds`, 'warn'), line(`The SOL left in the buffer goes to ${who(acc('spillAccount'))}`)] };
+                return { args: `${Who(program)} ← ${who(acc('bufferAccount'))}`, effects: [line(`Replaces the code of ${who(program)} with what ${who(acc('bufferAccount'))} holds`, yours ? 'danger' : 'warn'), line(`The SOL left in the buffer goes to ${who(acc('spillAccount'))}`)] };
             case 'SetAuthority':
             case 'SetAuthorityChecked': {
                 const [target, from, to] = [acc('bufferOrProgramDataAccount'), acc('currentAuthority'), acc('newAuthority')];
-                const tone = from && n.mine(from) && !(to && n.mine(to)) ? 'danger' : 'warn';
+                const tone = from && n.mine(from) && to !== n.wallet ? 'danger' : 'warn';
                 if (!to) return { args: 'no one', effects: [line(`${Who(target)} has no authority now: it can never be changed again`, tone)] };
                 return { args: `→ ${who(to)}`, effects: [line(`${Who(to)} is now the authority of ${who(target)}`, tone)] };
             }
             case 'Close': {
                 const effects = [line(`Closes ${who(acc('bufferOrProgramDataAccount'))}; its SOL goes to ${who(acc('destinationAccount'))}`)];
-                if (program) effects.push(line(`${Who(program)} can never run again`, 'warn'));
+                if (program) effects.push(line(`${Who(program)} can never run again`, yours ? 'danger' : 'warn'));
                 return { args: `→ ${who(acc('destinationAccount'))}`, effects };
             }
             case 'ExtendProgram':
                 return { args: `${arg('additionalBytes')} bytes`, effects: [line(`Gives ${who(program)} room for ${arg('additionalBytes')} more bytes`)] };
             case 'DeployWithMaxDataLen': {
                 const authority = acc('authority');
-                return { args: `${Who(program)} ← ${who(acc('bufferAccount'))}`, effects: [line(`Deploys ${who(program)} from ${who(acc('bufferAccount'))}`), line(`Only ${who(authority)} can upgrade it`, authority && n.mine(authority) ? 'plain' : 'warn')] };
+                return { args: `${Who(program)} ← ${who(acc('bufferAccount'))}`, effects: [line(`Deploys ${who(program)} from ${who(acc('bufferAccount'))}`), line(`Only ${who(authority)} can upgrade it`, authority === n.wallet ? 'plain' : 'warn')] };
             }
             case 'InitializeBuffer':
                 return { args: Who(acc('sourceAccount')), effects: [line(`Opens ${who(acc('sourceAccount'))} for program code, written by ${who(acc('bufferAuthority'))}`)] };

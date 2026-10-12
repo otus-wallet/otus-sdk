@@ -5,7 +5,7 @@ import { isNode, VALUE_NODE_KINDS, type AccountNode } from '@codama/nodes';
 import { NodeStack, visit } from '@codama/visitors-core';
 import type { ReadonlyUint8Array } from '@solana/kit';
 
-import { linkablesOf } from './explain.ts';
+import { boundedTypes, linkablesOf } from './explain.ts';
 import type { Idl } from './read.ts';
 
 /** `data` as the account `name` of `idl`, its fields by their names; null when it is not one. Never throws. */
@@ -13,7 +13,8 @@ export function accountByIdl(idl: Idl, name: string, data: ReadonlyUint8Array): 
     try {
         const { root } = idl;
         const account = (root.program.accounts ?? []).find((a) => a.name === name);
-        if (!account || !account.discriminators?.length) return null;
+        // A reader that could run on without end (a list of nothing, counted by the data) is no reader.
+        if (!account || !account.discriminators?.length || !boundedTypes(root.program, [account.data])) return null;
         const linkables = linkablesOf(root);
         const stack = new NodeStack([root, root.program]);
         if (!starts(account, data, getNodeCodecVisitor(linkables, { stack }), getValueNodeVisitor(linkables, { stack }))) return null;

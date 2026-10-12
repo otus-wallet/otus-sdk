@@ -169,14 +169,15 @@ function balances(list: unknown, accounts: number): TokenBalance[] {
     });
 }
 
-const MAX_INNER = 1024; // instructions one may run inside it
-const MAX_INNER_DATA = 2_000; // base58 characters of one's data: more than a transaction can carry
+const MAX_INNER = 256; // instructions a transaction may run inside its own, all told: more than the runtime lets it
+const MAX_INNER_DATA = 14_000; // base58 characters of one's data: a call carries 10 KiB at most
 
 // What each instruction ran inside it, by its place: each one's program and accounts by their places among the
 // accounts, its data in base58. Null when not said, and refused when it doesn't fit the message.
 function innerOf(list: unknown, accounts: Address[], instructions: number): Inner[] | null {
     if (list == null) return null;
     if (!Array.isArray(list) || list.length > instructions) throw new Error('bad inner instructions');
+    if (list.reduce((n: number, e: { instructions?: unknown }) => n + (Array.isArray(e?.instructions) ? e.instructions.length : 0), 0) > MAX_INNER) throw new Error('bad inner instructions');
     const placed = (at: unknown) => {
         if (!Number.isInteger(at) || (at as number) < 0 || (at as number) >= accounts.length) throw new Error('bad inner account index');
         return accounts[at as number]!;

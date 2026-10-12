@@ -1,3 +1,4 @@
+import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
 import type { Address } from '@solana/kit';
 
 import { LIGHTHOUSE } from '../programs/addresses.ts';
@@ -165,5 +166,7 @@ function punycode(label: string): string {
  *  call inside are left out: a swap's route changes with each one. */
 export function programsCalled(message: Message): Address[] {
     const called = message.instructions.map((ix) => message.staticAccounts[ix.programAddressIndex]);
-    return [...new Set(called)].filter((p) => p !== undefined && !CORE_PROGRAMS.has(p) && p !== LIGHTHOUSE);
+    // The loader is read like Solana's other own programs, but a site asking for it (a program's code or authority)
+    // is no everyday call.
+    return [...new Set(called)].filter((p) => p !== undefined && (!CORE_PROGRAMS.has(p) || p === LOADER_V3_PROGRAM_ADDRESS) && p !== LIGHTHOUSE);
 }

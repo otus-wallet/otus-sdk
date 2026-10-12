@@ -171,13 +171,15 @@ test('what its instructions ran inside them: each program by its place, refused 
                 ran([{ index: 0, instructions: [{ programIdIndex: -1, accounts: [], data: '' }] }]),
                 ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [7], data: '' }] }]),
                 ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [0], data: 1 }] }]),
-                ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [0], data: '1'.repeat(2001) }] }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [0], data: '1'.repeat(14_001) }] }]),
+                ran([{ index: 0, instructions: Array.from({ length: 257 }, () => ({ programIdIndex: 2, accounts: [], data: '' })) }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [0], data: '1'.repeat(13_000) }] }]),
                 ran([{ index: 0, instructions: [{ programIdIndex: 2 }] }]),
             ],
         },
     }, 20);
     assert.deepEqual(
-        page.items.map((i) => ('unreadable' in i ? i.unreadable : i.inner)),
+        page.items.map((i, n) => ('unreadable' in i ? i.unreadable : n === 14 ? 'read' : i.inner)),
         [
             null,
             [],
@@ -192,6 +194,8 @@ test('what its instructions ran inside them: each program by its place, refused 
             'bad inner account index',
             'bad inner instruction',
             'bad inner instruction',
+            'bad inner instructions', // more than a transaction can run inside its own
+            'read', // 10 KiB of data, as a call may carry
             'bad inner instruction',
         ],
     );

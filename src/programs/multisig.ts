@@ -18,8 +18,12 @@ const VAULTS = 256; // vaults tried: v4's index is a byte; v3's has never gone n
 export type Member = { key: Address; initiate: boolean; vote: boolean; execute: boolean };
 
 /** `threshold`: the votes a proposal needs; `timeLock`: the seconds an approved one waits before it may run;
- *  `vault`: the index of the vault that holds the authority. */
-export type Multisig = { address: Address; program: Address; version: 3 | 4; threshold: number; timeLock: number; members: Member[]; vault: number };
+ *  `vault`: the index of the vault that holds the authority. `configAuthority`: a v4 multisig's one key that changes its
+ *  members, threshold and time lock alone, without a vote (null: only a vote can). */
+export type Multisig = { address: Address; program: Address; version: 3 | 4; threshold: number; timeLock: number; members: Member[]; vault: number; configAuthority: Address | null };
+
+// A v4 multisig with no config authority names the System Program's address in its place.
+const NO_ONE = '11111111111111111111111111111111';
 
 /** The accounts `t`'s Squads instructions name, either version: where its multisig is, each to read and check with
  *  multisigOf. */
@@ -37,16 +41,17 @@ export async function multisigOf(authority: Address, account: { address: Address
     if (account.programAddress === SQUADS_V4) {
         const ms = accountByIdl(idl, 'multisig', account.data);
         const members = membersOf(ms?.members, (m) => (isMember(m) ? { key: m.key, ...can(m.permissions.mask) } : null));
-        if (!ms || !members || !counted(ms.threshold, members.length) || !isCount(ms.timeLock)) return null;
+        if (!ms || !members || !counted(ms.threshold, members.length) || !isCount(ms.timeLock) || typeof ms.configAuthority !== 'string' || !isAddress(ms.configAuthority)) return null;
         const vault = await vaultIndex(authority, (i) => vaultAt(account.address, i));
-        return vault === null ? null : { address: account.address, program: SQUADS_V4, version: 4, threshold: ms.threshold as number, timeLock: ms.timeLock as number, members, vault };
+        const configAuthority = ms.configAuthority === NO_ONE ? null : ms.configAuthority;
+        return vault === null ? null : { address: account.address, program: SQUADS_V4, version: 4, threshold: ms.threshold as number, timeLock: ms.timeLock as number, members, vault, configAuthority };
     }
     if (account.programAddress === SQUADS_V3) {
         const ms = accountByIdl(idl, 'ms', account.data);
         const members = membersOf(ms?.keys, (k) => (typeof k === 'string' && isAddress(k) ? { key: k, initiate: true, vote: true, execute: true } : null));
         if (!ms || !members || !counted(ms.threshold, members.length) || !isCount(ms.authorityIndex)) return null;
         const vault = await vaultIndex(authority, (i) => v3Vault(account.address, i), Math.min((ms.authorityIndex as number) + 1, VAULTS));
-        return vault === null ? null : { address: account.address, program: SQUADS_V3, version: 3, threshold: ms.threshold as number, timeLock: 0, members, vault };
+        return vault === null ? null : { address: account.address, program: SQUADS_V3, version: 3, threshold: ms.threshold as number, timeLock: 0, members, vault, configAuthority: null };
     }
     return null;
 }

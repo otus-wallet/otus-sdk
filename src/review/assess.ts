@@ -1,3 +1,4 @@
+import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
 import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
 import {
     address,
@@ -590,6 +591,7 @@ function namedTo(explained: Explained[]): Address[] {
         if (e.program === SYSTEM_PROGRAM_ADDRESS) take(acc('destination'), acc('recipientAccount'), arg('newNonceAuthority'));
         else if (e.program === STAKE_PROGRAM) take(acc('recipient'), acc('newAuthority'), e.name === 'Authorize' ? arg('arg0') : undefined);
         else if (TOKEN_PROGRAMS.includes(e.program)) take(acc('destination'), acc('delegate'), arg('newAuthority'));
+        else if (e.program === LOADER_V3_PROGRAM_ADDRESS) take(acc('newAuthority'));
     }
     return out as Address[];
 }
