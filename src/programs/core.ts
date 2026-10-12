@@ -3,6 +3,7 @@ import {
     ComputeBudgetInstruction,
     parseComputeBudgetInstruction,
 } from '@solana-program/compute-budget';
+import { identifyLoaderV3Instruction, LOADER_V3_PROGRAM_ADDRESS, LoaderV3Instruction, parseLoaderV3Instruction } from '@solana-program/loader-v3';
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS, parseAddMemoInstruction } from '@solana-program/memo';
 import { parseStakeInstruction, STAKE_PROGRAM_ADDRESS, StakeInstruction } from '@solana-program/stake';
 import { parseSystemInstruction, SYSTEM_PROGRAM_ADDRESS, SystemInstruction } from '@solana-program/system';
@@ -15,7 +16,7 @@ import {
     TokenInstruction,
 } from '@solana-program/token';
 
-import type { Address } from '@solana/kit';
+import { AccountRole, type Address } from '@solana/kit';
 
 import { TOKEN_2022_PROGRAM_ADDRESS } from './addresses.ts';
 import { codamaPlugin, type KitInstruction, type Plugin } from './plugin.ts';
@@ -28,6 +29,23 @@ function parseToken2022Instruction(instruction: KitInstruction) {
     const kind = instruction.data[0];
     if (kind > 24 && kind !== 38) throw new Error('a Token-2022 extension instruction');
     return parseTokenInstruction(instruction);
+}
+
+// The upgradeable loader takes its optional accounts last, and left out when absent: SetAuthority's new authority (none:
+// the program can never be upgraded again), Close's authority and program, ExtendProgram's System Program and payer. Its
+// client reads an absent one as the loader's own address in its place, so each left out is put back as that, up to all
+// the instruction can take and never below what it needs.
+const LOADER_ACCOUNTS: Partial<Record<LoaderV3Instruction, { least: number; most: number }>> = {
+    [LoaderV3Instruction.SetAuthority]: { least: 2, most: 3 },
+    [LoaderV3Instruction.Close]: { least: 2, most: 4 },
+    [LoaderV3Instruction.ExtendProgram]: { least: 2, most: 4 },
+};
+function parseLoaderInstruction(instruction: KitInstruction) {
+    const takes = LOADER_ACCOUNTS[identifyLoaderV3Instruction(instruction)];
+    const accounts = instruction.accounts ?? [];
+    if (!takes || accounts.length < takes.least || accounts.length >= takes.most) return parseLoaderV3Instruction(instruction);
+    const absent = Array.from({ length: takes.most - accounts.length }, () => ({ address: LOADER_V3_PROGRAM_ADDRESS, role: AccountRole.READONLY }));
+    return parseLoaderV3Instruction({ ...instruction, accounts: [...accounts, ...absent] });
 }
 
 // The stake program's sysvars and config account: older wallets still pass them in its instructions (Clock, the stake
@@ -49,6 +67,7 @@ export const CORE_PLUGINS: Plugin[] = [
     codamaPlugin(TOKEN_2022_PROGRAM_ADDRESS, 'Token-2022', parseToken2022Instruction, (t) => TokenInstruction[t]),
     codamaPlugin(ASSOCIATED_TOKEN_PROGRAM_ADDRESS, 'Associated Token', parseAssociatedTokenInstruction, (t) => AssociatedTokenInstruction[t]),
     withoutExtras(codamaPlugin(STAKE_PROGRAM_ADDRESS, 'Stake Program', parseStakeInstruction, (t) => StakeInstruction[t])),
+    codamaPlugin(LOADER_V3_PROGRAM_ADDRESS, 'Upgradeable Loader', parseLoaderInstruction, (t) => LoaderV3Instruction[t]),
     // The Memo program most sites use (MemoSq…fcHr; the client calls it legacy v3), its newer deploy, and the first one.
     codamaPlugin(LEGACY_MEMO_PROGRAM_ADDRESS_V3, 'Memo', parseAddMemoInstruction, () => 'AddMemo'),
     codamaPlugin(MEMO_PROGRAM_ADDRESS, 'Memo', parseAddMemoInstruction, () => 'AddMemo'),

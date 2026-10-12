@@ -6,6 +6,7 @@
 import type { Address } from '@solana/kit';
 
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from '@solana-program/compute-budget';
+import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
 
 import { alike, amount, cap, sol } from '../format.ts';
@@ -138,7 +139,7 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     const about = subjectOf(a);
     if (about) {
         const told = story({ ...about.told, data: new Uint8Array() }, namesFor(a, n));
-        const title = about.told.name === 'DelegateStake' && a.staked > 0n ? `Staked ${sol(a.staked)} SOL` : titleOf(about.told.name); // how much, when it went into a stake account of yours
+        const title = about.told.name === 'DelegateStake' && a.staked > 0n ? `Staked ${sol(a.staked)} SOL` : titled(about.told); // how much, when it went into a stake account of yours
         return { icon: iconOf(about.told.name), title: words(title), sub: words(told.args ? cap(told.args) : ''), danger: told.effects.some((e) => e.tone === 'danger'), subject: about.told };
     }
     if (a.rent.yours < 0n) return { icon: 'box', title: words('Closed a token account'), sub: words(`${sol(-a.rent.yours)} SOL of rent freed`) };
@@ -194,9 +195,18 @@ const TITLES: Record<string, string> = {
     Merge: 'Merged stake accounts',
     SetLockup: 'Changed a stake lockup',
     SetLockupChecked: 'Changed a stake lockup',
+    SetAuthorityChecked: 'Changed an authority',
+    Upgrade: 'Upgraded a program',
+    DeployWithMaxDataLen: 'Deployed a program',
+    ExtendProgram: 'Gave a program more room',
+    InitializeBuffer: 'Opened a buffer for program code',
+    Write: 'Wrote program code',
+    Close: 'Closed a program account',
 };
+// An authority set to no one: what it held can never be changed again (a program made immutable).
+const titled = (t: Told) => (/^SetAuthority/.test(t.name) && t.program === LOADER_V3_PROGRAM_ADDRESS && !t.accounts.some((x) => x.role === 'newAuthority') ? 'Removed an authority' : titleOf(t.name));
 const titleOf = (name: string) => TITLES[name] ?? cap(name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase());
-const iconOf = (name: string): RowIcon => (/Approve|Revoke|Authori/.test(name) ? 'key' : /Nonce/.test(name) ? 'refresh' : /^Assign/.test(name) ? 'bang' : 'box');
+const iconOf = (name: string): RowIcon => (/Approve|Revoke|Authori/.test(name) ? 'key' : /Nonce|^Upgrade$/.test(name) ? 'refresh' : /^Assign/.test(name) ? 'bang' : 'box');
 
 // What the review's words need, from what the transaction listed: your token accounts by their token, a nonce account
 // it sets up as one, the rest by name.

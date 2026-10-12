@@ -1,6 +1,7 @@
 // What one instruction does, in words: a short line for its arguments, and its effects. Read from what its plugin
 // says, for the programs Otus reads; for any other, what the simulation changed in your accounts it touches.
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from '@solana-program/compute-budget';
+import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
 import { STAKE_PROGRAM_ADDRESS } from '@solana-program/stake';
 import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
@@ -165,6 +166,37 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
             case 'SetLockup':
             case 'SetLockupChecked':
                 return { args: Who(stake), effects: [line(`Changes the lockup of ${who(stake)}`, hurts(stake))] };
+        }
+    }
+    if (e.program === LOADER_V3_PROGRAM_ADDRESS) {
+        // A program's code, and who may change it: its program data (or a buffer of code waiting to be deployed) and
+        // its authority. Giving that away from you is what can cost you the program.
+        const program = acc('programAccount');
+        switch (e.name) {
+            case 'Upgrade':
+                return { args: `${Who(program)} ← ${who(acc('bufferAccount'))}`, effects: [line(`Replaces the code of ${who(program)} with what ${who(acc('bufferAccount'))} holds`, 'warn'), line(`The SOL left in the buffer goes to ${who(acc('spillAccount'))}`)] };
+            case 'SetAuthority':
+            case 'SetAuthorityChecked': {
+                const [target, from, to] = [acc('bufferOrProgramDataAccount'), acc('currentAuthority'), acc('newAuthority')];
+                const tone = from && n.mine(from) && !(to && n.mine(to)) ? 'danger' : 'warn';
+                if (!to) return { args: 'no one', effects: [line(`${Who(target)} has no authority now: it can never be changed again`, tone)] };
+                return { args: `→ ${who(to)}`, effects: [line(`${Who(to)} is now the authority of ${who(target)}`, tone)] };
+            }
+            case 'Close': {
+                const effects = [line(`Closes ${who(acc('bufferOrProgramDataAccount'))}; its SOL goes to ${who(acc('destinationAccount'))}`)];
+                if (program) effects.push(line(`${Who(program)} can never run again`, 'warn'));
+                return { args: `→ ${who(acc('destinationAccount'))}`, effects };
+            }
+            case 'ExtendProgram':
+                return { args: `${arg('additionalBytes')} bytes`, effects: [line(`Gives ${who(program)} room for ${arg('additionalBytes')} more bytes`)] };
+            case 'DeployWithMaxDataLen': {
+                const authority = acc('authority');
+                return { args: `${Who(program)} ← ${who(acc('bufferAccount'))}`, effects: [line(`Deploys ${who(program)} from ${who(acc('bufferAccount'))}`), line(`Only ${who(authority)} can upgrade it`, authority && n.mine(authority) ? 'plain' : 'warn')] };
+            }
+            case 'InitializeBuffer':
+                return { args: Who(acc('sourceAccount')), effects: [line(`Opens ${who(acc('sourceAccount'))} for program code, written by ${who(acc('bufferAuthority'))}`)] };
+            case 'Write':
+                return { args: `${Who(acc('bufferAccount'))}, at ${arg('offset')}`, effects: [line(`Writes program code into ${who(acc('bufferAccount'))}`)] };
         }
     }
     if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && e.name.startsWith('CreateAssociatedToken')) {
