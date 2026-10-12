@@ -21,6 +21,7 @@ import {
     createNoopSigner,
     createTransactionMessage,
     getBase58Decoder,
+    getBase58Encoder,
     getBase64Decoder,
     getTransactionDecoder,
     getTransactionEncoder,
@@ -157,12 +158,42 @@ test('what its instructions ran inside them: each program by its place, refused 
     const ran = (innerInstructions: unknown) => ({ ...good, meta: { ...good.meta, innerInstructions } });
     const page = await readPage({
         result: {
-            data: [good, ran([]), ran([{ index: 0, instructions: [{ programIdIndex: 2 }] }]), ran([{ index: 1, instructions: [] }]), ran([{ index: 0, instructions: [{ programIdIndex: 3 }] }]), ran({}), ran([{ index: 0, instructions: 'x' }]), ran([null]), ran([{ index: 0.5, instructions: [] }]), ran([{ index: 0, instructions: [{ programIdIndex: -1 }] }])],
+            data: [
+                good,
+                ran([]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [0, 1], data: '3Bxs4Bc3VYuGVB19' }] }]),
+                ran([{ index: 1, instructions: [] }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 3, accounts: [], data: '' }] }]),
+                ran({}),
+                ran([{ index: 0, instructions: 'x' }]),
+                ran([null]),
+                ran([{ index: 0.5, instructions: [] }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: -1, accounts: [], data: '' }] }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [7], data: '' }] }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [0], data: 1 }] }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 2, accounts: [0], data: '1'.repeat(2001) }] }]),
+                ran([{ index: 0, instructions: [{ programIdIndex: 2 }] }]),
+            ],
         },
     }, 20);
     assert.deepEqual(
         page.items.map((i) => ('unreadable' in i ? i.unreadable : i.inner)),
-        [null, [], [{ index: 0, programs: ['11111111111111111111111111111111'] }], 'bad inner instructions', 'bad inner program index', 'bad inner instructions', 'bad inner instructions', 'bad inner instructions', 'bad inner instructions', 'bad inner program index'],
+        [
+            null,
+            [],
+            [{ index: 0, instructions: [{ program: '11111111111111111111111111111111', accounts: [WALLET, FRIEND], data: new Uint8Array(getBase58Encoder().encode('3Bxs4Bc3VYuGVB19')) }] }],
+            'bad inner instructions',
+            'bad inner account index',
+            'bad inner instructions',
+            'bad inner instructions',
+            'bad inner instructions',
+            'bad inner instructions',
+            'bad inner account index',
+            'bad inner account index',
+            'bad inner instruction',
+            'bad inner instruction',
+            'bad inner instruction',
+        ],
     );
 });
 

@@ -24,7 +24,7 @@ export { prepare, type Prepared } from './prepare/prepare.ts';
 export { toldByIdl, type IdlInstruction } from './idl/idl.ts';
 
 // A wallet's history, a page at a time (Helius' getTransactionsForAddress), each transaction in short and in words.
-export { historyPage, NoHistory, type Landed, type Page } from './activity/history.ts';
+export { historyPage, NoHistory, type Inner, type InnerInstruction, type Landed, type Page } from './activity/history.ts';
 export { summarize, type Activity, type Held, type Told } from './activity/summary.ts';
 export { rows, text, type Detail, type Naming, type Part, type Row, type RowIcon, type RowTone } from './activity/words.ts';
 export { dust, harmless, type Dust, type DustContext } from './activity/dust.ts';
@@ -35,6 +35,6 @@ export { access, delegatesGiven, grantsOf, nonceOf, waitingOn, type Access, type
 export { Refused } from './errors.ts';
 
 // A deployed program, as the upgradeable loader keeps it, and its upgrade authority when that is a Squads multisig.
-export { headOf, HEAD_SIZE, programDataAddress, programDataOf, type Head } from './programs/deployed.ts';
+export { changesIn, headOf, HEAD_SIZE, programDataAddress, programDataOf, type Head, type ProgramChange } from './programs/deployed.ts';
 export { multisigOf, SQUADS_V3, squadsAccountsIn, type Member, type Multisig } from './programs/multisig.ts';
 export { accountByIdl } from './idl/account.ts';

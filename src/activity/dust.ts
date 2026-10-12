@@ -63,7 +63,7 @@ export function harmless(a: Activity): boolean {
     // What ran inside them: only what opening a token account runs, and only under it (a token's transfer hook, under
     // its transfer, is another program's doing). Unknown: anything may have.
     if (a.inner === null) return false;
-    return a.inner.every(({ index, programs }) => OPENS.includes(a.instructions[index]?.name ?? '') && a.instructions[index]?.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && programs.every((p) => OPENING_RUNS.has(p)));
+    return a.inner.every(({ index, instructions }) => OPENS.includes(a.instructions[index]?.name ?? '') && a.instructions[index]?.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && instructions.every((i) => OPENING_RUNS.has(i.program)));
 }
 
 /** Why `a` is dust, or null: news. */

@@ -95,3 +95,19 @@ test("where a transaction's multisig may be: what its Squads instructions name, 
     const t = { accounts: [a, b, c, SQUADS_V3, SQUADS_V4, key(43)], message: { instructions: [{ programAddressIndex: 3, accountIndices: [0, 1] }, { programAddressIndex: 4, accountIndices: [1, 2] }, { programAddressIndex: 5, accountIndices: [5] }] } } as unknown as Landed;
     assert.deepEqual(squadsAccountsIn(t), [a, b, c]);
 });
+
+test("the changes a transaction made to a program: Jupiter's last upgrade, run by its multisig inside its own", async () => {
+    const { exactJson, readPage } = await import('../src/activity/history.ts');
+    const { changesIn } = await import('../src/programs/deployed.ts');
+    const [t] = (await readPage(exactJson(readFileSync(new URL('./fixtures/jupiter-upgrade.json', import.meta.url), 'utf8')), 10)).items;
+    assert.ok(t && !('unreadable' in t));
+    const DATA = '4Ec7ZxZS6Sbdg5UGSLHbAnM7GQHp2eFd4KYWRexAipQT' as Address;
+    const [change, ...more] = changesIn(t, DATA);
+    assert.deepEqual([change?.name, change?.via, more.length], ['Upgrade', SQUADS_V3, 0]);
+    assert.equal(change!.accounts.find((a) => a.role === 'authority')?.address, JUPITER_AUTHORITY);
+    assert.equal(change!.accounts.find((a) => a.role === 'programAccount')?.address, JUPITER);
+    // Another program's data: nothing of it changed here. What runs inside, unreadable to the loader's client: left out.
+    assert.deepEqual(changesIn(t, key(5)), []);
+    const garbled = { ...t, inner: t.inner!.map((x) => ({ ...x, instructions: x.instructions.map((i) => ({ ...i, data: new Uint8Array([99]) })) })) };
+    assert.deepEqual(changesIn(garbled, DATA), []);
+});

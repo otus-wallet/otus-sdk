@@ -3,7 +3,7 @@
 // Nothing else is asked for. The answer is read with care, as data from the network: whole numbers exactly, every
 // list bounded, every index in range; a transaction that does not hold comes back as unreadable, not as something it
 // is not.
-import { getBase58Decoder, getBase64Encoder, getTransactionDecoder, isAddress, type Address } from '@solana/kit';
+import { getBase58Decoder, getBase58Encoder, getBase64Encoder, getTransactionDecoder, isAddress, type Address } from '@solana/kit';
 
 import { told } from '../format.ts';
 import { RPC_WAIT } from '../rpc.ts';
@@ -31,8 +31,9 @@ export type Landed = {
     inner: Inner[] | null; // what its instructions ran inside them; null when the node didn't say
 };
 
-/** What the instruction at `index` ran inside it (CPI): their programs, in order. */
-export type Inner = { index: number; programs: Address[] };
+/** What the instruction at `index` ran inside it (CPI), in order: each one's program, accounts and data. */
+export type Inner = { index: number; instructions: InnerInstruction[] };
+export type InnerInstruction = { program: Address; accounts: Address[]; data: Uint8Array };
 
 /** A transaction that does not hold: why, and what its envelope still shows plainly when it reads (its slot and time,
  *  its id and each signer's signature, by its address). */
@@ -169,21 +170,28 @@ function balances(list: unknown, accounts: number): TokenBalance[] {
 }
 
 const MAX_INNER = 1024; // instructions one may run inside it
+const MAX_INNER_DATA = 2_000; // base58 characters of one's data: more than a transaction can carry
 
-// What each instruction ran inside it, by its place, each program by its place among the accounts: null when not said,
-// and refused when it doesn't fit the message.
+// What each instruction ran inside it, by its place: each one's program and accounts by their places among the
+// accounts, its data in base58. Null when not said, and refused when it doesn't fit the message.
 function innerOf(list: unknown, accounts: Address[], instructions: number): Inner[] | null {
     if (list == null) return null;
     if (!Array.isArray(list) || list.length > instructions) throw new Error('bad inner instructions');
+    const placed = (at: unknown) => {
+        if (!Number.isInteger(at) || (at as number) < 0 || (at as number) >= accounts.length) throw new Error('bad inner account index');
+        return accounts[at as number]!;
+    };
     return list.map((e: { index?: unknown; instructions?: unknown }) => {
         const { index, instructions: ran } = e ?? {};
         if (!Number.isInteger(index) || (index as number) < 0 || (index as number) >= instructions || !Array.isArray(ran) || ran.length > MAX_INNER) throw new Error('bad inner instructions');
-        const programs = ran.map((i: { programIdIndex?: unknown }) => {
-            const at = i?.programIdIndex;
-            if (!Number.isInteger(at) || (at as number) < 0 || (at as number) >= accounts.length) throw new Error('bad inner program index');
-            return accounts[at as number]!;
-        });
-        return { index: index as number, programs };
+        return {
+            index: index as number,
+            instructions: ran.map((i: { programIdIndex?: unknown; accounts?: unknown; data?: unknown }) => {
+                const { programIdIndex, accounts: used, data } = i ?? {};
+                if (!Array.isArray(used) || used.length > 256 || typeof data !== 'string' || data.length > MAX_INNER_DATA) throw new Error('bad inner instruction');
+                return { program: placed(programIdIndex), accounts: used.map(placed), data: new Uint8Array(getBase58Encoder().encode(data)) };
+            }),
+        };
     });
 }
 

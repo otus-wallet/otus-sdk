@@ -3,7 +3,10 @@
 // the program is immutable). Only the loader's exact layouts are read (its UpgradeableLoaderState, as bincode lays it
 // out); anything else is no such account.
 import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
-import { getAddressDecoder, getAddressEncoder, getProgramDerivedAddress, getU32Decoder, getU64Decoder, type Address, type ReadonlyUint8Array } from '@solana/kit';
+import { AccountRole, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress, getU32Decoder, getU64Decoder, type Address, type ReadonlyUint8Array } from '@solana/kit';
+
+import type { Landed } from '../activity/history.ts';
+import { CORE_PLUGINS } from './core.ts';
 
 const PROGRAM = 2; // the state's tag of a program's account
 const PROGRAM_DATA = 3; // of its program data
@@ -41,3 +44,28 @@ export function headOf(account: { programAddress: Address; data: ReadonlyUint8Ar
 }
 
 const tag = (data: ReadonlyUint8Array) => getU32Decoder().decode(data, 0);
+
+/** A change a transaction made to a program's code or authority: the loader's instruction as its plugin reads it, and
+ *  `via`, the program that ran it inside its own (a multisig executing it), or null when it ran on its own. */
+export type ProgramChange = { name: string; accounts: { role: string; address: Address }[]; args: { name: string; value: string }[]; via: Address | null };
+
+/** The loader's instructions in `t` that act on `programData`, on their own or run inside another program's, in order.
+ *  One the loader's client can't read is left out: nothing is guessed. */
+export function changesIn(t: Landed, programData: Address): ProgramChange[] {
+    const changes: ProgramChange[] = [];
+    const read = (program: Address, accounts: Address[], data: ReadonlyUint8Array, via: Address | null) => {
+        if (program !== LOADER_V3_PROGRAM_ADDRESS || !accounts.includes(programData)) return;
+        try {
+            const told = LOADER.explain({ programAddress: program, accounts: accounts.map((address) => ({ address, role: AccountRole.READONLY })), data });
+            if (told?.accounts.some((a) => a.address === programData)) changes.push({ name: told.name, accounts: told.accounts, args: told.args, via });
+        } catch {} // not one its client reads
+    };
+    t.message.instructions.forEach((ix, index) => {
+        const program = t.accounts[ix.programAddressIndex]!;
+        read(program, ix.accountIndices.map((i) => t.accounts[i]!), ix.data, null);
+        for (const inner of (t.inner ?? []).filter((x) => x.index === index)) for (const i of inner.instructions) read(i.program, i.accounts, i.data, program);
+    });
+    return changes;
+}
+
+const LOADER = CORE_PLUGINS.find((p) => p.program === LOADER_V3_PROGRAM_ADDRESS)!;

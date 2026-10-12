@@ -90,6 +90,8 @@ test('not dust: the address itself known, alike nothing known, or no one it came
     assert.equal(dust(poisoned({ other: near }), { known }), null);
 });
 
+// What an instruction ran inside it: these programs, one instruction each.
+const ran = (...programs: Address[]) => programs.map((program) => ({ program, accounts: [], data: new Uint8Array() }));
 const ix2 = (name: string, source: 'plugin' | 'unknown' = 'plugin', program: Address = TOKEN_PROGRAM_ADDRESS) => ({ ...ix(name, program), source }) as Told;
 
 test('empty: nothing came, and only Solana\'s own programs ran, every one read', () => {
@@ -135,14 +137,14 @@ test('only what is known to give may run in dust: never a batch, another program
         ['a name of another program', { instructions: [send, ix('Transfer', key(81))] }],
         ['a token instruction off the list', { instructions: [send, ix('UiAmountToAmount')] }],
         // A token's transfer hook: another program, run inside its transfer.
-        ['a hook', { instructions: [send, ix('TransferChecked')], inner: [{ index: 1, programs: [key(82)] }] }],
-        ['anything run inside a transfer', { instructions: [send, ix('TransferChecked')], inner: [{ index: 1, programs: [SYSTEM_PROGRAM_ADDRESS] }] }],
+        ['a hook', { instructions: [send, ix('TransferChecked')], inner: [{ index: 1, instructions: ran(key(82)) }] }],
+        ['anything run inside a transfer', { instructions: [send, ix('TransferChecked')], inner: [{ index: 1, instructions: ran(SYSTEM_PROGRAM_ADDRESS) }] }],
         // Opening a token account runs only the System Program and a token program.
-        ['another program under an opening', { instructions: [opened, send], inner: [{ index: 0, programs: [SYSTEM_PROGRAM_ADDRESS, key(83)] }] }],
-        ['an inner index past them', { instructions: [send], inner: [{ index: 5, programs: [SYSTEM_PROGRAM_ADDRESS] }] }],
+        ['another program under an opening', { instructions: [opened, send], inner: [{ index: 0, instructions: ran(SYSTEM_PROGRAM_ADDRESS, key(83)) }] }],
+        ['an inner index past them', { instructions: [send], inner: [{ index: 5, instructions: ran(SYSTEM_PROGRAM_ADDRESS) }] }],
         // Not said what ran inside: anything may have.
         ['inner unknown', { instructions: [send], inner: null }],
     ];
     for (const [why, over] of refused) assert.deepEqual(of(over), [false, null], why);
-    assert.deepEqual(of({ instructions: [opened, send], inner: [{ index: 0, programs: [SYSTEM_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS] }] }), [true, { copy: COPY, of: REAL }]);
+    assert.deepEqual(of({ instructions: [opened, send], inner: [{ index: 0, instructions: ran(SYSTEM_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS) }] }), [true, { copy: COPY, of: REAL }]);
 });
