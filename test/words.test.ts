@@ -138,6 +138,7 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.deepEqual(swap.title.filter((p) => p.way), [{ text: '1 SOL', way: 'out' }, { text: '120.58 USDC', way: 'in' }]); // coloured apart
     assert.deepEqual([text(sent.title), text(sent.sub), sent.address], ['Sent 12 USDC', `to ${real}`, { label: 'To', address: real, name: null, copy: false }]);
     assert.deepEqual(sent.details.map((d) => d.text), ['−12 USDC', '0.00203928 SOL to open their token account', `Fee 0.000005 SOL, paid by ${WALLET} (you)`]); // your address, tagged
+    assert.deepEqual(swap.details.map((d) => d.way ?? null).slice(0, 3), ['out', 'in', null]); // its balances, told apart from the rest
     assert.deepEqual([dust.tone, text(dust.title), text(dust.sub)], ['warn', 'Received 0.0001 USDC', `from ${copy} · copies ${real}`]);
     assert.equal(dust.details[1].text, `Dust from ${copy}, made to look like ${real}: never send to it`);
     assert.equal(dust.details.find((d) => d.text.startsWith('Fee'))?.text, `Fee 0.000005 SOL, paid by ${copy}`);

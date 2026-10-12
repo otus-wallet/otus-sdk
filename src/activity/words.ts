@@ -16,7 +16,8 @@ import type { Activity, Move, Told } from './summary.ts';
 
 export type RowIcon = 'send' | 'receive' | 'swap' | 'plus' | 'trash' | 'key' | 'refresh' | 'shield' | 'box' | 'cross' | 'bang';
 export type RowTone = 'plain' | 'warn' | 'danger';
-export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim' };
+/** A line of what a transaction told; `way`: a balance it moved, in or out. */
+export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out' };
 /** Words of a line, an amount among them marked as what came in or went out. */
 export type Part = { text: string; way?: 'in' | 'out' };
 
@@ -222,7 +223,7 @@ const quantity = (m: Move, n: Naming) => `${amount(m.units < 0n ? -m.units : m.u
 
 // Opened: every balance it moved, the rent and the fee apart, the warnings, its programs, memo and failure.
 function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
-    const out: Detail[] = a.moves.map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger' }));
+    const out: Detail[] = a.moves.map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out' }));
     if (copies && a.other) out.push({ text: a.kind === 'send' ? `${a.other} looks like ${copies}: one of them may be forged` : `Dust from ${a.other}, made to look like ${copies}: never send to it`, tone: 'warn' });
     // What moved no balance, as the review words each instruction of Solana's own.
     if (a.kind === 'other') {
