@@ -27,6 +27,7 @@ export { toldByIdl, type IdlInstruction } from './idl/idl.ts';
 export { historyPage, NoHistory, type Landed, type Page } from './activity/history.ts';
 export { summarize, type Activity, type Held, type Told } from './activity/summary.ts';
 export { rows, text, type Detail, type Naming, type Part, type Row, type RowIcon, type RowTone } from './activity/words.ts';
+export { dust, harmless, type Dust, type DustContext } from './activity/dust.ts';
 
 // Who besides a wallet can move, burn, freeze or close what it holds.
 export { access, delegatesGiven, grantsOf, nonceOf, waitingOn, type Access, type Grant, type Waiting } from './access/access.ts';
