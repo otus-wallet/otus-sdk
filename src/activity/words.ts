@@ -108,7 +108,7 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
 // The line: what happened, in a few words, and with whom or through what.
 function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told } {
     const what = (m: Move, list: Move[]): Part[] => [{ text: quantity(m, n), way: m.units < 0n ? 'out' : 'in' }, ...(list.length > 1 ? [{ text: ` +${list.length - 1}` }] : [])];
-    const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent
+    const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent or a tip
     const words = (s: string): Part[] => (s ? [{ text: s }] : []);
     if (a.error) return { icon: 'cross', title: words(`Failed${by ? ` · ${by}` : ''}`), sub: words(a.payer === n.wallet ? 'Only the fee was spent' : 'Nothing of yours moved') };
     if (a.squads.length) {
@@ -117,7 +117,7 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     }
     switch (a.kind) {
         case 'swap':
-            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(outs[0], outs), { text: ' → ' }, ...what(ins[0], ins)], sub: words(by) };
+            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs), outs), { text: ' → ' }, ...what(lead(ins), ins)], sub: words(by) };
         case 'send':
             return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: words(a.other ? `to ${n.who(a.other)}` : by) };
         case 'receive':

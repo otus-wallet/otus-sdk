@@ -146,6 +146,9 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.deepEqual([failed.icon, failed.tone, text(failed.title), failed.details[0].text], ['cross', 'danger', 'Failed · Jupiter v6', 'Failed: instruction 2: error 6001']);
     assert.deepEqual([text(unread.title), unread.signature], ["Otus couldn't read this one", null]);
     assert.deepEqual([swap.subject, failed.subject, unread.subject], [null, null, null]); // told by its balances, its failure, or not at all
+    // A swap of tokens with a tip in SOL: led by the token.
+    const [tipped] = rows([{ ...base, signature: 's5', kind: 'swap', other: null, moves: [{ mint: null, units: -1000n, decimals: 9 }, { mint: OTHER_MINT, units: -5n, decimals: 0 }, { mint: MINT, units: 2_000_000n, decimals: 6 }] }], naming);
+    assert.equal(text(tipped.title), `Swap 5 ${OTHER_MINT} +1 → 2 USDC`);
 });
 
 test('a token made and minted, one burned, an account opened: said as such, rent apart', () => {
