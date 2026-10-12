@@ -192,6 +192,23 @@ test('what moved no balance: told by the review\'s decoders and words; never nam
     assert.deepEqual([text(closer.title), text(closer.sub)], ['Changed an authority', 'Right to close → Fio']);
     assert.deepEqual([cancelled.icon, text(cancelled.title)], ['refresh', 'Moved a nonce on']);
     assert.equal(cancelled.details[0].text, `Moves the nonce of ${short(key(71))} on: what was signed on it can no longer run`); // not first: no durable nonce
+    // An approval made on the way of a send: still told, and the row marked; one made in a failed transaction: none of it
+    // happened. The approval before the wrapped SOL it syncs is what the line is about.
+    const unlimited = ix(TOKEN, 'Approve', { source: mine, delegate: FRIEND, owner: WALLET }, { amount: '18446744073709551615' });
+    const [sentAndApproved, failedApproval, synced] = rows(
+        [
+            { ...base, signature: 'a5', kind: 'send', other: FRIEND, moves: [{ mint: null, units: -1000n, decimals: 9 }], instructions: [ix(SYSTEM, 'TransferSol', { source: WALLET, destination: FRIEND }, { amount: '1000' }), unlimited] },
+            { ...base, signature: 'a6', error: 'instruction 0: error 4', instructions: [unlimited] },
+            { ...base, signature: 'a7', instructions: [ix(TOKEN, 'Approve', { source: mine, delegate: FRIEND, owner: WALLET }, { amount: '100000000' }), ix(TOKEN, 'SyncNative', { account: mine })] },
+        ],
+        naming,
+    );
+    const approval = sentAndApproved.details.find((d) => /Fio may move/.test(d.text));
+    assert.ok(approval && approval.tone, JSON.stringify(sentAndApproved.details));
+    assert.ok(!sentAndApproved.details.some((d) => /SOL from/.test(d.text) && !d.way)); // the transfer itself: its balance line only
+    assert.deepEqual([approval.text, approval.tone, sentAndApproved.tone], ['Fio may move all your USDC, with no limit and at any time', 'warn', 'warn']);
+    assert.deepEqual([text(failedApproval.title), failedApproval.details.filter((d) => /Fio/.test(d.text))], ['Failed', []]);
+    assert.equal(text(synced.title), 'Approved a delegate');
     assert.deepEqual([text(nonceAccount.title), text(nonceAccount.sub), nonceAccount.details[0].text, nonceAccount.details[1].text], ['Opened a nonce account', `Nonce ${short(key(71))}, used by ${short(WALLET)}`, `Nonce ${short(key(71))} owned by ${short(SYSTEM)}`, `Only ${short(WALLET)} can use it`]);
 });
 

@@ -12,7 +12,7 @@ import { alike, amount, cap, sol } from '../format.ts';
 import { LIGHTHOUSE } from '../programs/addresses.ts';
 import type { Step } from '../programs/squads.ts';
 import { story, type Names } from '../review/effects.ts';
-import type { Activity, Move, Told } from './summary.ts';
+import { WEIGHTY, type Activity, type Move, type Told } from './summary.ts';
 
 export type RowIcon = 'send' | 'receive' | 'swap' | 'plus' | 'trash' | 'key' | 'refresh' | 'shield' | 'box' | 'cross' | 'bang';
 export type RowTone = 'plain' | 'warn' | 'danger';
@@ -92,14 +92,17 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
     const head = headline(a, n, outs, ins, by);
     const taken = !a.signed && outs.length > 0; // a delegate of its tokens moved them
     const side = a.kind === 'send' ? 'to' : 'from';
+    const told = details(a, n, copies);
+    const marked = told.filter((d) => !d.way).map((d) => d.tone); // what it did besides its balances
+    const danger = head.danger || marked.includes('danger');
     return {
         signature: a.signature,
         time: a.time,
         icon: head.icon,
-        tone: a.error || head.danger ? 'danger' : copies || taken ? 'warn' : 'plain',
+        tone: a.error || danger ? 'danger' : copies || taken || marked.includes('warn') ? 'warn' : 'plain',
         title: head.title,
         sub: copies && a.other ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
-        details: details(a, n, copies),
+        details: told,
         address: a.other ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies } : null,
         subject: head.subject ? { program: head.subject.program, name: head.subject.name } : null,
     };
@@ -148,13 +151,13 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
 // What says nothing of what a transaction is for: its limits and fee, a note, the guards Otus adds.
 const BACKGROUND = new Set<string>([COMPUTE_BUDGET_PROGRAM_ADDRESS, LIGHTHOUSE, MEMO_PROGRAM_ADDRESS, LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3]);
 
-// The instruction a transaction that moved no balance is about: the last of Solana's own besides the background (a nonce
-// account opened after the account it opens; an approval after the account it may open). None when it calls another
-// program: then it goes by that program.
+// The instruction a transaction that moved no balance is about: of Solana's own besides the background, the last that
+// changes who may do what (an approval before the wrapped SOL it syncs), else the last (a nonce account opened after
+// the account it opens). None when it calls another program: then it goes by that program.
 function subjectOf(a: Activity): { told: Told; index: number } | null {
     const about = a.instructions.map((told, index) => ({ told, index })).filter(({ told }) => !BACKGROUND.has(told.program));
     if (!about.length || about.some(({ told }) => told.source === 'unknown')) return null;
-    return about[about.length - 1];
+    return about.findLast(({ told }) => WEIGHTY.test(told.name)) ?? about[about.length - 1];
 }
 
 // A title in the past for what moved no balance; any instruction not here goes by its own name ("Sync native").
@@ -225,12 +228,16 @@ const quantity = (m: Move, n: Naming) => `${amount(m.units < 0n ? -m.units : m.u
 function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
     const out: Detail[] = a.moves.map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out' }));
     if (copies && a.other) out.push({ text: a.kind === 'send' ? `${a.other} looks like ${copies}: one of them may be forged` : `Dust from ${a.other}, made to look like ${copies}: never send to it`, tone: 'warn' });
-    // What moved no balance, as the review words each instruction of Solana's own.
-    if (a.kind === 'other') {
+    // What it did besides its balances, as the review words each instruction of Solana's own: all of it when it moved
+    // no balance, else what to look out for (an approval made on the way). Nothing when it failed: none of it happened.
+    if (!a.error) {
         const names = namesFor(a, n);
         a.instructions.forEach((told) => {
             if (told.source !== 'plugin' || BACKGROUND.has(told.program)) return;
-            for (const e of story({ ...told, data: new Uint8Array() }, names).effects) out.push({ text: e.text, ...(e.tone === 'danger' || e.tone === 'warn' ? { tone: e.tone } : {}) });
+            for (const e of story({ ...told, data: new Uint8Array() }, names).effects) {
+                const marked = e.tone === 'danger' || e.tone === 'warn';
+                if (a.kind === 'other' || marked) out.push({ text: e.text, ...(e.tone === 'danger' || e.tone === 'warn' ? { tone: e.tone } : {}) });
+            }
         });
     }
     if (!a.signed && a.moves.some((m) => m.units < 0n)) out.push({ text: "You didn't sign it: a delegate of your tokens moved them", tone: 'warn' });

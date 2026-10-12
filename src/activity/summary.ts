@@ -60,6 +60,10 @@ export type Activity = {
     memo: string | null;
 };
 
+/** The instructions that change who may do what with an account, or close, lock, freeze or unstake it: what a
+ *  transaction is about before anything else it does, and never dust. */
+export const WEIGHTY = /Approve|Revoke|Authori|Close|Freeze|Thaw|Assign|Lockup|Nonce|Delegate|Deactivate|Withdraw|Split|Merge|Upgrade/;
+
 const MEMOS: readonly Address[] = [MEMO_PROGRAM_ADDRESS, LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3];
 
 /** A landed transaction → what it did for `wallet`. Pure. */
