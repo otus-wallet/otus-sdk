@@ -71,6 +71,9 @@ async function vaultIndex(authority: Address, vault: (index: number) => Promise<
     return null;
 }
 
+/** The vault through which `multisig` holds the authority it was read for. */
+export const vaultOf = (multisig: Multisig): Promise<Address> => (multisig.version === 4 ? vaultAt(multisig.address, multisig.vault) : v3Vault(multisig.address, multisig.vault));
+
 // v3 keeps its vaults ("authorities") at the seeds "squad", the multisig, the index as four bytes, "authority".
 async function v3Vault(multisig: Address, index: number): Promise<Address> {
     const text = (s: string) => new TextEncoder().encode(s);

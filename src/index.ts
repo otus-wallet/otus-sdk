@@ -36,5 +36,5 @@ export { Refused } from './errors.ts';
 
 // A deployed program, as the upgradeable loader keeps it, and its upgrade authority when that is a Squads multisig.
 export { changesIn, headOf, HEAD_SIZE, programDataAddress, programDataOf, type Head, type ProgramChange } from './programs/deployed.ts';
-export { multisigOf, SQUADS_V3, squadsAccountsIn, type Member, type Multisig } from './programs/multisig.ts';
+export { multisigOf, SQUADS_V3, squadsAccountsIn, vaultOf, type Member, type Multisig } from './programs/multisig.ts';
 export { accountByIdl } from './idl/account.ts';

@@ -8,7 +8,7 @@ import type { Address, MaybeEncodedAccount } from '@solana/kit';
 import type { Landed } from '../src/activity/history.ts';
 import { readIdl, type Idl } from '../src/idl/read.ts';
 import { headOf, programDataAddress, programDataOf } from '../src/programs/deployed.ts';
-import { multisigOf, SQUADS_V3, squadsAccountsIn } from '../src/programs/multisig.ts';
+import { multisigOf, SQUADS_V3, squadsAccountsIn, vaultOf } from '../src/programs/multisig.ts';
 import { SQUADS_V4, vaultAt } from '../src/programs/squads.ts';
 import { key } from './helpers.ts';
 
@@ -67,6 +67,7 @@ test("Jupiter's upgrade authority: vault 1 of a Squads v3 multisig, four of its 
     assert.ok(ms);
     assert.deepEqual([ms.version, ms.address, ms.program, ms.threshold, ms.timeLock, ms.vault], [3, v3!.address, SQUADS_V3, 4, 0, 1]);
     assert.ok(ms.members.length >= 4 && ms.members.every((m) => m.initiate && m.vote && m.execute));
+    assert.equal(await vaultOf(ms), JUPITER_AUTHORITY);
     // Not one of its vaults; not Squads'; another account; read by the other version's IDL; bytes changed or cut.
     assert.equal(await multisigOf(key(9), account(v3!), idl), null);
     assert.equal(await multisigOf(JUPITER_AUTHORITY, account(v3!, bytes(v3!), key(1)), idl), null);
@@ -83,6 +84,7 @@ test('a Squads v4 multisig: each member with what it may do, its time lock, the 
     assert.ok(ms);
     assert.deepEqual([ms.version, ms.program, ms.threshold, ms.timeLock, ms.vault], [4, SQUADS_V4, 3, 0, 0]);
     assert.equal(ms.members.length, 8);
+    assert.equal(await vaultOf(ms), vault0);
     assert.ok(ms.members.some((m) => m.initiate && !m.vote && !m.execute)); // proposes only
     assert.ok(ms.members.some((m) => !m.initiate && m.vote && !m.execute)); // votes only
     assert.ok(ms.members.some((m) => m.initiate && m.vote && m.execute));
