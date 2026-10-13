@@ -27,6 +27,7 @@ import {
 } from '@solana/kit';
 
 import { exactJson, NoHistory, readPage, type Landed } from '../src/activity/history.ts';
+import { dust, harmless } from '../src/activity/dust.ts';
 import { summarize, type Activity, type Told } from '../src/activity/summary.ts';
 import { rows, text, type Naming } from '../src/activity/words.ts';
 import { short } from '../src/format.ts';
@@ -43,7 +44,7 @@ type Side = { lamports?: Partial<Record<Address, [bigint, bigint]>>; tokens?: { 
 
 // A transaction of these instructions, paid by `payer` and signed, as Helius gives it back: its meta built from the
 // balances given, by address (every other account's unchanged at 1 SOL).
-function item(instructions: Instruction[], payer: Address, side: Side = {}, extra: { err?: unknown; fee?: number } = {}) {
+function item(instructions: Instruction[], payer: Address, side: Side = {}, extra: { err?: unknown; fee?: number; inner?: unknown[] } = {}) {
     const compiled = compileTransaction(
         pipe(
             createTransactionMessage({ version: 0 }),
@@ -71,6 +72,7 @@ function item(instructions: Instruction[], payer: Address, side: Side = {}, extr
             preTokenBalances: tokens('before'),
             postTokenBalances: tokens('after'),
             loadedAddresses: { writable: [], readonly: [] },
+            ...(extra.inner && { innerInstructions: extra.inner }),
         },
     };
 }
@@ -231,16 +233,46 @@ test('what left the wallet unsigned, a delegate moved: told apart, and never tak
     const vault = (await import('@solana/kit')).getProgramDerivedAddress;
     const [VAULT] = await vault({ programAddress: SQUADS_V4, seeds: ['vault'] });
     const [byProgram] = await landed(
-        item([sendTokens(key(47), THEIR_TOKENS, VAULT, 1n)], PAYER, {
+        item([{ programAddress: SQUADS_V4, accounts: [{ address: VAULT, role: AccountRole.WRITABLE }, { address: key(47), role: AccountRole.WRITABLE }, { address: THEIR_TOKENS, role: AccountRole.WRITABLE }], data: new Uint8Array(8) }], PAYER, {
             tokens: [
                 { address: key(47), mint: MINT, owner: VAULT, before: 5n, after: 4n },
                 { address: THEIR_TOKENS, mint: MINT, owner: FRIEND, before: 0n, after: 1n },
             ],
-        }),
+        }, { inner: [] }),
     );
     assert.deepEqual([summarize(byProgram, VAULT).kind, summarize(byProgram, VAULT).signed], ['send', true]);
     const naming: Naming = { wallet: WALLET, symbol: () => 'USDC', who: short, program: short, known: [] };
     const [row] = rows([a], naming);
     assert.deepEqual([row.tone, text(row.title)], ['warn', 'Moved 0.000001 USDC']);
+    assert.equal(row.details.find((d) => d.tone === 'warn')?.text, "You didn't sign it: a delegate of your tokens moved them");
+});
+
+test("a vault's own is what its program ran: a stranger's transfer to it is not, and may be dust", async () => {
+    const [VAULT] = await (await import('@solana/kit')).getProgramDerivedAddress({ programAddress: SQUADS_V4, seeds: ['vault'] });
+    // The vault's real neighbour, and a copy of it a poisoner ground.
+    const real = key(60);
+    const copy = Array.from({ length: 30 }, (_, i) => `${real.slice(0, 4)}${key(61 + i).slice(4, -4)}${real.slice(-4)}`).find((a) => a !== real && isAddress(a)) as Address;
+    const tiny: Side = { lamports: { [VAULT]: [4_000_000_000n, 4_000_001_000n], [copy]: [1_000_000_000n, 999_994_000n] } };
+    // Only the System Program ran, nothing inside it: the vault's program didn't, so the vault didn't sign.
+    const [deposit] = await landed(item([send(copy, VAULT, 1000n)], copy, tiny, { inner: [] }));
+    const a = summarize(deposit, VAULT);
+    assert.deepEqual([a.kind, a.signed, harmless(a)], ['receive', false, true]);
+    assert.deepEqual(dust(a, { known: [VAULT, real] }), { copy, of: real });
+    // What ran inside it unknown: anything may have acted for the vault, so it stays its own.
+    const [unknownInside] = await landed(item([send(copy, VAULT, 1000n)], copy, tiny));
+    assert.deepEqual([summarize(unknownInside, VAULT).signed, harmless(summarize(unknownInside, VAULT))], [true, false]);
+    // Its tokens moved by the Token Program alone: a delegate did, as for any wallet that didn't sign.
+    const DELEGATE = key(45);
+    const [taken] = await landed(
+        item([sendTokens(key(47), THEIR_TOKENS, DELEGATE, 1n)], DELEGATE, {
+            tokens: [
+                { address: key(47), mint: MINT, owner: VAULT, before: 5n, after: 4n },
+                { address: THEIR_TOKENS, mint: MINT, owner: FRIEND, before: 0n, after: 1n },
+            ],
+        }, { inner: [] }),
+    );
+    const t = summarize(taken, VAULT);
+    assert.deepEqual([t.kind, t.signed], ['send', false]);
+    const [row] = rows([t], { wallet: VAULT, symbol: () => 'USDC', who: short, program: short, known: [] });
     assert.equal(row.details.find((d) => d.tone === 'warn')?.text, "You didn't sign it: a delegate of your tokens moved them");
 });

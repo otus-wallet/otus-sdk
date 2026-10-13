@@ -14,6 +14,7 @@ import { CORE_PROGRAMS } from '../programs/core.ts';
 import { PROGRAM_NAMES } from '../programs/known.ts';
 import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
 import { explain, type Explained } from '../review/explain.ts';
+import { givesOnly } from './dust.ts';
 import type { Inner, Landed, TokenBalance } from './history.ts';
 
 /** What a program Otus doesn't know did with the wallet's by what it ran inside (its inner instructions), read by the
@@ -41,9 +42,9 @@ export type Held = { address: Address; mint: Address; decimals: number; owner: A
  *  and rent. `rent.yours`: the rent its own token accounts gained (+, opened) or lost (−, closed); `rent.theirs`: what
  *  it put in others' token accounts it opened for them; `rent.opened`: what it put in other accounts the transaction
  *  made (a mint, a nonce account). `created`: the mints it made. `signed`: whether the wallet
- *  signed it, or is a program's address (a Squads vault), which never signs: its program moves it; what left a wallet
- *  that did not, a delegate of its tokens moved. `other`: who got what a send sent, or sent what a
- *  receipt got. `main`: its first program that is not one of Solana's own. */
+ *  signed it, or is a program's address (a Squads vault), which never signs, and something that could act for it ran:
+ *  its program moves it; what left a wallet that did not, a delegate of its tokens moved. `other`: who got what a send
+ *  sent, or sent what a receipt got. `main`: its first program that is not one of Solana's own. */
 export type Activity = {
     signature: string;
     signatures: Readonly<Record<Address, string>>; // each signer's, by its address
@@ -121,7 +122,9 @@ export function summarize(t: Landed, wallet: Address): Activity {
     const opened = sol < 0n ? min(made, -sol) : 0n;
     sol += opened;
     const moves: Move[] = [...(sol !== 0n ? [{ mint: null, units: sol, decimals: 9 }] : []), ...tokenMoves(t, (owner) => yours(owner))];
-    const signed = isOffCurveAddress(wallet) || t.message.staticAccounts.slice(0, t.message.header.numSignerAccounts).includes(wallet);
+    // A program's address (a Squads vault) never signs: its program moves it, so it counts as signed whenever something
+    // that could act for it ran. Only what gives ran (a transfer to it, a token account opened): its program didn't.
+    const signed = t.message.staticAccounts.slice(0, t.message.header.numSignerAccounts).includes(wallet) || (isOffCurveAddress(wallet) && !givesOnly(told, t.inner));
     // A token gained that no other account lost, as its total grew as much, was minted; one lost that no other account
     // gained, burned. Wrapped SOL, which a closed account turns back into SOL, is neither.
     const total = (mint: Address) => sum(t.tokens.after, mint) - sum(t.tokens.before, mint);

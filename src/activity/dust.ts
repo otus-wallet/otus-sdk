@@ -10,7 +10,8 @@ import type { Address } from '@solana/kit';
 
 import { alike } from '../format.ts';
 import { TOKEN_2022_PROGRAM_ADDRESS } from '../programs/addresses.ts';
-import type { Activity, Move } from './summary.ts';
+import type { Inner } from './history.ts';
+import type { Activity, Move, Told } from './summary.ts';
 
 /**
  * Why a transaction is dust:
@@ -55,15 +56,24 @@ const GIVES: ReadonlyMap<Address, readonly string[]> = new Map<Address, readonly
 // What opening a token account runs inside it: the System Program and the token programs, nothing else.
 const OPENING_RUNS = new Set<Address>([SYSTEM_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS, TOKEN_2022_PROGRAM_ADDRESS]);
 
+/**
+ * Whether nothing ran but what gives, opens or notes (`instructions`, with what ran inside them, `inner`): no program
+ * that could act for an account of its own, and nothing that changes who may do what. A program's address (a Squads
+ * vault) is moved only by its program, which then didn't run.
+ */
+export function givesOnly(instructions: readonly Told[], inner: readonly Inner[] | null): boolean {
+    if (!instructions.every((t) => t.source === 'plugin' && GIVES.get(t.program)?.includes(t.name))) return false;
+    // What ran inside them: only what opening a token account runs, and only under it (a token's transfer hook, under
+    // its transfer, is another program's doing). Unknown: anything may have.
+    if (inner === null) return false;
+    return inner.every(({ index, instructions: ran }) => OPENS.includes(instructions[index]?.name ?? '') && instructions[index]?.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && ran.every((i) => OPENING_RUNS.has(i.program)));
+}
+
 /** Whether `a` could never have hurt the wallet it was summarized for: the only kind that may be dust. */
 export function harmless(a: Activity): boolean {
     if (a.signed || a.error !== null || a.squads.length > 0) return false;
     if (a.moves.some((m) => m.units < 0n) || a.rent.yours < 0n || a.staked !== 0n) return false;
-    if (!a.instructions.every((t) => t.source === 'plugin' && GIVES.get(t.program)?.includes(t.name))) return false;
-    // What ran inside them: only what opening a token account runs, and only under it (a token's transfer hook, under
-    // its transfer, is another program's doing). Unknown: anything may have.
-    if (a.inner === null) return false;
-    return a.inner.every(({ index, instructions }) => OPENS.includes(a.instructions[index]?.name ?? '') && a.instructions[index]?.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && instructions.every((i) => OPENING_RUNS.has(i.program)));
+    return givesOnly(a.instructions, a.inner);
 }
 
 /** Why `a` is dust, or null: news. */
