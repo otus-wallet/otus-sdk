@@ -9,7 +9,7 @@ import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
 import { isOffCurveAddress, type Address } from '@solana/kit';
 
 import { told } from '../format.ts';
-import { isTokenProgram, isWrappedSol, LIGHTHOUSE } from '../programs/addresses.ts';
+import { isTokenProgram, isWrappedSol, LIGHTHOUSE, SENDER_TIPS } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { PROGRAM_NAMES } from '../programs/known.ts';
 import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
@@ -54,6 +54,7 @@ export type Activity = {
     kind: Kind;
     moves: Move[];
     fee: bigint;
+    tip: bigint; // what the wallet paid to land it (a tip to Helius Sender), apart from what it sent
     payer: Address;
     rent: { yours: bigint; theirs: bigint; opened: bigint };
     created: Address[];
@@ -121,6 +122,18 @@ export function summarize(t: Landed, wallet: Address): Activity {
     }, 0n);
     const opened = sol < 0n ? min(made, -sol) : 0n;
     sol += opened;
+    // A tip it paid for landing it (to Helius Sender): what it cost, as the fee, not SOL sent. Up to what it lost.
+    const tipped = t.error
+        ? 0n
+        : told.reduce((n, ix) => {
+              if (ix.program !== SYSTEM_PROGRAM_ADDRESS || ix.name !== 'TransferSol') return n;
+              const to = ix.accounts.find((a) => a.role === 'destination')?.address;
+              const amount = ix.args.find((a) => a.name === 'amount')?.value ?? '';
+              const from = ix.accounts.find((a) => a.role === 'source')?.address;
+              return from === wallet && to && SENDER_TIPS.includes(to) && /^\d{1,19}$/.test(amount) ? n + BigInt(amount) : n;
+          }, 0n);
+    const tip = sol < 0n ? min(tipped, -sol) : 0n;
+    sol += tip;
     const moves: Move[] = [...(sol !== 0n ? [{ mint: null, units: sol, decimals: 9 }] : []), ...tokenMoves(t, (owner) => yours(owner))];
     // A program's address (a Squads vault) never signs: its program moves it, so it counts as signed whenever something
     // that could act for it ran. Only what gives ran (a transfer to it, a token account opened): its program didn't.
@@ -143,6 +156,7 @@ export function summarize(t: Landed, wallet: Address): Activity {
         kind,
         moves,
         fee: t.fee,
+        tip,
         payer,
         rent: { yours: rent, theirs, opened },
         created: t.error ? [] : createdMints(t),

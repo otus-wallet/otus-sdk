@@ -32,6 +32,7 @@ import { summarize, type Activity, type Told } from '../src/activity/summary.ts'
 import { rows, text, type Naming } from '../src/activity/words.ts';
 import { short } from '../src/format.ts';
 import { SQUADS_V4 } from '../src/programs/squads.ts';
+import { SENDER_TIPS } from '../src/programs/addresses.ts';
 import { key, MINT } from './helpers.ts';
 
 // The wallet: a key's address, on the curve, as a wallet that signs has; a program's address never signs.
@@ -125,7 +126,7 @@ test('address poisoning: dust from a copy is caught against an address you know,
 });
 
 test('rows: each in a line, opened for all it told; a copy of an address you sent to on the page caught', () => {
-    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [] };
+    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, tip: 0n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [] };
     const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : m), who: (a) => (a === WALLET ? `${a} (you)` : a === FRIEND ? 'Fio' : a), program: (a) => (a === JUPITER ? 'Jupiter v6' : a), known: [] };
     const real = key(60);
     const copy = Array.from({ length: 30 }, (_, i) => `${real.slice(0, 4)}${key(61 + i).slice(4, -4)}${real.slice(-4)}`).find((a) => a !== real && isAddress(a)) as Address;
@@ -158,13 +159,13 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.deepEqual([swap.subject, failed.subject, unread.subject], [null, null, null]); // told by its balances, its failure, or not at all
     // A swap of tokens with a tip in SOL: led by the token.
     const [tipped] = rows([{ ...base, signature: 's5', kind: 'swap', other: null, moves: [{ mint: null, units: -1000n, decimals: 9 }, { mint: OTHER_MINT, units: -5n, decimals: 0 }, { mint: MINT, units: 2_000_000n, decimals: 6 }] }], naming);
-    assert.equal(text(tipped.title), `Swap 5 ${OTHER_MINT} +1 → 2 USDC`);
+    assert.equal(text(tipped.title), `Swap 5 ${OTHER_MINT} → 2 USDC`); // what else moved is in the details, not counted
     // The +1 the line left out; and the token the line shows only by its address, again, for a page to show it whole.
     assert.deepEqual(tipped.details.filter((d) => d.way).map((d) => [d.text, d.again ?? false]), [['−0.000001 SOL', false], [`−5 ${OTHER_MINT}`, true]]);
 });
 
 test('a token made and minted, one burned, an account opened: said as such, rent apart', () => {
-    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [], other: null };
+    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, tip: 0n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [], other: null };
     const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : 'LAB'), who: (a) => short(a), program: (a) => short(a), known: [] };
     const made = key(62);
     const [minted, burned, opened] = rows(
@@ -187,7 +188,7 @@ test('what moved no balance: told by the review\'s decoders and words; never nam
     const limit = ix(BUDGET, 'SetComputeUnitLimit', {}, { units: '200000' });
     const guard: Told = { program: GUARD, programName: null, source: 'unknown', name: 'Unknown instruction', accounts: [], args: [] };
     const mine = key(70);
-    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], held: [{ address: mine, mint: MINT, decimals: 6, owner: WALLET }], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [], other: null, kind: 'other' as const, moves: [] };
+    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, tip: 0n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], held: [{ address: mine, mint: MINT, decimals: 6, owner: WALLET }], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [], other: null, kind: 'other' as const, moves: [] };
     const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : short(m)), who: (a) => (a === FRIEND ? 'Fio' : short(a)), program: (a) => short(a), known: [] };
     const [approved, closer, cancelled, nonceAccount] = rows(
         [
@@ -283,3 +284,49 @@ test("a vault's own is what its program ran: a stranger's transfer to it is not,
     const [row] = rows([t], { wallet: VAULT, symbol: () => 'USDC', who: short, program: short, known: [] });
     assert.equal(row.details.find((d) => d.tone === 'warn')?.text, "You didn't sign it: a delegate of your tokens moved them");
 });
+
+test("a tip paid to land it is told apart, as the fee: never a balance, nor a send", async () => {
+    const LEND = key(48);
+    const [MY_LEND, POOL, POOL_LEND, POOL_USDC] = [key(49), key(50), key(51), key(52)];
+    const swap = (to: Address, err?: unknown) =>
+        item(
+            [sendTokens(MY_LEND, POOL_LEND, WALLET, 973_158n, LEND), sendTokens(POOL_USDC, MY_TOKENS, POOL, 1_035_447n), send(WALLET, to, 10_000n)],
+            WALLET,
+            {
+                lamports: { [WALLET]: [1_000_000_000n, 1_000_000_000n - 10_000n - 5000n] },
+                tokens: [
+                    { address: MY_LEND, mint: LEND, owner: WALLET, before: 973_158n, after: 0n },
+                    { address: POOL_LEND, mint: LEND, owner: POOL, before: 0n, after: 973_158n },
+                    { address: POOL_USDC, mint: MINT, owner: POOL, before: 5_000_000n, after: 3_964_553n },
+                    { address: MY_TOKENS, mint: MINT, owner: WALLET, before: 0n, after: 1_035_447n },
+                ],
+            },
+            { inner: [], ...(err !== undefined && { err }) },
+        );
+    const [tipped, other] = await landed(swap(SENDER_TIPS[3]!), swap(FRIEND));
+    const a = summarize(tipped, WALLET);
+    assert.deepEqual([a.kind, a.tip, a.moves.map((m) => m.mint)], ['swap', 10_000n, [LEND, MINT]]);
+    const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : 'jlUSDC'), who: short, program: short, known: [] };
+    const [row] = rows([a], naming);
+    assert.equal(text(row.title), 'Swap 0.973158 jlUSDC → 1.035447 USDC');
+    assert.ok(row.details.some((d) => d.text === 'Tip 0.00001 SOL to land it') && !row.details.some((d) => d.way), JSON.stringify(row.details));
+    // The same SOL to anyone else is SOL sent.
+    const b = summarize(other, WALLET);
+    assert.deepEqual([b.tip, b.moves[0]], [0n, { mint: null, units: -10_000n, decimals: 9 }]);
+});
+
+test("a token no list vouches for goes by its maker's name, and the details say which one it is, whole", () => {
+    const base = { signatures: {}, slot: 1n, time: 1_791_236_675, error: null, fee: 5000n, tip: 0n, payer: FRIEND, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: false, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [], other: FRIEND };
+    const got: Activity = { ...base, signature: 'u1', kind: 'receive', moves: [{ mint: OTHER_MINT, units: 5n, decimals: 0 }] };
+    const naming = (symbol: string): Naming => ({ wallet: WALLET, symbol: (m) => (m === OTHER_MINT ? symbol : m), verified: (m) => m !== OTHER_MINT, who: short, program: short, known: [] });
+    const [named] = rows([got], naming('PEPE2'));
+    assert.equal(text(named.title), 'Received 5 PEPE2');
+    assert.deepEqual(named.details.filter((d) => /verified|PEPE2/.test(d.text)).map((d) => d.text), [`PEPE2 is not verified: ${OTHER_MINT}`]);
+    // With no name at all, its balance again, for the address whole: no line of its own.
+    const [bare] = rows([got], naming(OTHER_MINT));
+    assert.deepEqual(bare.details.filter((d) => d.text.includes(OTHER_MINT)).map((d) => [d.text, d.again]), [[`+5 ${OTHER_MINT}`, true]]);
+    // A verified one: nothing more to say of it.
+    const [verified] = rows([{ ...got, moves: [{ mint: MINT, units: 5n, decimals: 6 }] }], { ...naming('PEPE2'), symbol: (m) => (m === MINT ? 'USDC' : m) });
+    assert.ok(!verified.details.some((d) => /verified/.test(d.text)));
+});
+

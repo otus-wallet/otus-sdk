@@ -28,6 +28,7 @@ const poisoned = (over: Partial<Activity> = {}): Activity => ({
     kind: 'receive',
     moves: [{ mint: MINT, units: 1n, decimals: 6 }],
     fee: 5000n,
+    tip: 0n,
     payer: COPY,
     rent: { yours: 0n, theirs: 0n, opened: 0n },
     created: [],

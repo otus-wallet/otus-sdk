@@ -42,12 +42,14 @@ export type Row = {
     unknown: Address[];
 };
 
-/** What the words need: a token's symbol (a verified one's, else its mint), a name for an address (the wallet's own
- *  address marked yours, another wallet's or a contact's name, a program's, else the address), and the addresses you
- *  know. An address goes in whole. */
+/** What the words need: a token's symbol (else its mint), a name for an address (the wallet's own address marked
+ *  yours, another wallet's or a contact's name, a program's, else the address), and the addresses you know. An address
+ *  goes in whole. `verified`: whether a list the caller trusts vouches for a token (undefined: no one can say); one it
+ *  doesn't, named by its maker, is told whole in the details. */
 export type Naming = {
     wallet: Address;
     symbol(mint: Address): string;
+    verified?(mint: Address): boolean | undefined;
     who(address: Address): string;
     program(address: Address): string;
     known: Address[];
@@ -123,7 +125,8 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
 // The line: what happened, in a few words, and with whom or through what.
 // `shown`: the balances the line and what is under it say, which the details don't say again.
 function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told; shown?: Move[] } {
-    const what = (m: Move, list: Move[]): Part[] => [{ text: quantity(m, n), way: m.units < 0n ? 'out' : 'in' }, ...(list.length > 1 ? [{ text: ` +${list.length - 1}` }] : [])];
+    // The lead balance alone: what else moved is in the details, in words, not counted here.
+    const what = (m: Move): Part[] => [{ text: quantity(m, n), way: m.units < 0n ? 'out' : 'in' }];
     const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent or a tip
     const words = (s: string): Part[] => (s ? [{ text: s }] : []);
     // Through what, under the line: a program Otus doesn't know is said as one, to take note of.
@@ -136,19 +139,19 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     }
     switch (a.kind) {
         case 'swap':
-            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs), outs), { text: ' → ' }, ...what(lead(ins), ins)], sub: via(by), shown: [lead(outs), lead(ins)] };
+            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs)), { text: ' → ' }, ...what(lead(ins))], sub: via(by), shown: [lead(outs), lead(ins)] };
         case 'send':
-            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `to ${n.who(a.other)}` : by), shown: [lead(outs)] };
+            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs))], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `to ${n.who(a.other)}` : by), shown: [lead(outs)] };
         case 'receive':
-            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins), ins)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `from ${n.who(a.other)}` : by), shown: [lead(ins)] };
+            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins))], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `from ${n.who(a.other)}` : by), shown: [lead(ins)] };
         case 'mint': {
             const token = lead(ins);
             // What it cost, when something went for it: an NFT, a pool or stake token paid for.
-            const paid = outs.length ? [{ text: 'for ' }, ...what(outs[0], outs)] : [];
-            return { icon: 'plus', title: [{ text: 'Minted ' }, ...what(token, ins)], sub: paid.length ? paid : token.mint && a.created.includes(token.mint) ? words('New token') : via(by), shown: [token, ...outs.slice(0, 1)] };
+            const paid = outs.length ? [{ text: 'for ' }, ...what(outs[0])] : [];
+            return { icon: 'plus', title: [{ text: 'Minted ' }, ...what(token)], sub: paid.length ? paid : token.mint && a.created.includes(token.mint) ? words('New token') : via(by), shown: [token, ...outs.slice(0, 1)] };
         }
         case 'burn':
-            return { icon: 'trash', title: [{ text: 'Burned ' }, ...what(lead(outs), outs)], sub: via(by), shown: [lead(outs)] };
+            return { icon: 'trash', title: [{ text: 'Burned ' }, ...what(lead(outs))], sub: via(by), shown: [lead(outs)] };
     }
     const about = subjectOf(a);
     if (about) {
@@ -292,6 +295,9 @@ function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]):
     const out: Detail[] = a.moves
         .filter((m) => !shown.includes(m) || unnamed(m))
         .map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out', ...(shown.includes(m) && { again: true as const }) }));
+    // A token named by its maker, which no list vouches for: anyone can call one so. Which one it is, whole.
+    const unverified = new Set(a.moves.flatMap((m) => (m.mint !== null && !unnamed(m) && n.verified?.(m.mint) === false ? [m.mint] : [])));
+    for (const mint of unverified) out.push({ text: `${n.symbol(mint)} is not verified: ${mint}`, tone: 'dim' });
     // A copy the line says already (it does unless an unknown program ran: then the other side is a guess).
     if (copies && a.other && a.unknown.length) out.push({ text: copyWords(a, a.other, copies), tone: 'warn', copy: true });
     // Each program Otus doesn't know, whole, and what it was seen to move of yours inside it.
@@ -318,6 +324,7 @@ function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]):
     if (a.rent.theirs > 0n) out.push({ text: `${sol(a.rent.theirs)} SOL to open their token account`, tone: 'dim' });
     if (a.rent.opened > 0n) out.push({ text: `${sol(a.rent.opened)} SOL of rent in the accounts it opened`, tone: 'dim' });
     out.push({ text: `Fee ${sol(a.fee)} SOL, paid by ${n.who(a.payer)}`, tone: 'dim' });
+    if (a.tip > 0n) out.push({ text: `Tip ${sol(a.tip)} SOL to land it`, tone: 'dim' });
     if (a.memo) out.push({ text: `Memo “${a.memo}”`, tone: 'dim' });
     // Those it doesn't know have a line each.
     const programs = a.programs.filter((p) => !a.unknown.includes(p));
