@@ -159,7 +159,8 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     // A swap of tokens with a tip in SOL: led by the token.
     const [tipped] = rows([{ ...base, signature: 's5', kind: 'swap', other: null, moves: [{ mint: null, units: -1000n, decimals: 9 }, { mint: OTHER_MINT, units: -5n, decimals: 0 }, { mint: MINT, units: 2_000_000n, decimals: 6 }] }], naming);
     assert.equal(text(tipped.title), `Swap 5 ${OTHER_MINT} +1 → 2 USDC`);
-    assert.deepEqual(tipped.details.filter((d) => d.way).map((d) => d.text), ['−0.000001 SOL']); // the +1 the line left out, only
+    // The +1 the line left out; and the token the line shows only by its address, again, for a page to show it whole.
+    assert.deepEqual(tipped.details.filter((d) => d.way).map((d) => [d.text, d.again ?? false]), [['−0.000001 SOL', false], [`−5 ${OTHER_MINT}`, true]]);
 });
 
 test('a token made and minted, one burned, an account opened: said as such, rent apart', () => {
