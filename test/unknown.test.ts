@@ -48,7 +48,8 @@ test("its line says it went through an unknown program, never to whom: its detai
     assert.deepEqual(row.unknown, [MIXER]);
     const told = row.details.map((d) => [d.text, d.tone]);
     const at = told.findIndex(([t]) => t === `Unknown program ${MIXER}`);
-    assert.ok(at > 0, JSON.stringify(told));
+    // The balance the line shows is not said again: the program comes first.
+    assert.equal(at, 0, JSON.stringify(told));
     assert.equal(told[at]![1], 'warn');
     // Each line about it says so, for a page that shows only those.
     assert.deepEqual(row.details.slice(at, at + 4).map((d) => d.unknown), [MIXER, MIXER, MIXER, MIXER]);
@@ -58,6 +59,9 @@ test("its line says it went through an unknown program, never to whom: its detai
         [`It sent 0.002 SOL to ${RELAYER}`, 'dim'],
         ['It put 0.00138176 SOL into 2 accounts it opened', 'dim'],
     ]);
+    // Its programs, but the one it has a line of its own for.
+    const programs = told.at(-1)![0] as string;
+    assert.ok(!programs.includes(MIXER) && programs.includes('Compute Budget'), programs);
 });
 
 test('what the node did not say ran inside (no inner instructions), or what reads as nothing known, is left out: the warning stands', () => {

@@ -114,7 +114,8 @@ test('address poisoning: dust from a copy is caught against an address you know,
     const flagged = (list: Activity[], known: Address[]) => rows(list, naming(known)).map((r) => r.address?.copy);
     assert.deepEqual(flagged([dust], [FRIEND, real]), [true]); // a known address it copies
     const [caught] = rows([dust], naming([FRIEND, real]));
-    assert.deepEqual([caught.address?.copies, caught.details.filter((d) => d.copy).map((d) => d.tone)], [real, ['warn']]);
+    // The line says it copies, so the details don't again.
+    assert.deepEqual([caught.address?.copies, text(caught.sub), caught.details.filter((d) => d.copy)], [real, `from ${copy} · copies ${real}`, []]);
     assert.deepEqual(flagged([dust], [FRIEND, copy]), [false]); // the very address, known: not a copy
     assert.deepEqual(flagged([dust], []), [false]); // nothing to copy
     // Not known: 30,000 from the real one, then dust from its copy, as the user's history shows.
@@ -141,13 +142,15 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.deepEqual([swap.icon, text(swap.title), text(swap.sub)], ['swap', 'Swap 1 SOL → 120.58 USDC', 'Jupiter v6']);
     assert.deepEqual(swap.title.filter((p) => p.way), [{ text: '1 SOL', way: 'out' }, { text: '120.58 USDC', way: 'in' }]); // coloured apart
     assert.deepEqual([text(sent.title), text(sent.sub), sent.address], ['Sent 12 USDC', `to ${real}`, { label: 'To', address: real, name: null, copy: false, copies: null }]);
-    assert.deepEqual(sent.details.map((d) => d.text), ['−12 USDC', '0.00203928 SOL to open their token account', `Fee 0.000005 SOL, paid by ${WALLET} (you)`]); // your address, tagged
-    assert.deepEqual(swap.details.map((d) => d.way ?? null).slice(0, 3), ['out', 'in', null]); // its balances, told apart from the rest
+    assert.deepEqual(sent.details.map((d) => d.text), ['0.00203928 SOL to open their token account', `Fee 0.000005 SOL, paid by ${WALLET} (you)`]); // your address, tagged; the 12 USDC the line says, not again
+    assert.ok(!swap.details.some((d) => d.way)); // both its balances in the line: not again
     assert.deepEqual([dust.tone, text(dust.title), text(dust.sub)], ['warn', 'Received 0.0001 USDC', `from ${copy} · copies ${real}`]);
-    assert.equal(dust.details[1].text, `Dust from ${copy}, made to look like ${real}: never send to it`);
-    // Signed by the wallet, the same copy is no dust: it came with something that could hurt.
-    const [signedCopy] = rows([{ ...base, signature: 's6', kind: 'receive', other: copy, payer: copy, moves: [{ mint: MINT, units: 100n, decimals: 6 }] }, { ...base, signature: 's7', kind: 'send', other: real, moves: [{ mint: MINT, units: -1n, decimals: 6 }] }], naming);
-    assert.equal(signedCopy.details[1].text, `From ${copy}, made to look like ${real}: never send to it`);
+    assert.ok(!dust.details.some((d) => d.copy)); // the line says it copies
+    // Through a program Otus doesn't know, the line can't say whom: the details say what it copies, and that it is no
+    // dust, as it came with something that could hurt.
+    const STRANGE = key(80);
+    const [unknownCopy] = rows([{ ...base, signature: 's6', kind: 'receive', other: copy, payer: copy, signed: false, programs: [STRANGE], unknown: [STRANGE], instructions: [{ program: STRANGE, name: 'Unknown', source: 'unknown', args: [], accounts: [] }] as unknown as Told[], moves: [{ mint: MINT, units: 100n, decimals: 6 }] }, { ...base, signature: 's7', kind: 'send', other: real, moves: [{ mint: MINT, units: -1n, decimals: 6 }] }], naming);
+    assert.deepEqual(unknownCopy.details.filter((d) => d.copy).map((d) => d.text), [`From ${copy}, made to look like ${real}: never send to it`]);
     assert.equal(dust.details.find((d) => d.text.startsWith('Fee'))?.text, `Fee 0.000005 SOL, paid by ${copy}`);
     assert.equal(dust.address?.copy, true);
     assert.deepEqual([failed.icon, failed.tone, text(failed.title), failed.details[0].text], ['cross', 'danger', 'Failed · Jupiter v6', 'Failed: instruction 2: error 6001']);
@@ -156,6 +159,7 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     // A swap of tokens with a tip in SOL: led by the token.
     const [tipped] = rows([{ ...base, signature: 's5', kind: 'swap', other: null, moves: [{ mint: null, units: -1000n, decimals: 9 }, { mint: OTHER_MINT, units: -5n, decimals: 0 }, { mint: MINT, units: 2_000_000n, decimals: 6 }] }], naming);
     assert.equal(text(tipped.title), `Swap 5 ${OTHER_MINT} +1 → 2 USDC`);
+    assert.deepEqual(tipped.details.filter((d) => d.way).map((d) => d.text), ['−0.000001 SOL']); // the +1 the line left out, only
 });
 
 test('a token made and minted, one burned, an account opened: said as such, rent apart', () => {

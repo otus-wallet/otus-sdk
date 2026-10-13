@@ -99,7 +99,7 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
     const head = headline(a, n, outs, ins, by);
     const taken = !a.signed && outs.length > 0; // a delegate of its tokens moved them
     const side = a.kind === 'send' ? 'to' : 'from';
-    const told = details(a, n, copies);
+    const told = details(a, n, copies, head.shown ?? []);
     // What it did besides its balances. A program Otus doesn't know marks its own words, not the line, unless what it
     // did is a danger.
     const marked = told.filter((d) => !d.way && !(d.unknown && d.tone !== 'danger')).map((d) => d.tone);
@@ -120,7 +120,8 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
 }
 
 // The line: what happened, in a few words, and with whom or through what.
-function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told } {
+// `shown`: the balances the line and what is under it say, which the details don't say again.
+function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told; shown?: Move[] } {
     const what = (m: Move, list: Move[]): Part[] => [{ text: quantity(m, n), way: m.units < 0n ? 'out' : 'in' }, ...(list.length > 1 ? [{ text: ` +${list.length - 1}` }] : [])];
     const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent or a tip
     const words = (s: string): Part[] => (s ? [{ text: s }] : []);
@@ -130,23 +131,23 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     if (a.error) return { icon: 'cross', title: words(`Failed${by ? ` · ${by}` : ''}`), sub: words(a.payer === n.wallet ? 'Only the fee was spent' : 'Nothing of yours moved') };
     if (a.squads.length) {
         const moved = a.moves.flatMap((m, i): Part[] => [...(i ? [{ text: ' · ' }] : []), { text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, way: m.units < 0n ? 'out' : 'in' }]);
-        return { icon: 'shield', title: words(`Squads · ${[...new Set(a.squads.map((s) => VERBS[s]))].join(', ')}`), sub: moved };
+        return { icon: 'shield', title: words(`Squads · ${[...new Set(a.squads.map((s) => VERBS[s]))].join(', ')}`), sub: moved, shown: a.moves };
     }
     switch (a.kind) {
         case 'swap':
-            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs), outs), { text: ' → ' }, ...what(lead(ins), ins)], sub: via(by) };
+            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs), outs), { text: ' → ' }, ...what(lead(ins), ins)], sub: via(by), shown: [lead(outs), lead(ins)] };
         case 'send':
-            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `to ${n.who(a.other)}` : by) };
+            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `to ${n.who(a.other)}` : by), shown: [lead(outs)] };
         case 'receive':
-            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins), ins)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `from ${n.who(a.other)}` : by) };
+            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins), ins)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `from ${n.who(a.other)}` : by), shown: [lead(ins)] };
         case 'mint': {
             const token = lead(ins);
             // What it cost, when something went for it: an NFT, a pool or stake token paid for.
             const paid = outs.length ? [{ text: 'for ' }, ...what(outs[0], outs)] : [];
-            return { icon: 'plus', title: [{ text: 'Minted ' }, ...what(token, ins)], sub: paid.length ? paid : token.mint && a.created.includes(token.mint) ? words('New token') : via(by) };
+            return { icon: 'plus', title: [{ text: 'Minted ' }, ...what(token, ins)], sub: paid.length ? paid : token.mint && a.created.includes(token.mint) ? words('New token') : via(by), shown: [token, ...outs.slice(0, 1)] };
         }
         case 'burn':
-            return { icon: 'trash', title: [{ text: 'Burned ' }, ...what(lead(outs), outs)], sub: via(by) };
+            return { icon: 'trash', title: [{ text: 'Burned ' }, ...what(lead(outs), outs)], sub: via(by), shown: [lead(outs)] };
     }
     const about = subjectOf(a);
     if (about) {
@@ -282,10 +283,12 @@ function throughWords(through: Activity['through'], n: Naming): Detail[] {
     return [...dangers, ...sends, ...more, ...(opened.length ? [{ text: `It put ${sol(rent)} SOL into ${into}`, tone: 'dim' as const }] : [])];
 }
 
-// Opened: every balance it moved, the rent and the fee apart, the warnings, its programs, memo and failure.
-function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
-    const out: Detail[] = a.moves.map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out' }));
-    if (copies && a.other) out.push({ text: copyWords(a, a.other, copies), tone: 'warn', copy: true });
+// Opened: what the line didn't say. The balances it moved besides those the line shows (`shown`), the rent and the fee
+// apart, the warnings, the programs not named already, memo and failure.
+function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]): Detail[] {
+    const out: Detail[] = a.moves.filter((m) => !shown.includes(m)).map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out' }));
+    // A copy the line says already (it does unless an unknown program ran: then the other side is a guess).
+    if (copies && a.other && a.unknown.length) out.push({ text: copyWords(a, a.other, copies), tone: 'warn', copy: true });
     // Each program Otus doesn't know, whole, and what it was seen to move of yours inside it.
     for (const p of a.unknown) {
         out.push({ text: `Unknown program ${n.program(p)}`, tone: 'warn', unknown: p });
@@ -311,6 +314,8 @@ function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
     if (a.rent.opened > 0n) out.push({ text: `${sol(a.rent.opened)} SOL of rent in the accounts it opened`, tone: 'dim' });
     out.push({ text: `Fee ${sol(a.fee)} SOL, paid by ${n.who(a.payer)}`, tone: 'dim' });
     if (a.memo) out.push({ text: `Memo “${a.memo}”`, tone: 'dim' });
-    if (a.programs.length) out.push({ text: a.programs.map((p) => n.program(p)).join(' · '), tone: 'dim' });
+    // Those it doesn't know have a line each.
+    const programs = a.programs.filter((p) => !a.unknown.includes(p));
+    if (programs.length) out.push({ text: programs.map((p) => n.program(p)).join(' · '), tone: 'dim' });
     return out;
 }
