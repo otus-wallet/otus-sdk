@@ -38,12 +38,12 @@ test('a program Otus neither reads nor names is unknown; what it moved of the wa
 
 test("its line says it went through an unknown program, never to whom: its details name the program, whole, and where the SOL went", () => {
     const [row] = rows([summarize(shield, WALLET)], naming);
-    assert.equal(text(row.title), 'Sent 0.05338176 SOL');
+    assert.equal(text(row.title), 'Sent −0.05338176 SOL');
     assert.equal(text(row.sub), 'through an unknown program');
     // The line in its usual colours; only the words of the program Otus doesn't know are to take note of.
     assert.equal(row.tone, 'plain');
     assert.deepEqual(row.sub, [{ text: 'through an unknown program', tone: 'warn' }]);
-    assert.deepEqual(row.title, [{ text: 'Sent ' }, { text: '0.05338176 SOL', way: 'out' }]);
+    assert.deepEqual(row.title, [{ text: 'Sent ' }, { text: '−0.05338176 SOL', way: 'out' }]);
     assert.equal(row.address, null);
     assert.deepEqual(row.unknown, [MIXER]);
     const told = row.details.map((d) => [d.text, d.tone]);

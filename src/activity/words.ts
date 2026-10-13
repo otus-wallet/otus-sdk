@@ -125,8 +125,8 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
 // The line: what happened, in a few words, and with whom or through what.
 // `shown`: the balances the line and what is under it say, which the details don't say again.
 function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told; shown?: Move[] } {
-    // The lead balance alone: what else moved is in the details, in words, not counted here.
-    const what = (m: Move): Part[] => [{ text: quantity(m, n), way: m.units < 0n ? 'out' : 'in' }];
+    // The lead balance alone, signed as the details sign it: what else moved is in the details, not counted here.
+    const what = (m: Move): Part[] => [{ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, way: m.units < 0n ? 'out' : 'in' }];
     const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent or a tip
     const words = (s: string): Part[] => (s ? [{ text: s }] : []);
     // Through what, under the line: a program Otus doesn't know is said as one, to take note of.

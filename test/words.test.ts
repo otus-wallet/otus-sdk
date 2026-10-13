@@ -140,12 +140,12 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
         ],
         naming,
     );
-    assert.deepEqual([swap.icon, text(swap.title), text(swap.sub)], ['swap', 'Swap 1 SOL → 120.58 USDC', 'Jupiter v6']);
-    assert.deepEqual(swap.title.filter((p) => p.way), [{ text: '1 SOL', way: 'out' }, { text: '120.58 USDC', way: 'in' }]); // coloured apart
-    assert.deepEqual([text(sent.title), text(sent.sub), sent.address], ['Sent 12 USDC', `to ${real}`, { label: 'To', address: real, name: null, copy: false, copies: null }]);
+    assert.deepEqual([swap.icon, text(swap.title), text(swap.sub)], ['swap', 'Swap −1 SOL → +120.58 USDC', 'Jupiter v6']);
+    assert.deepEqual(swap.title.filter((p) => p.way), [{ text: '−1 SOL', way: 'out' }, { text: '+120.58 USDC', way: 'in' }]); // coloured apart
+    assert.deepEqual([text(sent.title), text(sent.sub), sent.address], ['Sent −12 USDC', `to ${real}`, { label: 'To', address: real, name: null, copy: false, copies: null }]);
     assert.deepEqual(sent.details.map((d) => d.text), ['0.00203928 SOL to open their token account', `Fee 0.000005 SOL, paid by ${WALLET} (you)`]); // your address, tagged; the 12 USDC the line says, not again
     assert.ok(!swap.details.some((d) => d.way)); // both its balances in the line: not again
-    assert.deepEqual([dust.tone, text(dust.title), text(dust.sub)], ['warn', 'Received 0.0001 USDC', `from ${copy} · copies ${real}`]);
+    assert.deepEqual([dust.tone, text(dust.title), text(dust.sub)], ['warn', 'Received +0.0001 USDC', `from ${copy} · copies ${real}`]);
     assert.ok(!dust.details.some((d) => d.copy)); // the line says it copies
     // Through a program Otus doesn't know, the line can't say whom: the details say what it copies, and that it is no
     // dust, as it came with something that could hurt.
@@ -159,7 +159,7 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.deepEqual([swap.subject, failed.subject, unread.subject], [null, null, null]); // told by its balances, its failure, or not at all
     // A swap of tokens with a tip in SOL: led by the token.
     const [tipped] = rows([{ ...base, signature: 's5', kind: 'swap', other: null, moves: [{ mint: null, units: -1000n, decimals: 9 }, { mint: OTHER_MINT, units: -5n, decimals: 0 }, { mint: MINT, units: 2_000_000n, decimals: 6 }] }], naming);
-    assert.equal(text(tipped.title), `Swap 5 ${OTHER_MINT} → 2 USDC`); // what else moved is in the details, not counted
+    assert.equal(text(tipped.title), `Swap −5 ${OTHER_MINT} → +2 USDC`); // what else moved is in the details, not counted
     // The +1 the line left out; and the token the line shows only by its address, again, for a page to show it whole.
     assert.deepEqual(tipped.details.filter((d) => d.way).map((d) => [d.text, d.again ?? false]), [['−0.000001 SOL', false], [`−5 ${OTHER_MINT}`, true]]);
 });
@@ -176,9 +176,9 @@ test('a token made and minted, one burned, an account opened: said as such, rent
         ],
         naming,
     );
-    assert.deepEqual([minted.icon, text(minted.title), text(minted.sub)], ['plus', 'Minted 1,000 LAB', 'New token']);
+    assert.deepEqual([minted.icon, text(minted.title), text(minted.sub)], ['plus', 'Minted +1,000 LAB', 'New token']);
     assert.ok(minted.details.some((d) => d.text === '0.0014616 SOL of rent in the accounts it opened'));
-    assert.deepEqual([burned.icon, text(burned.title)], ['trash', 'Burned 30 USDC']);
+    assert.deepEqual([burned.icon, text(burned.title)], ['trash', 'Burned −30 USDC']);
     assert.deepEqual([text(opened.title), text(opened.sub)], ['Opened an account', '0.00144768 SOL of rent']);
 });
 
@@ -251,7 +251,7 @@ test('what left the wallet unsigned, a delegate moved: told apart, and never tak
     assert.deepEqual([summarize(byProgram, VAULT).kind, summarize(byProgram, VAULT).signed], ['send', true]);
     const naming: Naming = { wallet: WALLET, symbol: () => 'USDC', who: short, program: short, known: [] };
     const [row] = rows([a], naming);
-    assert.deepEqual([row.tone, text(row.title)], ['warn', 'Moved 0.000001 USDC']);
+    assert.deepEqual([row.tone, text(row.title)], ['warn', 'Moved −0.000001 USDC']);
     assert.equal(row.details.find((d) => d.tone === 'warn')?.text, "You didn't sign it: a delegate of your tokens moved them");
 });
 
@@ -308,7 +308,7 @@ test("a tip paid to land it is told apart, as the fee: never a balance, nor a se
     assert.deepEqual([a.kind, a.tip, a.moves.map((m) => m.mint)], ['swap', 10_000n, [LEND, MINT]]);
     const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : 'jlUSDC'), who: short, program: short, known: [] };
     const [row] = rows([a], naming);
-    assert.equal(text(row.title), 'Swap 0.973158 jlUSDC → 1.035447 USDC');
+    assert.equal(text(row.title), 'Swap −0.973158 jlUSDC → +1.035447 USDC');
     assert.ok(row.details.some((d) => d.text === 'Tip 0.00001 SOL to land it') && !row.details.some((d) => d.way), JSON.stringify(row.details));
     // The same SOL to anyone else is SOL sent.
     const b = summarize(other, WALLET);
@@ -320,7 +320,7 @@ test("a token no list vouches for goes by its maker's name, and the details say 
     const got: Activity = { ...base, signature: 'u1', kind: 'receive', moves: [{ mint: OTHER_MINT, units: 5n, decimals: 0 }] };
     const naming = (symbol: string): Naming => ({ wallet: WALLET, symbol: (m) => (m === OTHER_MINT ? symbol : m), verified: (m) => m !== OTHER_MINT, who: short, program: short, known: [] });
     const [named] = rows([got], naming('PEPE2'));
-    assert.equal(text(named.title), 'Received 5 PEPE2');
+    assert.equal(text(named.title), 'Received +5 PEPE2');
     assert.deepEqual(named.details.filter((d) => /verified|PEPE2/.test(d.text)).map((d) => d.text), [`PEPE2 is not verified: ${OTHER_MINT}`]);
     // With no name at all, its balance again, for the address whole: no line of its own.
     const [bare] = rows([got], naming(OTHER_MINT));
@@ -330,3 +330,40 @@ test("a token no list vouches for goes by its maker's name, and the details say 
     assert.ok(!verified.details.some((d) => /verified/.test(d.text)));
 });
 
+
+test('something given for something else is a swap, minted or burned on the way; an NFT minted for SOL is a mint', async () => {
+    const [LEND, NFT, LENDER] = [key(53), key(54), key(58)];
+    const [MY_LEND, MY_NFT, POOL, POOL_USDC] = [key(59), key(60), key(61), key(62)];
+    const through = (accounts: Address[]) => ({ programAddress: LENDER, accounts: [{ address: WALLET, role: AccountRole.WRITABLE_SIGNER }, ...accounts.map((address) => ({ address, role: AccountRole.WRITABLE }))], data: new Uint8Array([1]) });
+    const sol = (out: bigint): Side['lamports'] => ({ [WALLET]: [1_000_000_000n, 1_000_000_000n - out - 5000n] });
+    const [deposit, redeem, nft, nftForTokens] = await landed(
+        // 0.01 SOL in, Jupiter Lend's receipt minted for it.
+        item([through([MY_LEND])], WALLET, { lamports: sol(10_000_000n), tokens: [{ address: MY_LEND, mint: LEND, owner: WALLET, before: null, after: 973_158n }] }, { inner: [] }),
+        // The receipt burned, USDC out of the pool for it.
+        item([through([MY_LEND, POOL_USDC, MY_TOKENS])], WALLET, {
+            tokens: [
+                { address: MY_LEND, mint: LEND, owner: WALLET, before: 973_158n, after: 0n },
+                { address: POOL_USDC, mint: MINT, owner: POOL, before: 5_000_000n, after: 3_964_553n },
+                { address: MY_TOKENS, mint: MINT, owner: WALLET, before: 0n, after: 1_035_447n },
+            ],
+        }, { inner: [] }),
+        // One NFT minted for 0.5 SOL.
+        item([through([MY_NFT])], WALLET, { lamports: sol(500_000_000n), tokens: [{ address: MY_NFT, mint: NFT, owner: WALLET, before: null, after: 1n, decimals: 0 }] }, { inner: [] }),
+        // The same NFT for tokens of yours: what left is told, never as a mint.
+        item([through([MY_NFT, MY_TOKENS])], WALLET, {
+            tokens: [
+                { address: MY_NFT, mint: NFT, owner: WALLET, before: null, after: 1n, decimals: 0 },
+                { address: MY_TOKENS, mint: MINT, owner: WALLET, before: 1_000_000n, after: 0n },
+            ],
+        }, { inner: [] }),
+    );
+    const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'USDC' : m === LEND ? 'jlUSDC' : 'NFT'), who: short, program: short, known: [] };
+    const told = (t: Landed) => {
+        const a = summarize(t, WALLET);
+        return [a.kind, text(rows([a], naming)[0]!.title)];
+    };
+    assert.deepEqual(told(deposit), ['swap', 'Swap −0.01 SOL → +0.973158 jlUSDC']);
+    assert.deepEqual(told(redeem), ['swap', 'Swap −0.973158 jlUSDC → +1.035447 USDC']);
+    assert.deepEqual(told(nft), ['mint', 'Minted +1 NFT']);
+    assert.deepEqual(told(nftForTokens), ['swap', 'Swap −1 USDC → +1 NFT']);
+});

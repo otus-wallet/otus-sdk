@@ -207,7 +207,13 @@ function othersMoved(t: Landed, wallet: Address, mint: Address, way: bigint): bo
 // else moved; then by what went to others and came from them.
 function kindOf(made: Move[], real: Move[]): Kind {
     const [gains, losses] = [real.some((m) => m.units > 0n), real.some((m) => m.units < 0n)];
-    if (made.some((m) => m.units > 0n) && !real.some((m) => m.units < 0n && m.mint !== null)) return 'mint';
+    const [minted, burned] = [made.filter((m) => m.units > 0n), made.some((m) => m.units < 0n)];
+    // Something given for something else is a swap, as people see it: whether what came was minted for it (a deposit's
+    // receipt, a staked token) or what left was burned (redeemed). Only an NFT minted for SOL is a mint: tokens of yours
+    // gone for something minted are told as gone, never as a mint.
+    const nftForSol = !gains && !burned && !real.some((m) => m.units < 0n && m.mint !== null) && minted.every((m) => m.units === 1n && m.decimals === 0);
+    if ((gains || minted.length) && (losses || burned)) return nftForSol ? 'mint' : 'swap';
+    if (minted.length) return 'mint';
     if (made.length && !gains && !losses) return 'burn';
     if (gains && losses) return 'swap';
     if (losses) return 'send';
