@@ -45,6 +45,9 @@ test("its line says it went through an unknown program, never to whom: its detai
     const at = told.findIndex(([t]) => t === `Unknown program ${MIXER}`);
     assert.ok(at > 0, JSON.stringify(told));
     assert.equal(told[at]![1], 'warn');
+    // Each line about it says so, for a page that shows only those.
+    assert.deepEqual(row.details.slice(at, at + 4).map((d) => d.unknown), [MIXER, MIXER, MIXER, MIXER]);
+    assert.ok(row.details.filter((d) => d.unknown).length === 4);
     assert.deepEqual(told.slice(at + 1, at + 4), [
         [`It sent 0.05 SOL to ${POOL}`, 'dim'],
         [`It sent 0.002 SOL to ${RELAYER}`, 'dim'],

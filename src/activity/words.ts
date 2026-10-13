@@ -18,8 +18,9 @@ import { WEIGHTY, type Activity, type Move, type Told } from './summary.ts';
 
 export type RowIcon = 'send' | 'receive' | 'swap' | 'plus' | 'trash' | 'key' | 'refresh' | 'shield' | 'box' | 'cross' | 'bang';
 export type RowTone = 'plain' | 'warn' | 'danger';
-/** A line of what a transaction told; `way`: a balance it moved, in or out. */
-export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out' };
+/** A line of what a transaction told; `way`: a balance it moved, in or out; `unknown`: the program Otus doesn't know
+ *  that the line names, or tells what it moved of yours. */
+export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; unknown?: Address };
 /** Words of a line, an amount among them marked as what came in or went out. */
 export type Part = { text: string; way?: 'in' | 'out' };
 
@@ -263,8 +264,8 @@ function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
     if (copies && a.other) out.push({ text: copyWords(a, a.other, copies), tone: 'warn' });
     // Each program Otus doesn't know, whole, and what it was seen to move of yours inside it.
     for (const p of a.unknown) {
-        out.push({ text: `Unknown program ${n.program(p)}`, tone: 'warn' });
-        out.push(...throughWords(a.through.filter((t) => t.program === p), n));
+        out.push({ text: `Unknown program ${n.program(p)}`, tone: 'warn', unknown: p });
+        out.push(...throughWords(a.through.filter((t) => t.program === p), n).map((d) => ({ ...d, unknown: p })));
     }
     // What it did besides its balances, as the review words each instruction of Solana's own: all of it when it moved
     // no balance, else what to look out for (an approval made on the way). Nothing when it failed: none of it happened.
