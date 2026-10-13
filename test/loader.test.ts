@@ -97,7 +97,7 @@ test('what does not fit is refused: too few accounts, an instruction it has not,
 });
 
 test("Activity's line: what the loader did, by its own words", () => {
-    const base = { signatures: {}, slot: 1n, time: 1, error: null, kind: 'other' as const, moves: [], fee: 5000n, payer: PAYER, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], held: [], fresh: [] as Address[], staked: 0n, signed: true, other: null, programs: [LOADER_V3_PROGRAM_ADDRESS], main: null, squads: [], memo: null, inner: [] };
+    const base = { signatures: {}, slot: 1n, time: 1, error: null, kind: 'other' as const, moves: [], fee: 5000n, payer: PAYER, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], held: [], fresh: [] as Address[], staked: 0n, signed: true, other: null, programs: [LOADER_V3_PROGRAM_ADDRESS], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [] };
     const naming = { wallet: PAYER, symbol: (m: Address) => m, who: (a: Address) => named[a] ?? a, program: (a: Address) => a, known: [] };
     const upgrade = explained(getUpgradeInstruction({ programDataAccount: DATA, programAccount: PROGRAM, bufferAccount: BUFFER, spillAccount: PAYER, authority: me }));
     const final = explained(landed(getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: me })));

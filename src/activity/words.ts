@@ -24,7 +24,8 @@ export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; wa
 export type Part = { text: string; way?: 'in' | 'out' };
 
 /** One transaction, as a line and its details. `address`: the other side, shown whole; `copy`: made to look like
- *  another. `subject`: the instruction the line is about, when it is told by one (its arguments in `sub`). */
+ *  another. `subject`: the instruction the line is about, when it is told by one (its arguments in `sub`). `unknown`:
+ *  the programs it calls that Otus doesn't know, whole: a page marks the line for them. */
 export type Row = {
     signature: string | null;
     time: number | null;
@@ -35,6 +36,7 @@ export type Row = {
     details: Detail[];
     address: { label: string; address: Address; name: string | null; copy: boolean } | null;
     subject: { program: Address; name: string } | null;
+    unknown: Address[];
 };
 
 /** What the words need: a token's symbol (a verified one's, else its mint), a name for an address (the wallet's own
@@ -86,7 +88,7 @@ function copiesOn(done: Activity[], known: Address[]): Map<Address, Address> {
     return out;
 }
 
-const unreadable = (why: string, signature: string | null): Row => ({ signature, time: null, icon: 'bang', tone: 'warn', title: [{ text: "Otus couldn't read this one" }], sub: [{ text: why }], details: [], address: null, subject: null });
+const unreadable = (why: string, signature: string | null): Row => ({ signature, time: null, icon: 'bang', tone: 'warn', title: [{ text: "Otus couldn't read this one" }], sub: [{ text: why }], details: [], address: null, subject: null, unknown: [] });
 
 function row(a: Activity, n: Naming, copies: Address | null): Row {
     const [outs, ins] = [a.moves.filter((m) => m.units < 0n), a.moves.filter((m) => m.units > 0n)];
@@ -105,8 +107,10 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
         title: head.title,
         sub: copies && a.other ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
         details: told,
-        address: a.other ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies } : null,
+        // Through a program Otus doesn't know, the other side is a guess from the balances: its details say where it went.
+        address: a.other && !a.unknown.length ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies } : null,
         subject: head.subject ? { program: head.subject.program, name: head.subject.name } : null,
+        unknown: a.unknown,
     };
 }
 
@@ -124,9 +128,9 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
         case 'swap':
             return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs), outs), { text: ' → ' }, ...what(lead(ins), ins)], sub: words(by) };
         case 'send':
-            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: words(a.other ? `to ${n.who(a.other)}` : by) };
+            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: words(a.unknown.length ? UNKNOWN_WAY : a.other ? `to ${n.who(a.other)}` : by) };
         case 'receive':
-            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins), ins)], sub: words(a.other ? `from ${n.who(a.other)}` : by) };
+            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins), ins)], sub: words(a.unknown.length ? UNKNOWN_WAY : a.other ? `from ${n.who(a.other)}` : by) };
         case 'mint': {
             const token = lead(ins);
             // What it cost, when something went for it: an NFT, a pool or stake token paid for.
@@ -149,6 +153,9 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     const programs = a.programs.filter((p) => p !== COMPUTE_BUDGET_PROGRAM_ADDRESS && p !== LIGHTHOUSE).map((p) => n.program(p));
     return { icon: 'box', title: words(by || programs[0] || 'Transaction'), sub: words(by ? '' : programs.slice(1).join(', ')) };
 }
+
+// A send or a receipt through a program Otus doesn't know: what it did inside is that program's own to say.
+const UNKNOWN_WAY = 'through an unknown program';
 
 // What says nothing of what a transaction is for: its limits and fee, a note, the guards Otus adds.
 const BACKGROUND = new Set<string>([COMPUTE_BUDGET_PROGRAM_ADDRESS, LIGHTHOUSE, MEMO_PROGRAM_ADDRESS, LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3]);
@@ -241,10 +248,24 @@ function copyWords(a: Activity, other: Address, copies: Address): string {
     return harmless(a) ? `Dust from ${other}, made to look like ${copies}: never send to it` : `From ${other}, made to look like ${copies}: never send to it`;
 }
 
+// What an unknown program moved of the wallet's: each send on its own, the SOL put in accounts it opened together.
+function throughWords(through: Activity['through'], n: Naming): Detail[] {
+    const sends = through.filter((t) => t.kind === 'sent').map((t): Detail => ({ text: `It sent ${quantity({ mint: t.mint, units: t.units, decimals: t.decimals }, n)} to ${n.who(t.to)}`, tone: 'dim' }));
+    const opened = through.filter((t) => t.kind === 'opened');
+    const rent = opened.reduce((sum, t) => sum + t.units, 0n);
+    const into = opened.length === 1 ? 'an account it opened' : `${opened.length} accounts it opened`;
+    return [...sends, ...(opened.length ? [{ text: `It put ${sol(rent)} SOL into ${into}`, tone: 'dim' as const }] : [])];
+}
+
 // Opened: every balance it moved, the rent and the fee apart, the warnings, its programs, memo and failure.
 function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
     const out: Detail[] = a.moves.map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out' }));
     if (copies && a.other) out.push({ text: copyWords(a, a.other, copies), tone: 'warn' });
+    // Each program Otus doesn't know, whole, and what it was seen to move of yours inside it.
+    for (const p of a.unknown) {
+        out.push({ text: `Unknown program ${n.program(p)}`, tone: 'warn' });
+        out.push(...throughWords(a.through.filter((t) => t.program === p), n));
+    }
     // What it did besides its balances, as the review words each instruction of Solana's own: all of it when it moved
     // no balance, else what to look out for (an approval made on the way). Nothing when it failed: none of it happened.
     if (!a.error) {

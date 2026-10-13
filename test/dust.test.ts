@@ -38,6 +38,8 @@ const poisoned = (over: Partial<Activity> = {}): Activity => ({
     signed: false,
     other: COPY,
     programs: [],
+    unknown: [],
+    through: [],
     main: null,
     squads: [],
     memo: null,

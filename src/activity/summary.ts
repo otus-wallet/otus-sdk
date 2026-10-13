@@ -11,9 +11,15 @@ import { isOffCurveAddress, type Address } from '@solana/kit';
 import { told } from '../format.ts';
 import { isTokenProgram, isWrappedSol, LIGHTHOUSE } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
+import { PROGRAM_NAMES } from '../programs/known.ts';
 import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
 import { explain, type Explained } from '../review/explain.ts';
 import type { Inner, Landed, TokenBalance } from './history.ts';
+
+/** What a program Otus doesn't know moved of the wallet's by what it ran inside (its inner instructions), read by the
+ *  same decoders: SOL or a token `sent` to `to` (a token account's owner when the transaction lists it), or SOL put in
+ *  an account it `opened` (`to`). */
+export type Through = { program: Address; kind: 'sent' | 'opened'; to: Address; mint: Address | null; units: bigint; decimals: number };
 
 /** A change in one of the wallet's balances: SOL (mint null) or a token, in its base units, gained (+) or lost (−). */
 export type Move = { mint: Address | null; units: bigint; decimals: number };
@@ -55,6 +61,8 @@ export type Activity = {
     signed: boolean;
     other: Address | null;
     programs: Address[];
+    unknown: Address[]; // the programs it calls that Otus doesn't know: neither reads nor names them
+    through: Through[];
     main: Address | null;
     squads: Step[];
     memo: string | null;
@@ -119,6 +127,8 @@ export function summarize(t: Landed, wallet: Address): Activity {
     const madeOrBurned = (m: Move) => m.mint !== null && !isWrappedSol(m.mint) && (m.units > 0n ? !elsewhere(m.mint, -1n) && total(m.mint) >= m.units : !elsewhere(m.mint, 1n) && total(m.mint) <= m.units);
     const kind = kindOf(moves.filter(madeOrBurned), moves.filter((m) => !madeOrBurned(m)));
     const programs = [...new Set(t.message.instructions.map((ix) => accounts[ix.programAddressIndex]))];
+    const unknown = programs.filter((p) => !PROGRAM_NAMES.has(p));
+    const held = heldIn(t);
     return {
         signature: t.signature,
         signatures: t.signatures,
@@ -134,10 +144,12 @@ export function summarize(t: Landed, wallet: Address): Activity {
         instructions: told,
         fresh: accounts.filter((_, i) => lamports.before[i] === 0n && lamports.after[i] > 0n),
         staked,
-        held: heldIn(t),
+        held,
         signed,
         other: kind === 'send' || kind === 'receive' ? otherSide(t, wallet, moves, kind === 'send' ? 1n : -1n, change) : null,
         programs,
+        unknown,
+        through: t.error ? [] : throughUnknown(t, wallet, new Set(unknown), held),
         main: programs.find((p) => !CORE_PROGRAMS.has(p) && p !== LIGHTHOUSE) ?? null,
         squads: [...new Set(squadsSteps(t))],
         memo: memo(t),
@@ -196,6 +208,40 @@ function instructionsOf(t: Landed): Told[] {
         writable: i < statics ? (i < h.numSignerAccounts ? i < h.numSignerAccounts - h.numReadonlySignerAccounts : i < statics - h.numReadonlyNonSignerAccounts) : i < statics + loadedWritable,
     }));
     return explain({ message: t.message, accounts }).map(({ data: _, ...rest }) => rest);
+}
+
+// What the programs Otus doesn't know moved of the wallet's inside them: each inner instruction of theirs read as the
+// review reads Solana's own (one at a time, its accounts in place), kept when it sends the wallet's SOL or tokens or
+// puts its SOL in an account it opens. Anything it can't read is left out: the warning stands for it.
+function throughUnknown(t: Landed, wallet: Address, unknown: Set<Address>, held: Held[]): Through[] {
+    if (!t.inner || unknown.size === 0) return [];
+    const holdings = new Map(held.map((h) => [h.address, h]));
+    const out: Through[] = [];
+    for (const group of t.inner) {
+        const top = t.message.instructions[group.index];
+        const program = top && t.accounts[top.programAddressIndex];
+        if (!program || !unknown.has(program)) continue;
+        for (const ix of group.instructions) {
+            const accounts = [ix.program, ...ix.accounts].map((address) => ({ address, signer: false, writable: true }));
+            const [e] = explain({ message: { instructions: [{ programAddressIndex: 0, accountIndices: ix.accounts.map((_, i) => i + 1), data: ix.data }] }, accounts });
+            if (!e || e.source !== 'plugin') continue;
+            const at = (role: string) => e.accounts.find((a) => a.role === role)?.address;
+            const arg = (name: string) => e.args.find((a) => a.name === name)?.value ?? '';
+            const units = /^\d{1,20}$/.test(arg('amount')) ? BigInt(arg('amount')) : /^\d{1,20}$/.test(arg('lamports')) ? BigInt(arg('lamports')) : null;
+            if (units === null || units === 0n) continue;
+            if (e.program === SYSTEM_PROGRAM_ADDRESS && e.name === 'TransferSol' && at('source') === wallet && at('destination')) {
+                out.push({ program, kind: 'sent', to: at('destination')!, mint: null, units, decimals: 9 });
+            } else if (e.program === SYSTEM_PROGRAM_ADDRESS && e.name === 'CreateAccount' && at('payer') === wallet && at('newAccount')) {
+                out.push({ program, kind: 'opened', to: at('newAccount')!, mint: null, units, decimals: 9 });
+            } else if (isTokenProgram(e.program) && (e.name === 'Transfer' || e.name === 'TransferChecked')) {
+                const from = holdings.get(at('source') ?? ('' as Address));
+                const to = at('destination');
+                if (!from || from.owner !== wallet || !to) continue;
+                out.push({ program, kind: 'sent', to: holdings.get(to)?.owner ?? to, mint: from.mint, units, decimals: from.decimals });
+            }
+        }
+    }
+    return out;
 }
 
 // Every token account it lists, once, with its mint, decimals and owner.
