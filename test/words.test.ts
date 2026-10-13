@@ -321,7 +321,7 @@ test("a token no list vouches for goes by its maker's name, and the details say 
     const naming = (symbol: string): Naming => ({ wallet: WALLET, symbol: (m) => (m === OTHER_MINT ? symbol : m), verified: (m) => m !== OTHER_MINT, who: short, program: short, known: [] });
     const [named] = rows([got], naming('PEPE2'));
     assert.equal(text(named.title), 'Received +5 PEPE2');
-    assert.deepEqual(named.details.filter((d) => /verified|PEPE2/.test(d.text)).map((d) => d.text), [`PEPE2 is not verified: ${OTHER_MINT}`]);
+    assert.deepEqual(named.details.filter((d) => /verified|PEPE2/.test(d.text)).map((d) => [d.text, d.unverified]), [[`PEPE2 is not verified: ${OTHER_MINT}`, OTHER_MINT]]);
     // With no name at all, its balance again, for the address whole: no line of its own.
     const [bare] = rows([got], naming(OTHER_MINT));
     assert.deepEqual(bare.details.filter((d) => d.text.includes(OTHER_MINT)).map((d) => [d.text, d.again]), [[`+5 ${OTHER_MINT}`, true]]);

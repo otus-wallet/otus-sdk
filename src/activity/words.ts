@@ -19,9 +19,10 @@ import { WEIGHTY, type Activity, type Move, type Told } from './summary.ts';
 export type RowIcon = 'send' | 'receive' | 'swap' | 'plus' | 'trash' | 'key' | 'refresh' | 'shield' | 'box' | 'cross' | 'bang';
 export type RowTone = 'plain' | 'warn' | 'danger';
 /** A line of what a transaction told; `way`: a balance it moved, in or out; `again`: one the line shows too, by its
- *  token's address, which a page that cuts addresses can't show whole there; `unknown`: the program Otus doesn't know
- *  that the line names, or tells what it moved of yours; `copy`: the line that warns of a copy of an address. */
-export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; again?: true; unknown?: Address; copy?: true };
+ *  token's address, which a page that cuts addresses can't show whole there; `unverified`: the token no list vouches
+ *  for that the line says which it is; `unknown`: the program Otus doesn't know that the line names, or tells what it
+ *  moved of yours; `copy`: the line that warns of a copy of an address. */
+export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; again?: true; unverified?: Address; unknown?: Address; copy?: true };
 /** Words of a line, an amount among them marked as what came in or went out; `tone`: words to take note of (a program
  *  Otus doesn't know), whatever the line's. */
 export type Part = { text: string; way?: 'in' | 'out'; tone?: 'warn' };
@@ -297,7 +298,7 @@ function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]):
         .map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out', ...(shown.includes(m) && { again: true as const }) }));
     // A token named by its maker, which no list vouches for: anyone can call one so. Which one it is, whole.
     const unverified = new Set(a.moves.flatMap((m) => (m.mint !== null && !unnamed(m) && n.verified?.(m.mint) === false ? [m.mint] : [])));
-    for (const mint of unverified) out.push({ text: `${n.symbol(mint)} is not verified: ${mint}`, tone: 'dim' });
+    for (const mint of unverified) out.push({ text: `${n.symbol(mint)} is not verified: ${mint}`, tone: 'dim', unverified: mint });
     // A copy the line says already (it does unless an unknown program ran: then the other side is a guess).
     if (copies && a.other && a.unknown.length) out.push({ text: copyWords(a, a.other, copies), tone: 'warn', copy: true });
     // Each program Otus doesn't know, whole, and what it was seen to move of yours inside it.
