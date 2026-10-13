@@ -122,17 +122,10 @@ export function summarize(t: Landed, wallet: Address): Activity {
     }, 0n);
     const opened = sol < 0n ? min(made, -sol) : 0n;
     sol += opened;
-    // A tip it paid for landing it (to Helius Sender): what it cost, as the fee, not SOL sent. Up to what it lost.
-    const tipped = t.error
-        ? 0n
-        : told.reduce((n, ix) => {
-              if (ix.program !== SYSTEM_PROGRAM_ADDRESS || ix.name !== 'TransferSol') return n;
-              const to = ix.accounts.find((a) => a.role === 'destination')?.address;
-              const amount = ix.args.find((a) => a.name === 'amount')?.value ?? '';
-              const from = ix.accounts.find((a) => a.role === 'source')?.address;
-              return from === wallet && to && SENDER_TIPS.includes(to) && /^\d{1,19}$/.test(amount) ? n + BigInt(amount) : n;
-          }, 0n);
-    const tip = sol < 0n ? min(tipped, -sol) : 0n;
+    // A tip it paid for landing it (to Helius Sender): what it cost, as the fee, not SOL sent. One transfer, of what a
+    // tip costs at most: more is SOL sent, whoever it went to. Up to what it lost.
+    const tipping = t.error ? null : tipOf(told, wallet);
+    const tip = tipping && sol < 0n ? min(tipping.amount, -sol) : 0n;
     sol += tip;
     const moves: Move[] = [...(sol !== 0n ? [{ mint: null, units: sol, decimals: 9 }] : []), ...tokenMoves(t, (owner) => yours(owner))];
     // A program's address (a Squads vault) never signs: its program moves it, so it counts as signed whenever something
@@ -143,7 +136,10 @@ export function summarize(t: Landed, wallet: Address): Activity {
     const total = (mint: Address) => sum(t.tokens.after, mint) - sum(t.tokens.before, mint);
     const elsewhere = (mint: Address, way: bigint) => othersMoved(t, wallet, mint, way);
     const madeOrBurned = (m: Move) => m.mint !== null && !isWrappedSol(m.mint) && (m.units > 0n ? !elsewhere(m.mint, -1n) && total(m.mint) >= m.units : !elsewhere(m.mint, 1n) && total(m.mint) <= m.units);
-    const kind = kindOf(moves.filter(madeOrBurned), moves.filter((m) => !madeOrBurned(m)));
+    // Tokens of the wallet's that went to a person (an owner on the curve: a key's, not a program's pool): a junk token
+    // minted back is no exchange for them.
+    const toPeople = moves.some((m) => m.units < 0n && m.mint !== null && !madeOrBurned(m) && gainers(t, wallet, m.mint).some((o) => !isOffCurveAddress(o)));
+    const kind = kindOf(moves.filter(madeOrBurned), moves.filter((m) => !madeOrBurned(m)), toPeople);
     const programs = [...new Set(t.message.instructions.map((ix) => accounts[ix.programAddressIndex]))];
     const unknown = programs.filter((p) => !PROGRAM_NAMES.has(p));
     const held = heldIn(t);
@@ -165,7 +161,8 @@ export function summarize(t: Landed, wallet: Address): Activity {
         staked,
         held,
         signed,
-        other: kind === 'send' || kind === 'receive' ? otherSide(t, wallet, moves, kind === 'send' ? 1n : -1n, change) : null,
+        // The tip apart from what the tip account got: never the other side of a send for it.
+        other: kind === 'send' || kind === 'receive' ? otherSide(t, wallet, moves, kind === 'send' ? 1n : -1n, (i) => change(i) - (tip && t.accounts[i] === tipping?.to ? tip : 0n)) : null,
         programs,
         unknown,
         through: t.error ? [] : throughUnknown(t, wallet, new Set(unknown), held),
@@ -195,6 +192,31 @@ function stakesFor(told: Told[], wallet: Address): Address[] {
 const rentFor = (space: number) => BigInt(128 + space) * 6_960n;
 
 // Whether an account that is not the wallet's gained (way 1) or lost (−1) some of this token in the transaction.
+// The owners of others' accounts that gained `mint`.
+function gainers(t: Landed, wallet: Address, mint: Address): Address[] {
+    const by = new Map<number, { owner: Address | null; units: bigint }>();
+    for (const [side, sign] of [['before', -1n], ['after', 1n]] as const) {
+        for (const b of t.tokens[side]) if (b.mint === mint && b.owner !== wallet) by.set(b.account, { owner: b.owner, units: (by.get(b.account)?.units ?? 0n) + sign * b.units });
+    }
+    return [...by.values()].flatMap((g) => (g.units > 0n && g.owner ? [g.owner] : []));
+}
+
+// The tip a transaction's instructions pay from `wallet`, and to which of Sender's accounts: one transfer, of no more than
+// a tip costs; null for none.
+function tipOf(told: Told[], wallet: Address): { amount: bigint; to: Address } | null {
+    const tips = told.flatMap((ix) => {
+        if (ix.program !== SYSTEM_PROGRAM_ADDRESS || ix.name !== 'TransferSol') return [];
+        const at = (role: string) => ix.accounts.find((a) => a.role === role)?.address;
+        const amount = ix.args.find((a) => a.name === 'amount')?.value ?? '';
+        const to = at('destination');
+        return at('source') === wallet && to && SENDER_TIPS.includes(to) && /^\d{1,19}$/.test(amount) ? [{ amount: BigInt(amount), to }] : [];
+    });
+    return tips.length === 1 && tips[0]!.amount <= MOST_TIP ? tips[0]! : null;
+}
+
+// What a tip to land a transaction costs at most: Otus pays 0.00001 SOL; more than 0.001 is no tip but SOL sent.
+const MOST_TIP = 1_000_000n;
+
 function othersMoved(t: Landed, wallet: Address, mint: Address, way: bigint): boolean {
     const by = new Map<number, bigint>();
     for (const [side, sign] of [['before', -1n], ['after', 1n]] as const) {
@@ -205,15 +227,16 @@ function othersMoved(t: Landed, wallet: Address, mint: Address, way: bigint): bo
 
 // A mint when what came was made and nothing but SOL went (an NFT, a pool or stake token paid for); a burn when nothing
 // else moved; then by what went to others and came from them.
-function kindOf(made: Move[], real: Move[]): Kind {
+function kindOf(made: Move[], real: Move[], toPeople = false): Kind {
     const [gains, losses] = [real.some((m) => m.units > 0n), real.some((m) => m.units < 0n)];
     const [minted, burned] = [made.filter((m) => m.units > 0n), made.some((m) => m.units < 0n)];
+    const tokensGone = real.some((m) => m.units < 0n && m.mint !== null);
     // Something given for something else is a swap, as people see it: whether what came was minted for it (a deposit's
-    // receipt, a staked token) or what left was burned (redeemed). Only an NFT minted for SOL is a mint: tokens of yours
-    // gone for something minted are told as gone, never as a mint.
-    const nftForSol = !gains && !burned && !real.some((m) => m.units < 0n && m.mint !== null) && minted.every((m) => m.units === 1n && m.decimals === 0);
-    if ((gains || minted.length) && (losses || burned)) return nftForSol ? 'mint' : 'swap';
-    if (minted.length) return 'mint';
+    // receipt, a staked token) or what left was burned (redeemed). Only an NFT minted for SOL is a mint. Tokens of yours
+    // gone to a person for something minted are a send: a junk token back buys nothing.
+    const nftForSol = !gains && !burned && !tokensGone && minted.every((m) => m.units === 1n && m.decimals === 0);
+    if ((gains || minted.length) && (losses || burned) && !(!gains && toPeople)) return nftForSol ? 'mint' : 'swap';
+    if (minted.length && !tokensGone) return 'mint';
     if (made.length && !gains && !losses) return 'burn';
     if (gains && losses) return 'swap';
     if (losses) return 'send';

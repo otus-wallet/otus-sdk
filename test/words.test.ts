@@ -157,11 +157,14 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     assert.deepEqual([failed.icon, failed.tone, text(failed.title), failed.details[0].text], ['cross', 'danger', 'Failed · Jupiter v6', 'Failed: instruction 2: error 6001']);
     assert.deepEqual([text(unread.title), unread.signature], ["Otus couldn't read this one", null]);
     assert.deepEqual([swap.subject, failed.subject, unread.subject], [null, null, null]); // told by its balances, its failure, or not at all
-    // A swap of tokens with a tip in SOL: led by the token.
+    // A swap of tokens with SOL beside: led by the token, the SOL named too.
     const [tipped] = rows([{ ...base, signature: 's5', kind: 'swap', other: null, moves: [{ mint: null, units: -1000n, decimals: 9 }, { mint: OTHER_MINT, units: -5n, decimals: 0 }, { mint: MINT, units: 2_000_000n, decimals: 6 }] }], naming);
-    assert.equal(text(tipped.title), `Swap −5 ${OTHER_MINT} → +2 USDC`); // what else moved is in the details, not counted
-    // The +1 the line left out; and the token the line shows only by its address, again, for a page to show it whole.
-    assert.deepEqual(tipped.details.filter((d) => d.way).map((d) => [d.text, d.again ?? false]), [['−0.000001 SOL', false], [`−5 ${OTHER_MINT}`, true]]);
+    assert.equal(text(tipped.title), `Swap −5 ${OTHER_MINT} and −0.000001 SOL → +2 USDC`); // all that left, in the line
+    // The token the line shows only by its address, again, for a page to show it whole.
+    assert.deepEqual(tipped.details.filter((d) => d.way).map((d) => [d.text, d.again ?? false]), [[`−5 ${OTHER_MINT}`, true]]);
+    // Three gone: two by name, the third counted.
+    const [three] = rows([{ ...base, signature: 's8', kind: 'send', other: real, moves: [{ mint: null, units: -50_000_000_000n, decimals: 9 }, { mint: OTHER_MINT, units: -1n, decimals: 0 }, { mint: MINT, units: -3_000_000n, decimals: 6 }] }], naming);
+    assert.equal(text(three.title), `Sent −1 ${OTHER_MINT} and −50 SOL and 1 more`);
 });
 
 test('a token made and minted, one burned, an account opened: said as such, rent apart', () => {
@@ -367,3 +370,47 @@ test('something given for something else is a swap, minted or burned on the way;
     assert.deepEqual(told(nft), ['mint', 'Minted +1 NFT']);
     assert.deepEqual(told(nftForTokens), ['swap', 'Swap −1 USDC → +1 NFT']);
 });
+
+test('a tip is one small transfer to Sender: more, or several, is SOL sent; and the tip is never whom a send went to', async () => {
+    const ATTACKER = key(63);
+    const pay = (ixs: Instruction[], out: bigint, to: Record<string, [bigint, bigint]> = {}) =>
+        item(ixs, WALLET, { lamports: { [WALLET]: [100_000_000_000n, 100_000_000_000n - out - 5000n], ...to } }, { inner: [] });
+    const [big, twice, beside] = await landed(
+        pay([send(WALLET, SENDER_TIPS[0]!, 50_000_000_000n)], 50_000_000_000n, { [SENDER_TIPS[0]!]: [1_000_000n, 50_001_000_000n] }),
+        pay([send(WALLET, SENDER_TIPS[0]!, 10_000n), send(WALLET, SENDER_TIPS[1]!, 10_000n)], 20_000n),
+        pay([send(WALLET, ATTACKER, 100_000n), send(WALLET, SENDER_TIPS[2]!, 500_000n)], 600_000n, { [ATTACKER]: [1_000_000n, 1_100_000n], [SENDER_TIPS[2]!]: [1_000_000n, 1_500_000n] }),
+    );
+    const a = summarize(big, WALLET);
+    assert.deepEqual([a.tip, a.kind, a.moves[0]?.units], [0n, 'send', -50_000_000_000n]); // 50 SOL is no tip
+    assert.equal(summarize(twice, WALLET).tip, 0n);
+    const b = summarize(beside, WALLET);
+    assert.deepEqual([b.tip, b.moves[0]?.units, b.other], [500_000n, -100_000n, ATTACKER]); // sent to the attacker, not to Sender
+});
+
+test('tokens gone to a pool for a token minted back are a swap; gone to a person, a send', async () => {
+    const [LEND, MY_LEND, PERSON_TOKENS] = [key(64), key(65), key(66)];
+    const [POOL] = await (await import('@solana/kit')).getProgramDerivedAddress({ programAddress: key(67), seeds: ['vault'] });
+    const PERSON = WALLET === key(68) ? key(69) : (await getAddressFromPublicKey((await createKeyPairFromPrivateKeyBytes(new Uint8Array(32).fill(68))).publicKey));
+    const deposit = (owner: Address) =>
+        item([{ programAddress: key(70), accounts: [{ address: WALLET, role: AccountRole.WRITABLE_SIGNER }, { address: MY_TOKENS, role: AccountRole.WRITABLE }, { address: PERSON_TOKENS, role: AccountRole.WRITABLE }, { address: MY_LEND, role: AccountRole.WRITABLE }], data: new Uint8Array([1]) }], WALLET, {
+            tokens: [
+                { address: MY_TOKENS, mint: MINT, owner: WALLET, before: 1_000_000n, after: 0n },
+                { address: PERSON_TOKENS, mint: MINT, owner, before: 0n, after: 1_000_000n },
+                { address: MY_LEND, mint: LEND, owner: WALLET, before: null, after: 973_158n },
+            ],
+        }, { inner: [] });
+    const [pool, person] = await landed(deposit(POOL), deposit(PERSON));
+    assert.equal(summarize(pool, WALLET).kind, 'swap');
+    const p = summarize(person, WALLET);
+    assert.deepEqual([p.kind, p.other], ['send', PERSON]);
+});
+
+test("a multisig's line keeps its balances when the other side copies an address: the copy goes in the details", () => {
+    const real = key(60);
+    const copy = Array.from({ length: 30 }, (_, i) => `${real.slice(0, 4)}${key(61 + i).slice(4, -4)}${real.slice(-4)}`).find((a) => a !== real && isAddress(a)) as Address;
+    const a = { signatures: {}, slot: 1n, time: 1, error: null, fee: 5000n, tip: 0n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: ['execute' as const], memo: null, inner: [], signature: 'q1', kind: 'receive' as const, other: copy, moves: [{ mint: MINT, units: 5_000_000n, decimals: 6 }] };
+    const [row] = rows([a], { wallet: WALLET, symbol: () => 'USDC', who: (x) => x, program: (x) => x, known: [real] });
+    assert.equal(text(row.sub), '+5 USDC');
+    assert.deepEqual(row.details.filter((d) => d.copy).map((d) => d.text), [`From ${copy}, made to look like ${real}: never send to it`]);
+});
+

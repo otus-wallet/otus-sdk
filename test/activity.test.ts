@@ -343,7 +343,7 @@ test('what a site cannot pass off: a payment as rent, wrapped SOL as their rent,
     );
     const s = summarize(staked, WALLET);
     assert.deepEqual([s.kind, s.rent.opened, s.moves[0].units], ['send', 2_282_880n, -(100_000_000_000n - 2_282_880n)]);
-    assert.equal(summarize(drained, WALLET).kind, 'swap'); // what left is told first, never "Minted 1 junk"
+    assert.equal(summarize(drained, WALLET).kind, 'send'); // to a person, for a junk token minted: sent, never "Minted 1 junk"
     assert.equal(summarize(passed, WALLET).kind, 'send'); // they burned theirs: yours went to them
     const w = summarize(paid, WALLET);
     assert.deepEqual([w.kind, w.rent.theirs], ['send', 2_039_280n]); // their rent apart, the 10 SOL sent

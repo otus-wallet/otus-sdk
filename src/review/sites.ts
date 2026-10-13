@@ -111,7 +111,7 @@ export const latin = (s: string) => fold(s.normalize('NFKC').trim().toLowerCase(
 
 // What a name reads as at a glance: digits and letter pairs that pass for letters, as those letters.
 const SAME: Record<string, string> = { 0: 'o', 1: 'l', i: 'l', '|': 'l', 3: 'e', 4: 'a', 5: 's', 7: 't', 8: 'b', 9: 'g' };
-const skeleton = (s: string) => s.replace(/rn/g, 'm').replace(/vv/g, 'w').replace(/[013-57-9i|]/g, (c) => SAME[c] ?? c);
+export const skeleton = (s: string) => s.replace(/rn/g, 'm').replace(/vv/g, 'w').replace(/[013-57-9i|]/g, (c) => SAME[c] ?? c);
 
 // Edits between two words: letters added, removed or changed.
 function distance(a: string, b: string): number {

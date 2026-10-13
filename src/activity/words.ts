@@ -114,7 +114,8 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
         icon: head.icon,
         tone: a.error || danger ? 'danger' : copies || taken || marked.includes('warn') ? 'warn' : 'plain',
         title: head.title,
-        sub: copies && a.other && !a.unknown.length ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
+        // A multisig's line lists its balances under it: the copy goes in the details, not in their place.
+        sub: copies && a.other && !a.unknown.length && !a.squads.length ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
         details: told,
         // Through a program Otus doesn't know, the other side is a guess from the balances: its details say where it went.
         address: a.other && !a.unknown.length ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies, copies } : null,
@@ -126,9 +127,13 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
 // The line: what happened, in a few words, and with whom or through what.
 // `shown`: the balances the line and what is under it say, which the details don't say again.
 function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told; shown?: Move[] } {
-    // The lead balance alone, signed as the details sign it: what else moved is in the details, not counted here.
+    // A balance, signed as the details sign it.
     const what = (m: Move): Part[] => [{ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, way: m.units < 0n ? 'out' : 'in' }];
-    const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent or a tip
+    const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token first
+    // What left, all of it, in the line: a loss is never only in the details. Two by name, the rest counted in words.
+    const gone = outs.length ? [lead(outs)!, ...outs.filter((m) => m !== lead(outs))] : [];
+    const told = gone.slice(0, 2);
+    const left = (): Part[] => [...told.flatMap((m, i) => [...(i ? [{ text: ' and ' }] : []), ...what(m)]), ...(gone.length > 2 ? [{ text: ` and ${gone.length - 2} more` }] : [])];
     const words = (s: string): Part[] => (s ? [{ text: s }] : []);
     // Through what, under the line: a program Otus doesn't know is said as one, to take note of.
     const strange = a.main !== null && a.unknown.includes(a.main);
@@ -140,9 +145,9 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     }
     switch (a.kind) {
         case 'swap':
-            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs)), { text: ' → ' }, ...what(lead(ins))], sub: via(by), shown: [lead(outs), lead(ins)] };
+            return { icon: 'swap', title: [{ text: 'Swap ' }, ...left(), { text: ' → ' }, ...what(lead(ins))], sub: via(by), shown: [...told, lead(ins)] };
         case 'send':
-            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs))], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `to ${n.who(a.other)}` : by), shown: [lead(outs)] };
+            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...left()], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `to ${n.who(a.other)}` : by), shown: told };
         case 'receive':
             return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins))], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `from ${n.who(a.other)}` : by), shown: [lead(ins)] };
         case 'mint': {
@@ -152,7 +157,7 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
             return { icon: 'plus', title: [{ text: 'Minted ' }, ...what(token)], sub: paid.length ? paid : token.mint && a.created.includes(token.mint) ? words('New token') : via(by), shown: [token, ...outs.slice(0, 1)] };
         }
         case 'burn':
-            return { icon: 'trash', title: [{ text: 'Burned ' }, ...what(lead(outs))], sub: via(by), shown: [lead(outs)] };
+            return { icon: 'trash', title: [{ text: 'Burned ' }, ...left()], sub: via(by), shown: told };
     }
     const about = subjectOf(a);
     if (about) {
@@ -299,8 +304,9 @@ function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]):
     // A token named by its maker, which no list vouches for: anyone can call one so. Which one it is, whole.
     const unverified = new Set(a.moves.flatMap((m) => (m.mint !== null && !unnamed(m) && n.verified?.(m.mint) === false ? [m.mint] : [])));
     for (const mint of unverified) out.push({ text: `${n.symbol(mint)} is not verified: ${mint}`, tone: 'dim', unverified: mint });
-    // A copy the line says already (it does unless an unknown program ran: then the other side is a guess).
-    if (copies && a.other && a.unknown.length) out.push({ text: copyWords(a, a.other, copies), tone: 'warn', copy: true });
+    // A copy the line says already (it does unless an unknown program ran, the other side then a guess, or a multisig's
+    // balances are under it).
+    if (copies && a.other && (a.unknown.length || a.squads.length)) out.push({ text: copyWords(a, a.other, copies), tone: 'warn', copy: true });
     // Each program Otus doesn't know, whole, and what it was seen to move of yours inside it.
     for (const p of a.unknown) {
         out.push({ text: `Unknown program ${n.program(p)}`, tone: 'warn', unknown: p });
