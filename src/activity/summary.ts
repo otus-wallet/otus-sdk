@@ -16,10 +16,12 @@ import { readCall, SQUADS_V4, type Step } from '../programs/squads.ts';
 import { explain, type Explained } from '../review/explain.ts';
 import type { Inner, Landed, TokenBalance } from './history.ts';
 
-/** What a program Otus doesn't know moved of the wallet's by what it ran inside (its inner instructions), read by the
- *  same decoders: SOL or a token `sent` to `to` (a token account's owner when the transaction lists it), or SOL put in
- *  an account it `opened` (`to`). */
-export type Through = { program: Address; kind: 'sent' | 'opened'; to: Address; mint: Address | null; units: bigint; decimals: number };
+/** What a program Otus doesn't know did with the wallet's by what it ran inside (its inner instructions), read by the
+ *  same decoders: SOL or a token `sent` to `to` (a token account's owner when the transaction lists it); SOL put in an
+ *  account it `opened` (`to`); a token account of the wallet's `approved` to a delegate (`to`, up to `units`), given to
+ *  another owner (`authority`, `to`), or `closed` with its SOL to `to`; the wallet itself `assigned` to a program (`to`).
+ *  `units` and `decimals` are 0 where nothing is counted. */
+export type Through = { program: Address; kind: 'sent' | 'opened' | 'approved' | 'authority' | 'closed' | 'assigned'; to: Address; mint: Address | null; units: bigint; decimals: number };
 
 /** A change in one of the wallet's balances: SOL (mint null) or a token, in its base units, gained (+) or lost (−). */
 export type Move = { mint: Address | null; units: bigint; decimals: number };
@@ -210,12 +212,15 @@ function instructionsOf(t: Landed): Told[] {
     return explain({ message: t.message, accounts }).map(({ data: _, ...rest }) => rest);
 }
 
-// What the programs Otus doesn't know moved of the wallet's inside them: each inner instruction of theirs read as the
-// review reads Solana's own (one at a time, its accounts in place), kept when it sends the wallet's SOL or tokens or
-// puts its SOL in an account it opens. Anything it can't read is left out: the warning stands for it.
+// What the programs Otus doesn't know did with the wallet's inside them: each inner instruction of theirs read as the
+// review reads Solana's own (one at a time, its accounts in place), kept when it sends the wallet's SOL or tokens, puts
+// its SOL in an account it opens, or hands over, closes or approves a token account of the wallet's, or the wallet
+// itself. A token account is the wallet's only as the transaction found it, before: one handed to it on the way was not
+// its own when it moved. Anything it can't read is left out: the warning stands for it.
 function throughUnknown(t: Landed, wallet: Address, unknown: Set<Address>, held: Held[]): Through[] {
     if (!t.inner || unknown.size === 0) return [];
     const holdings = new Map(held.map((h) => [h.address, h]));
+    const yours = new Map(t.tokens.before.filter((b) => b.owner === wallet && t.accounts[b.account]).map((b) => [t.accounts[b.account]!, b]));
     const out: Through[] = [];
     for (const group of t.inner) {
         const top = t.message.instructions[group.index];
@@ -227,21 +232,50 @@ function throughUnknown(t: Landed, wallet: Address, unknown: Set<Address>, held:
             if (!e || e.source !== 'plugin') continue;
             const at = (role: string) => e.accounts.find((a) => a.role === role)?.address;
             const arg = (name: string) => e.args.find((a) => a.name === name)?.value ?? '';
-            const units = /^\d{1,20}$/.test(arg('amount')) ? BigInt(arg('amount')) : /^\d{1,20}$/.test(arg('lamports')) ? BigInt(arg('lamports')) : null;
-            if (units === null || units === 0n) continue;
-            if (e.program === SYSTEM_PROGRAM_ADDRESS && e.name === 'TransferSol' && at('source') === wallet && at('destination')) {
-                out.push({ program, kind: 'sent', to: at('destination')!, mint: null, units, decimals: 9 });
-            } else if (e.program === SYSTEM_PROGRAM_ADDRESS && e.name === 'CreateAccount' && at('payer') === wallet && at('newAccount')) {
-                out.push({ program, kind: 'opened', to: at('newAccount')!, mint: null, units, decimals: 9 });
-            } else if (isTokenProgram(e.program) && (e.name === 'Transfer' || e.name === 'TransferChecked')) {
-                const from = holdings.get(at('source') ?? ('' as Address));
-                const to = at('destination');
-                if (!from || from.owner !== wallet || !to) continue;
-                out.push({ program, kind: 'sent', to: holdings.get(to)?.owner ?? to, mint: from.mint, units, decimals: from.decimals });
-            }
+            const found = didWith(e, wallet, yours, holdings, at, arg);
+            if (found) out.push({ program, ...found });
         }
     }
     return out;
+}
+
+// One inner instruction, read, as what it did with the wallet's; null for anything else.
+function didWith(e: Explained, wallet: Address, yours: Map<Address, TokenBalance>, holdings: Map<Address, Held>, at: (role: string) => Address | undefined, arg: (name: string) => string): Omit<Through, 'program'> | null {
+    const number = (v: string) => (/^\d{1,20}$/.test(v) ? BigInt(v) : null);
+    if (e.program === SYSTEM_PROGRAM_ADDRESS) {
+        const units = number(arg(e.name === 'CreateAccount' ? 'lamports' : 'amount'));
+        if (e.name === 'TransferSol' && at('source') === wallet && at('destination') && at('destination') !== wallet && units) return { kind: 'sent', to: at('destination')!, mint: null, units, decimals: 9 };
+        if (e.name === 'CreateAccount' && at('payer') === wallet && at('newAccount') && units) return { kind: 'opened', to: at('newAccount')!, mint: null, units, decimals: 9 };
+        if (e.name === 'Assign' && at('account') === wallet && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(arg('programAddress'))) return { kind: 'assigned', to: arg('programAddress') as Address, mint: null, units: 0n, decimals: 0 };
+        return null;
+    }
+    if (!isTokenProgram(e.program)) return null;
+    const own = (role: string) => yours.get(at(role) ?? ('' as Address));
+    const units = number(arg('amount'));
+    switch (e.name) {
+        case 'Transfer':
+        case 'TransferChecked': {
+            const from = own('source');
+            const to = at('destination');
+            if (!from || !to || to === at('source') || !units) return null;
+            return { kind: 'sent', to: holdings.get(to)?.owner ?? to, mint: from.mint, units, decimals: from.decimals };
+        }
+        case 'Approve':
+        case 'ApproveChecked': {
+            const from = own('source');
+            return from && at('delegate') && units ? { kind: 'approved', to: at('delegate')!, mint: from.mint, units, decimals: from.decimals } : null;
+        }
+        case 'SetAuthority': {
+            const owned = own('owned');
+            const to = arg('newAuthority');
+            return owned && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(to) && to !== wallet ? { kind: 'authority', to: to as Address, mint: owned.mint, units: 0n, decimals: owned.decimals } : null;
+        }
+        case 'CloseAccount': {
+            const closed = own('account');
+            return closed && at('destination') && at('destination') !== wallet ? { kind: 'closed', to: at('destination')!, mint: closed.mint, units: 0n, decimals: closed.decimals } : null;
+        }
+    }
+    return null;
 }
 
 // Every token account it lists, once, with its mint, decimals and owner.

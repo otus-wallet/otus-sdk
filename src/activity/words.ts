@@ -21,8 +21,9 @@ export type RowTone = 'plain' | 'warn' | 'danger';
 /** A line of what a transaction told; `way`: a balance it moved, in or out; `unknown`: the program Otus doesn't know
  *  that the line names, or tells what it moved of yours. */
 export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; unknown?: Address };
-/** Words of a line, an amount among them marked as what came in or went out. */
-export type Part = { text: string; way?: 'in' | 'out' };
+/** Words of a line, an amount among them marked as what came in or went out; `tone`: words to take note of (a program
+ *  Otus doesn't know), whatever the line's. */
+export type Part = { text: string; way?: 'in' | 'out'; tone?: 'warn' };
 
 /** One transaction, as a line and its details. `address`: the other side, shown whole; `copy`: made to look like
  *  another. `subject`: the instruction the line is about, when it is told by one (its arguments in `sub`). `unknown`:
@@ -76,7 +77,8 @@ function copiesOn(done: Activity[], known: Address[]): Map<Address, Address> {
     for (const a of known) add(a, Infinity);
     for (const a of done) {
         if (!a.other) continue;
-        if (a.kind === 'send' && a.signed) add(a.other, Infinity); // you sent to it, signing
+        // You sent to it, signing: never the copy. Through a program Otus doesn't know, the other side is a guess.
+        if (a.kind === 'send' && a.signed && !a.unknown.length) add(a.other, Infinity);
         else add(a.other, Math.max(0, ...a.moves.map((m) => Math.abs(Number(m.units)) / 10 ** m.decimals)));
     }
     const out = new Map<Address, Address>();
@@ -98,7 +100,9 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
     const taken = !a.signed && outs.length > 0; // a delegate of its tokens moved them
     const side = a.kind === 'send' ? 'to' : 'from';
     const told = details(a, n, copies);
-    const marked = told.filter((d) => !d.way).map((d) => d.tone); // what it did besides its balances
+    // What it did besides its balances. A program Otus doesn't know marks its own words, not the line, unless what it
+    // did is a danger.
+    const marked = told.filter((d) => !d.way && !(d.unknown && d.tone !== 'danger')).map((d) => d.tone);
     const danger = head.danger || marked.includes('danger');
     return {
         signature: a.signature,
@@ -106,7 +110,7 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
         icon: head.icon,
         tone: a.error || danger ? 'danger' : copies || taken || marked.includes('warn') ? 'warn' : 'plain',
         title: head.title,
-        sub: copies && a.other ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
+        sub: copies && a.other && !a.unknown.length ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
         details: told,
         // Through a program Otus doesn't know, the other side is a guess from the balances: its details say where it went.
         address: a.other && !a.unknown.length ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies } : null,
@@ -120,6 +124,9 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     const what = (m: Move, list: Move[]): Part[] => [{ text: quantity(m, n), way: m.units < 0n ? 'out' : 'in' }, ...(list.length > 1 ? [{ text: ` +${list.length - 1}` }] : [])];
     const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token before SOL that may be rent or a tip
     const words = (s: string): Part[] => (s ? [{ text: s }] : []);
+    // Through what, under the line: a program Otus doesn't know is said as one, to take note of.
+    const strange = a.main !== null && a.unknown.includes(a.main);
+    const via = (s: string): Part[] => (strange ? [{ text: UNKNOWN_WAY, tone: 'warn' }] : words(s));
     if (a.error) return { icon: 'cross', title: words(`Failed${by ? ` · ${by}` : ''}`), sub: words(a.payer === n.wallet ? 'Only the fee was spent' : 'Nothing of yours moved') };
     if (a.squads.length) {
         const moved = a.moves.flatMap((m, i): Part[] => [...(i ? [{ text: ' · ' }] : []), { text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, way: m.units < 0n ? 'out' : 'in' }]);
@@ -127,19 +134,19 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     }
     switch (a.kind) {
         case 'swap':
-            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs), outs), { text: ' → ' }, ...what(lead(ins), ins)], sub: words(by) };
+            return { icon: 'swap', title: [{ text: 'Swap ' }, ...what(lead(outs), outs), { text: ' → ' }, ...what(lead(ins), ins)], sub: via(by) };
         case 'send':
-            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: words(a.unknown.length ? UNKNOWN_WAY : a.other ? `to ${n.who(a.other)}` : by) };
+            return { icon: 'send', title: [{ text: a.signed ? 'Sent ' : 'Moved ' }, ...what(lead(outs), outs)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `to ${n.who(a.other)}` : by) };
         case 'receive':
-            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins), ins)], sub: words(a.unknown.length ? UNKNOWN_WAY : a.other ? `from ${n.who(a.other)}` : by) };
+            return { icon: 'receive', title: [{ text: 'Received ' }, ...what(lead(ins), ins)], sub: a.unknown.length ? UNKNOWN_SUB : words(a.other ? `from ${n.who(a.other)}` : by) };
         case 'mint': {
             const token = lead(ins);
             // What it cost, when something went for it: an NFT, a pool or stake token paid for.
             const paid = outs.length ? [{ text: 'for ' }, ...what(outs[0], outs)] : [];
-            return { icon: 'plus', title: [{ text: 'Minted ' }, ...what(token, ins)], sub: paid.length ? paid : words(token.mint && a.created.includes(token.mint) ? 'New token' : by) };
+            return { icon: 'plus', title: [{ text: 'Minted ' }, ...what(token, ins)], sub: paid.length ? paid : token.mint && a.created.includes(token.mint) ? words('New token') : via(by) };
         }
         case 'burn':
-            return { icon: 'trash', title: [{ text: 'Burned ' }, ...what(lead(outs), outs)], sub: words(by) };
+            return { icon: 'trash', title: [{ text: 'Burned ' }, ...what(lead(outs), outs)], sub: via(by) };
     }
     const about = subjectOf(a);
     if (about) {
@@ -148,8 +155,10 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
         return { icon: iconOf(about.told.name), title: words(title), sub: words(told.args ? cap(told.args) : ''), danger: told.effects.some((e) => e.tone === 'danger'), subject: about.told };
     }
     if (a.rent.yours < 0n) return { icon: 'box', title: words('Closed a token account'), sub: words(`${sol(-a.rent.yours)} SOL of rent freed`) };
-    if (a.rent.yours > 0n) return { icon: 'box', title: words('Opened a token account'), sub: words(by) };
+    if (a.rent.yours > 0n) return { icon: 'box', title: words('Opened a token account'), sub: via(by) };
     if (a.rent.opened > 0n) return { icon: 'box', title: words('Opened an account'), sub: words(`${sol(a.rent.opened)} SOL of rent`) };
+    // A program Otus doesn't know, at its heart: a transaction through it.
+    if (strange) return { icon: 'box', title: words('Transaction'), sub: via(by) };
     // Named by its programs, but never by those Otus adds to what it signs (limits, guards).
     const programs = a.programs.filter((p) => p !== COMPUTE_BUDGET_PROGRAM_ADDRESS && p !== LIGHTHOUSE).map((p) => n.program(p));
     return { icon: 'box', title: words(by || programs[0] || 'Transaction'), sub: words(by ? '' : programs.slice(1).join(', ')) };
@@ -157,6 +166,7 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
 
 // A send or a receipt through a program Otus doesn't know: what it did inside is that program's own to say.
 const UNKNOWN_WAY = 'through an unknown program';
+const UNKNOWN_SUB: Part[] = [{ text: UNKNOWN_WAY, tone: 'warn' }];
 
 // What says nothing of what a transaction is for: its limits and fee, a note, the guards Otus adds.
 const BACKGROUND = new Set<string>([COMPUTE_BUDGET_PROGRAM_ADDRESS, LIGHTHOUSE, MEMO_PROGRAM_ADDRESS, LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3]);
@@ -249,13 +259,27 @@ function copyWords(a: Activity, other: Address, copies: Address): string {
     return harmless(a) ? `Dust from ${other}, made to look like ${copies}: never send to it` : `From ${other}, made to look like ${copies}: never send to it`;
 }
 
-// What an unknown program moved of the wallet's: each send on its own, the SOL put in accounts it opened together.
+// Sends of an unknown program told one by one, at most; the rest counted.
+const SENDS_TOLD = 8;
+
+// What an unknown program did with the wallet's: what it handed over or approved first, as dangers; then each send on
+// its own (a few, the rest counted), and the SOL put in accounts it opened together.
 function throughWords(through: Activity['through'], n: Naming): Detail[] {
-    const sends = through.filter((t) => t.kind === 'sent').map((t): Detail => ({ text: `It sent ${quantity({ mint: t.mint, units: t.units, decimals: t.decimals }, n)} to ${n.who(t.to)}`, tone: 'dim' }));
+    const symbol = (t: Activity['through'][number]) => (t.mint ? n.symbol(t.mint) : 'SOL');
+    const dangers = through.flatMap((t): Detail[] => {
+        if (t.kind === 'approved') return [{ text: `It let ${n.who(t.to)} move up to ${quantity({ mint: t.mint, units: t.units, decimals: t.decimals }, n)} of yours`, tone: 'danger' }];
+        if (t.kind === 'authority') return [{ text: `It gave your ${symbol(t)} account to ${n.who(t.to)}`, tone: 'danger' }];
+        if (t.kind === 'closed') return [{ text: `It closed your ${symbol(t)} account, its SOL to ${n.who(t.to)}`, tone: 'danger' }];
+        if (t.kind === 'assigned') return [{ text: `It gave your wallet to the program ${n.program(t.to)}`, tone: 'danger' }];
+        return [];
+    });
+    const sent = through.filter((t) => t.kind === 'sent');
+    const sends = sent.slice(0, SENDS_TOLD).map((t): Detail => ({ text: `It sent ${quantity({ mint: t.mint, units: t.units, decimals: t.decimals }, n)} to ${n.who(t.to)}`, tone: 'dim' }));
+    const more = sent.length > SENDS_TOLD ? [{ text: `It sent ${sent.length - SENDS_TOLD} more`, tone: 'dim' as const }] : [];
     const opened = through.filter((t) => t.kind === 'opened');
     const rent = opened.reduce((sum, t) => sum + t.units, 0n);
     const into = opened.length === 1 ? 'an account it opened' : `${opened.length} accounts it opened`;
-    return [...sends, ...(opened.length ? [{ text: `It put ${sol(rent)} SOL into ${into}`, tone: 'dim' as const }] : [])];
+    return [...dangers, ...sends, ...more, ...(opened.length ? [{ text: `It put ${sol(rent)} SOL into ${into}`, tone: 'dim' as const }] : [])];
 }
 
 // Opened: every balance it moved, the rent and the fee apart, the warnings, its programs, memo and failure.
