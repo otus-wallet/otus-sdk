@@ -30,7 +30,7 @@ import { exactJson, NoHistory, readPage, type Landed } from '../src/activity/his
 import { dust, harmless } from '../src/activity/dust.ts';
 import { summarize, type Activity, type Told } from '../src/activity/summary.ts';
 import { rows, text, type Naming } from '../src/activity/words.ts';
-import { short } from '../src/format.ts';
+import { rounded, short } from '../src/format.ts';
 import { SQUADS_V4 } from '../src/programs/squads.ts';
 import { SENDER_TIPS } from '../src/programs/addresses.ts';
 import { key, MINT } from './helpers.ts';
@@ -414,3 +414,36 @@ test("a multisig's line keeps its balances when the other side copies an address
     assert.deepEqual(row.details.filter((d) => d.copy).map((d) => d.text), [`From ${copy}, made to look like ${real}: never send to it`]);
 });
 
+test('the line writes amounts as the caller asks: one written otherwise is whole on its part and in the details', () => {
+    const base = { signatures: {}, slot: 1n, time: 1, error: null, fee: 5000n, tip: 0n, payer: WALLET, rent: { yours: 0n, theirs: 0n, opened: 0n }, created: [] as Address[], instructions: [] as Told[], held: [], fresh: [] as Address[], staked: 0n, signed: true, programs: [] as Address[], unknown: [] as Address[], through: [], main: null, squads: [], memo: null, inner: [], other: null };
+    const bonk: Activity = { ...base, signature: 'r1', kind: 'swap', moves: [{ mint: null, units: -50_000_000n, decimals: 9 }, { mint: MINT, units: 166_539_786_417n, decimals: 5 }] };
+    const naming: Naming = { wallet: WALLET, symbol: (m) => (m === MINT ? 'Bonk' : m), amount: rounded, who: short, program: short, known: [] };
+    const [swap] = rows([bonk], naming);
+    assert.equal(text(swap.title), 'Swap −0.05 SOL → +1.67M Bonk');
+    // Its part carries it whole, for a page to show on a hover; the SOL, written the same, carries nothing more.
+    assert.deepEqual(swap.title.filter((p) => p.way), [{ text: '−0.05 SOL', way: 'out' }, { text: '+1.67M Bonk', way: 'in', exact: '+1,665,397.86417 Bonk' }]);
+    // Opened, the one the line rounded comes back whole; the one it wrote whole doesn't.
+    assert.deepEqual(swap.details.filter((d) => d.way).map((d) => [d.text, d.exact, d.again]), [['+1,665,397.86417 Bonk', true, undefined]]);
+    // Without the caller's way, every amount whole, as before.
+    const [whole] = rows([bonk], { ...naming, amount: undefined });
+    assert.equal(text(whole.title), 'Swap −0.05 SOL → +1,665,397.86417 Bonk');
+    assert.ok(!whole.details.some((d) => d.way) && !whole.title.some((p) => p.exact));
+    // Under 0.01: its first digits, never 0, and whole when that is all of it.
+    const [dust] = rows([{ ...base, signature: 'r2', kind: 'receive', other: FRIEND, signed: false, payer: FRIEND, moves: [{ mint: null, units: 1_234n, decimals: 9 }] }], naming);
+    assert.equal(text(dust.title), 'Received +0.0000012 SOL');
+    assert.deepEqual(dust.details.filter((d) => d.way).map((d) => [d.text, d.exact]), [['+0.000001234 SOL', true]]);
+    const [tiny] = rows([{ ...base, signature: 'r3', kind: 'receive', other: FRIEND, signed: false, payer: FRIEND, moves: [{ mint: null, units: 1_000n, decimals: 9 }] }], naming);
+    assert.equal(text(tiny.title), 'Received +0.000001 SOL');
+    assert.ok(!tiny.details.some((d) => d.way));
+    // A token with no name, rounded: back once, as both.
+    const [bare] = rows([{ ...bonk, moves: [{ mint: OTHER_MINT, units: 2_500_000_000n, decimals: 0 }], kind: 'receive', other: FRIEND }], naming);
+    assert.equal(text(bare.title), `Received +2.5B ${OTHER_MINT}`);
+    assert.deepEqual(bare.details.filter((d) => d.way).map((d) => [d.text, d.again, d.exact]), [[`+2,500,000,000 ${OTHER_MINT}`, true, true]]);
+    // The fee and a tip whole, always.
+    const [tipped] = rows([{ ...bonk, tip: 1_234_567n, fee: 5_123n }], naming);
+    assert.deepEqual(tipped.details.filter((d) => /^(Fee|Tip)/.test(d.text)).map((d) => d.text), [`Fee 0.000005123 SOL, paid by ${short(WALLET)}`, 'Tip 0.001234567 SOL to land it']);
+    // A multisig's balances, under its line, the same.
+    const [squads] = rows([{ ...bonk, squads: ['execute' as const] }], naming);
+    assert.equal(text(squads.sub), '−0.05 SOL · +1.67M Bonk');
+    assert.deepEqual(squads.details.filter((d) => d.way).map((d) => d.text), ['+1,665,397.86417 Bonk']);
+});

@@ -12,6 +12,35 @@ export function amount(units: bigint, decimals: number, signed = true): string {
     return `${sign}${(abs / scale).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
 }
 
+/**
+ * Base units as an amount is read at a glance, without a sign, digits grouped: at most two decimals ("33,308.21"); from a
+ * million on, in millions, billions and trillions ("1.67M"); under 0.01, its first two digits that aren't zero
+ * ("0.00012"), so that what isn't nothing never reads 0. Rounded half up. For a line that opens onto the amount whole:
+ * what is signed or paid is told whole (`amount`).
+ */
+export function rounded(units: bigint, decimals: number): string {
+    const abs = units < 0n ? -units : units;
+    const scale = 10n ** BigInt(decimals);
+    if (abs === 0n) return '0';
+    if (abs * 100n < scale) {
+        // Its first two digits: the zeros after the point before them, and two places more.
+        const kept = decimals - abs.toString().length + 2;
+        if (kept >= decimals) return amount(abs, decimals, false);
+        const by = 10n ** BigInt(decimals - kept);
+        return amount((abs + by / 2n) / by, kept, false);
+    }
+    const hundredths = (abs * 100n + scale / 2n) / scale;
+    if (hundredths < 100_000_000n) return amount(hundredths, 2, false);
+    // A thousand of one, rounded, is one of the next: 999,999.996 is 1M, never 1,000K.
+    for (const [i, [power, letter]] of LARGE.entries()) {
+        const by = 10n ** BigInt(power) * scale;
+        const of = (abs * 100n + by / 2n) / by;
+        if (of < 100_000n || i === LARGE.length - 1) return `${amount(of, 2, false)}${letter}`;
+    }
+    return amount(abs, decimals, false);
+}
+const LARGE = [[6, 'M'], [9, 'B'], [12, 'T']] as const;
+
 export const SOL_DECIMALS = 9;
 
 /** Lamports as SOL, without a sign. */

@@ -21,11 +21,12 @@ export type RowTone = 'plain' | 'warn' | 'danger';
 /** A line of what a transaction told; `way`: a balance it moved, in or out; `again`: one the line shows too, by its
  *  token's address, which a page that cuts addresses can't show whole there; `unverified`: the token no list vouches
  *  for that the line says which it is; `unknown`: the program Otus doesn't know that the line names, or tells what it
- *  moved of yours; `copy`: the line that warns of a copy of an address. */
-export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; again?: true; unverified?: Address; unknown?: Address; copy?: true };
+ *  moved of yours; `copy`: the line that warns of a copy of an address; `exact`: a balance the line writes otherwise
+ *  (Naming's `amount`), here whole. */
+export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; again?: true; unverified?: Address; unknown?: Address; copy?: true; exact?: true };
 /** Words of a line, an amount among them marked as what came in or went out; `tone`: words to take note of (a program
- *  Otus doesn't know), whatever the line's. */
-export type Part = { text: string; way?: 'in' | 'out'; tone?: 'warn' };
+ *  Otus doesn't know), whatever the line's; `exact`: the amount whole, where the line writes it otherwise. */
+export type Part = { text: string; way?: 'in' | 'out'; tone?: 'warn'; exact?: string };
 
 /** One transaction, as a line and its details. `address`: the other side, shown whole; `copy`: made to look like
  *  another, `copies`. `subject`: the instruction the line is about, when it is told by one (its arguments in `sub`). `unknown`:
@@ -46,11 +47,13 @@ export type Row = {
 /** What the words need: a token's symbol (else its mint), a name for an address (the wallet's own address marked
  *  yours, another wallet's or a contact's name, a program's, else the address), and the addresses you know. An address
  *  goes in whole. `verified`: whether a list the caller trusts vouches for a token (undefined: no one can say); one it
- *  doesn't, named by its maker, is told whole in the details. */
+ *  doesn't, named by its maker, is told whole in the details. `amount`: how the line writes a balance, unsigned
+ *  (`rounded`, say), else whole; one it writes otherwise is told whole in the details too. */
 export type Naming = {
     wallet: Address;
     symbol(mint: Address): string;
     verified?(mint: Address): boolean | undefined;
+    amount?(units: bigint, decimals: number): string;
     who(address: Address): string;
     program(address: Address): string;
     known: Address[];
@@ -127,8 +130,12 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
 // The line: what happened, in a few words, and with whom or through what.
 // `shown`: the balances the line and what is under it say, which the details don't say again.
 function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told; shown?: Move[] } {
-    // A balance, signed as the details sign it.
-    const what = (m: Move): Part[] => [{ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, way: m.units < 0n ? 'out' : 'in' }];
+    // A balance, signed as the details sign it, written as the caller writes the line's, and whole besides when not so.
+    const what = (m: Move): Part[] => {
+        const sign = m.units < 0n ? '−' : '+';
+        const [text, exact] = [`${sign}${quantity(m, n, 'line')}`, `${sign}${quantity(m, n)}`];
+        return [{ text, way: m.units < 0n ? 'out' : 'in', ...(text !== exact && { exact }) }];
+    };
     const lead = (list: Move[]) => list.find((m) => m.mint !== null) ?? list[0]; // a token first
     // What left, all of it, in the line: a loss is never only in the details. Two by name, the rest counted in words.
     const gone = outs.length ? [lead(outs)!, ...outs.filter((m) => m !== lead(outs))] : [];
@@ -140,7 +147,7 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     const via = (s: string): Part[] => (strange ? [{ text: UNKNOWN_WAY, tone: 'warn' }] : words(s));
     if (a.error) return { icon: 'cross', title: words(`Failed${by ? ` · ${by}` : ''}`), sub: words(a.payer === n.wallet ? 'Only the fee was spent' : 'Nothing of yours moved') };
     if (a.squads.length) {
-        const moved = a.moves.flatMap((m, i): Part[] => [...(i ? [{ text: ' · ' }] : []), { text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, way: m.units < 0n ? 'out' : 'in' }]);
+        const moved = a.moves.flatMap((m, i): Part[] => [...(i ? [{ text: ' · ' }] : []), ...what(m)]);
         return { icon: 'shield', title: words(`Squads · ${[...new Set(a.squads.map((s) => VERBS[s]))].join(', ')}`), sub: moved, shown: a.moves };
     }
     switch (a.kind) {
@@ -261,8 +268,12 @@ function namesFor(a: Activity, n: Naming): Names {
 // A name for an address when Otus has one: a contact's, a program's (yours goes by its address, tagged).
 const named = (n: Naming, a: Address) => (n.who(a).includes(a) ? null : n.who(a));
 
-// How much moved, unsigned, and of what.
-const quantity = (m: Move, n: Naming) => `${amount(m.units < 0n ? -m.units : m.units, m.decimals, false)} ${m.mint === null ? 'SOL' : n.symbol(m.mint)}`;
+// How much moved, unsigned, and of what: whole, or as the caller writes the line's.
+const quantity = (m: Move, n: Naming, as: 'whole' | 'line' = 'whole') => {
+    const units = m.units < 0n ? -m.units : m.units;
+    const written = as === 'line' && n.amount ? n.amount(units, m.decimals) : amount(units, m.decimals, false);
+    return `${written} ${m.mint === null ? 'SOL' : n.symbol(m.mint)}`;
+};
 
 // A copy of an address on the other side: dust only when nothing else came with it that could hurt.
 function copyWords(a: Activity, other: Address, copies: Address): string {
@@ -294,13 +305,20 @@ function throughWords(through: Activity['through'], n: Naming): Detail[] {
 }
 
 // Opened: what the line didn't say. The balances it moved besides those the line shows (`shown`), unless the line can
-// show only its token's address (no name for it): then again, for a page to show it whole. The rent and the fee apart,
-// the warnings, the programs not named already, memo and failure.
+// show only its token's address (no name for it), or writes the amount otherwise than whole (rounded): then again, for
+// a page to show it whole. The rent and the fee apart, the warnings, the programs not named already, memo and failure.
 function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]): Detail[] {
     const unnamed = (m: Move) => m.mint !== null && n.symbol(m.mint) === m.mint;
+    const otherwise = (m: Move) => quantity(m, n, 'line') !== quantity(m, n);
     const out: Detail[] = a.moves
-        .filter((m) => !shown.includes(m) || unnamed(m))
-        .map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out', ...(shown.includes(m) && { again: true as const }) }));
+        .filter((m) => !shown.includes(m) || unnamed(m) || otherwise(m))
+        .map((m) => ({
+            text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`,
+            tone: m.units > 0n ? 'ok' : 'danger',
+            way: m.units > 0n ? 'in' : 'out',
+            ...(shown.includes(m) && unnamed(m) && { again: true as const }),
+            ...(shown.includes(m) && otherwise(m) && { exact: true as const }),
+        }));
     // A token named by its maker, which no list vouches for: anyone can call one so. Which one it is, whole.
     const unverified = new Set(a.moves.flatMap((m) => (m.mint !== null && !unnamed(m) && n.verified?.(m.mint) === false ? [m.mint] : [])));
     for (const mint of unverified) out.push({ text: `${n.symbol(mint)} is not verified: ${mint}`, tone: 'dim', unverified: mint });
