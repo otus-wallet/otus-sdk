@@ -113,6 +113,8 @@ test('address poisoning: dust from a copy is caught against an address you know,
     const naming = (known: Address[]): Naming => ({ wallet: WALLET, symbol: () => 'USDT', who: (a) => a, program: (a) => a, known });
     const flagged = (list: Activity[], known: Address[]) => rows(list, naming(known)).map((r) => r.address?.copy);
     assert.deepEqual(flagged([dust], [FRIEND, real]), [true]); // a known address it copies
+    const [caught] = rows([dust], naming([FRIEND, real]));
+    assert.deepEqual([caught.address?.copies, caught.details.filter((d) => d.copy).map((d) => d.tone)], [real, ['warn']]);
     assert.deepEqual(flagged([dust], [FRIEND, copy]), [false]); // the very address, known: not a copy
     assert.deepEqual(flagged([dust], []), [false]); // nothing to copy
     // Not known: 30,000 from the real one, then dust from its copy, as the user's history shows.
@@ -138,7 +140,7 @@ test('rows: each in a line, opened for all it told; a copy of an address you sen
     );
     assert.deepEqual([swap.icon, text(swap.title), text(swap.sub)], ['swap', 'Swap 1 SOL → 120.58 USDC', 'Jupiter v6']);
     assert.deepEqual(swap.title.filter((p) => p.way), [{ text: '1 SOL', way: 'out' }, { text: '120.58 USDC', way: 'in' }]); // coloured apart
-    assert.deepEqual([text(sent.title), text(sent.sub), sent.address], ['Sent 12 USDC', `to ${real}`, { label: 'To', address: real, name: null, copy: false }]);
+    assert.deepEqual([text(sent.title), text(sent.sub), sent.address], ['Sent 12 USDC', `to ${real}`, { label: 'To', address: real, name: null, copy: false, copies: null }]);
     assert.deepEqual(sent.details.map((d) => d.text), ['−12 USDC', '0.00203928 SOL to open their token account', `Fee 0.000005 SOL, paid by ${WALLET} (you)`]); // your address, tagged
     assert.deepEqual(swap.details.map((d) => d.way ?? null).slice(0, 3), ['out', 'in', null]); // its balances, told apart from the rest
     assert.deepEqual([dust.tone, text(dust.title), text(dust.sub)], ['warn', 'Received 0.0001 USDC', `from ${copy} · copies ${real}`]);

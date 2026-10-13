@@ -19,14 +19,14 @@ import { WEIGHTY, type Activity, type Move, type Told } from './summary.ts';
 export type RowIcon = 'send' | 'receive' | 'swap' | 'plus' | 'trash' | 'key' | 'refresh' | 'shield' | 'box' | 'cross' | 'bang';
 export type RowTone = 'plain' | 'warn' | 'danger';
 /** A line of what a transaction told; `way`: a balance it moved, in or out; `unknown`: the program Otus doesn't know
- *  that the line names, or tells what it moved of yours. */
-export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; unknown?: Address };
+ *  that the line names, or tells what it moved of yours; `copy`: the line that warns of a copy of an address. */
+export type Detail = { text: string; tone?: 'ok' | 'warn' | 'danger' | 'dim'; way?: 'in' | 'out'; unknown?: Address; copy?: true };
 /** Words of a line, an amount among them marked as what came in or went out; `tone`: words to take note of (a program
  *  Otus doesn't know), whatever the line's. */
 export type Part = { text: string; way?: 'in' | 'out'; tone?: 'warn' };
 
 /** One transaction, as a line and its details. `address`: the other side, shown whole; `copy`: made to look like
- *  another. `subject`: the instruction the line is about, when it is told by one (its arguments in `sub`). `unknown`:
+ *  another, `copies`. `subject`: the instruction the line is about, when it is told by one (its arguments in `sub`). `unknown`:
  *  the programs it calls that Otus doesn't know, whole: a page marks the line for them. */
 export type Row = {
     signature: string | null;
@@ -36,7 +36,7 @@ export type Row = {
     title: Part[];
     sub: Part[];
     details: Detail[];
-    address: { label: string; address: Address; name: string | null; copy: boolean } | null;
+    address: { label: string; address: Address; name: string | null; copy: boolean; copies: Address | null } | null;
     subject: { program: Address; name: string } | null;
     unknown: Address[];
 };
@@ -113,7 +113,7 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
         sub: copies && a.other && !a.unknown.length ? [{ text: `${side} ${n.who(a.other)} · copies ${copies}` }] : head.sub,
         details: told,
         // Through a program Otus doesn't know, the other side is a guess from the balances: its details say where it went.
-        address: a.other && !a.unknown.length ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies } : null,
+        address: a.other && !a.unknown.length ? { label: a.kind === 'send' ? 'To' : 'From', address: a.other, name: named(n, a.other), copy: !!copies, copies } : null,
         subject: head.subject ? { program: head.subject.program, name: head.subject.name } : null,
         unknown: a.unknown,
     };
@@ -285,7 +285,7 @@ function throughWords(through: Activity['through'], n: Naming): Detail[] {
 // Opened: every balance it moved, the rent and the fee apart, the warnings, its programs, memo and failure.
 function details(a: Activity, n: Naming, copies: Address | null): Detail[] {
     const out: Detail[] = a.moves.map((m) => ({ text: `${m.units < 0n ? '−' : '+'}${quantity(m, n)}`, tone: m.units > 0n ? 'ok' : 'danger', way: m.units > 0n ? 'in' : 'out' }));
-    if (copies && a.other) out.push({ text: copyWords(a, a.other, copies), tone: 'warn' });
+    if (copies && a.other) out.push({ text: copyWords(a, a.other, copies), tone: 'warn', copy: true });
     // Each program Otus doesn't know, whole, and what it was seen to move of yours inside it.
     for (const p of a.unknown) {
         out.push({ text: `Unknown program ${n.program(p)}`, tone: 'warn', unknown: p });
