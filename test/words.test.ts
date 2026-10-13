@@ -443,6 +443,15 @@ test('the line writes amounts as the caller asks: one written otherwise is whole
     const [tipped] = rows([{ ...bonk, tip: 1_234_567n, fee: 5_123n }], naming);
     assert.deepEqual(tipped.details.filter((d) => /^(Fee|Tip)/.test(d.text)).map((d) => d.text), [`Fee 0.000005123 SOL, paid by ${short(WALLET)}`, 'Tip 0.001234567 SOL to land it']);
     // A multisig's balances, under its line, the same.
+    // The SOL staked, which is no balance moved, the same.
+    const delegate = { program: 'Stake11111111111111111111111111111111111111' as Address, name: 'DelegateStake', source: 'plugin', args: [], accounts: [] } as unknown as Told;
+    const stake: Activity = { ...base, signature: 'r4', kind: 'other', moves: [], staked: 1_001_666_240n, instructions: [delegate] };
+    const [staked] = rows([stake], naming);
+    assert.deepEqual(staked.title, [{ text: 'Staked ' }, { text: '1 SOL', exact: '1.00166624 SOL' }]);
+    assert.deepEqual(staked.details[0], { text: 'Staked 1.00166624 SOL', exact: true });
+    const [stakedWhole] = rows([stake], { ...naming, amount: undefined });
+    assert.equal(text(stakedWhole.title), 'Staked 1.00166624 SOL');
+    assert.ok(!stakedWhole.details.some((d) => d.exact));
     const [squads] = rows([{ ...bonk, squads: ['execute' as const] }], naming);
     assert.equal(text(squads.sub), '−0.05 SOL · +1.67M Bonk');
     assert.deepEqual(squads.details.filter((d) => d.way).map((d) => d.text), ['+1,665,397.86417 Bonk']);

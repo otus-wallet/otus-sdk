@@ -9,7 +9,7 @@ import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from '@solana-program/compute-budget';
 import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
 import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
 
-import { alike, amount, cap, sol } from '../format.ts';
+import { alike, amount, cap, sol, SOL_DECIMALS } from '../format.ts';
 import { LIGHTHOUSE } from '../programs/addresses.ts';
 import type { Step } from '../programs/squads.ts';
 import { story, type Names } from '../review/effects.ts';
@@ -106,7 +106,7 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
     const head = headline(a, n, outs, ins, by);
     const taken = !a.signed && outs.length > 0; // a delegate of its tokens moved them
     const side = a.kind === 'send' ? 'to' : 'from';
-    const told = details(a, n, copies, head.shown ?? []);
+    const told = details(a, n, copies, head.shown ?? [], head.whole ?? null);
     // What it did besides its balances. A program Otus doesn't know marks its own words, not the line, unless what it
     // did is a danger.
     const marked = told.filter((d) => !d.way && !(d.unknown && d.tone !== 'danger')).map((d) => d.tone);
@@ -128,8 +128,9 @@ function row(a: Activity, n: Naming, copies: Address | null): Row {
 }
 
 // The line: what happened, in a few words, and with whom or through what.
-// `shown`: the balances the line and what is under it say, which the details don't say again.
-function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told; shown?: Move[] } {
+// `shown`: the balances the line and what is under it say, which the details don't say again; `whole`: what else the
+// line writes otherwise than whole (the SOL staked), whole, for the details.
+function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string): { icon: RowIcon; title: Part[]; sub: Part[]; danger?: boolean; subject?: Told; shown?: Move[]; whole?: string } {
     // A balance, signed as the details sign it, written as the caller writes the line's, and whole besides when not so.
     const what = (m: Move): Part[] => {
         const sign = m.units < 0n ? '−' : '+';
@@ -169,8 +170,11 @@ function headline(a: Activity, n: Naming, outs: Move[], ins: Move[], by: string)
     const about = subjectOf(a);
     if (about) {
         const told = story({ ...about.told, data: new Uint8Array() }, namesFor(a, n));
-        const title = about.told.name === 'DelegateStake' && a.staked > 0n ? `Staked ${sol(a.staked)} SOL` : titled(about.told); // how much, when it went into a stake account of yours
-        return { icon: iconOf(about.told.name), title: words(title), sub: words(told.args ? cap(told.args) : ''), danger: told.effects.some((e) => e.tone === 'danger'), subject: about.told };
+        const head = { icon: iconOf(about.told.name), sub: words(told.args ? cap(told.args) : ''), danger: told.effects.some((e) => e.tone === 'danger'), subject: about.told };
+        if (about.told.name !== 'DelegateStake' || a.staked <= 0n) return { ...head, title: words(titled(about.told)) };
+        // How much, when it went into a stake account of yours: as the caller writes the line's amounts.
+        const [text, exact] = [`${n.amount ? n.amount(a.staked, SOL_DECIMALS) : sol(a.staked)} SOL`, `${sol(a.staked)} SOL`];
+        return { ...head, title: [{ text: 'Staked ' }, { text, ...(text !== exact && { exact }) }], ...(text !== exact && { whole: `Staked ${exact}` }) };
     }
     if (a.rent.yours < 0n) return { icon: 'box', title: words('Closed a token account'), sub: words(`${sol(-a.rent.yours)} SOL of rent freed`) };
     if (a.rent.yours > 0n) return { icon: 'box', title: words('Opened a token account'), sub: via(by) };
@@ -307,7 +311,7 @@ function throughWords(through: Activity['through'], n: Naming): Detail[] {
 // Opened: what the line didn't say. The balances it moved besides those the line shows (`shown`), unless the line can
 // show only its token's address (no name for it), or writes the amount otherwise than whole (rounded): then again, for
 // a page to show it whole. The rent and the fee apart, the warnings, the programs not named already, memo and failure.
-function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]): Detail[] {
+function details(a: Activity, n: Naming, copies: Address | null, shown: Move[], whole: string | null): Detail[] {
     const unnamed = (m: Move) => m.mint !== null && n.symbol(m.mint) === m.mint;
     const otherwise = (m: Move) => quantity(m, n, 'line') !== quantity(m, n);
     const out: Detail[] = a.moves
@@ -319,6 +323,7 @@ function details(a: Activity, n: Naming, copies: Address | null, shown: Move[]):
             ...(shown.includes(m) && unnamed(m) && { again: true as const }),
             ...(shown.includes(m) && otherwise(m) && { exact: true as const }),
         }));
+    if (whole) out.unshift({ text: whole, exact: true });
     // A token named by its maker, which no list vouches for: anyone can call one so. Which one it is, whole.
     const unverified = new Set(a.moves.flatMap((m) => (m.mint !== null && !unnamed(m) && n.verified?.(m.mint) === false ? [m.mint] : [])));
     for (const mint of unverified) out.push({ text: `${n.symbol(mint)} is not verified: ${mint}`, tone: 'dim', unverified: mint });
