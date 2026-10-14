@@ -109,7 +109,7 @@ test('tokens your wallet moves out of someone else’s account as its delegate: 
     const lent = (amount: bigint) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount, delegate: PAYER, delegated: 1_000_000n * USDC }));
     const r = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), lent(1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), lent(0n), usdc(THEIRS, ATTACKER, 1_000_000n * USDC), mint]);
     assert.ok(!r.assessment.mine.has(USER_TOKEN));
-    assert.deepEqual(codes(r), ['warn:spends-allowance']);
+    assert.deepEqual(codes(r), ['warn:spends-allowance', 'warn:pays-others']);
     // The RPC saying it is someone's, and not the wallet's to move at all: then only its owner could, and it is yours.
     const theirs = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, ATTACKER, 1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, ATTACKER, 0n), usdc(THEIRS, ATTACKER, 1_000_000n * USDC), mint]);
     assert.ok(theirs.assessment.mine.has(USER_TOKEN));

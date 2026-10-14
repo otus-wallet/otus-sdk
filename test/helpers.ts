@@ -168,7 +168,7 @@ export function fakeChain(before: MaybeEncodedAccount[], after = before, simulat
 }
 
 export const MINT = key(20);
-export const ATTACKER = key(21);
+export const ATTACKER = address('8tGtQmWaDXhgYkWT3FmyJaLKQFfvGnxJnHYM1Q3BqZ7F'); // a key someone holds (on curve): a program's address would be told, not critical
 export const EVIL_PROGRAM = key(22);
 export const USER_TOKEN = key(23);
 

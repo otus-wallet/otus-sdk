@@ -121,7 +121,7 @@ test('a token account of yours: a bigger allowance is a warning, a fresh one at 
         return problems(await review(approve, context(), fakeChain([wallet(5_000_000n), tokens({ delegated: 1n })], [wallet(4_995_000n), tokens({ delegated: to })])));
     };
     assert.deepEqual(await raised(500n), ['warn:delegate']);
-    assert.deepEqual(await raised(2n ** 64n - 1n), ['danger:delegate']); // without end
+    assert.deepEqual(await raised(2n ** 64n - 1n), ['warn:delegate']); // without end, to a program's address: said (to a key: below)
 
     const ata = key(80);
     const created = account(ata, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n })); // made empty
@@ -132,7 +132,7 @@ test('a token account of yours: a bigger allowance is a warning, a fresh one at 
     assert.deepEqual([problems(r1), problems(r2)], [[], []]);
 });
 
-test('someone’s key allowed all of a token account of yours, or the close of your wrapped SOL, is critical; so is a huge fee', async () => {
+test('someone’s key allowed all of a token account of yours, or the close of your wrapped SOL, is critical; a program’s address is said; so is a huge fee', async () => {
     const thief = address('HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk'); // a key someone holds
     const allowed = (delegate: Address, delegated: bigint) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1000n, delegate, delegated }));
     const said = async (delegate: Address, delegated: bigint) =>
@@ -140,9 +140,9 @@ test('someone’s key allowed all of a token account of yours, or the close of y
     assert.deepEqual(await said(thief, 2n ** 64n - 1n), ['danger:delegate']); // without end
     assert.deepEqual(await said(thief, 1000n), ['danger:delegate']); // all it holds
     assert.deepEqual(await said(thief, 10n), ['warn:delegate']);
-    // An address no key holds, a program's: as the site asks it of the Token program, it is critical all the same
-    assert.deepEqual(await said(key(70), 2n ** 64n - 1n), ['danger:delegate']);
-    assert.deepEqual(await said(key(70), 1000n), ['danger:delegate']);
+    // An address no key holds, a program's: said, to check, never critical; someone's key is.
+    assert.deepEqual(await said(key(70), 2n ** 64n - 1n), ['warn:delegate']);
+    assert.deepEqual(await said(key(70), 1000n), ['warn:delegate']);
     assert.deepEqual(await said(key(70), 10n), ['warn:delegate']);
     // set by a program Otus names, as a marketplace sets its own to list what you sell, it is a warning; by one it
     // doesn't know, critical.
@@ -155,7 +155,7 @@ test('someone’s key allowed all of a token account of yours, or the close of y
     const made = getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: MINT });
     const list = { programAddress: address('M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K'), accounts: [{ address: USER_TOKEN, role: AccountRole.WRITABLE }, { address: PAYER, role: AccountRole.READONLY_SIGNER }, { address: key(70), role: AccountRole.READONLY }], data: new Uint8Array([1]) };
     assert.deepEqual(problems(await review(transaction([made, list]), context(), fakeChain([wallet(5_000_000n), tokens()], [wallet(4_995_000n), allowed(key(70), 1000n)]))), ['warn:delegate']);
-    assert.deepEqual((await listed(EVIL_PROGRAM)).filter((p) => p.endsWith(':delegate')), ['danger:delegate']);
+    assert.deepEqual((await listed(EVIL_PROGRAM)).filter((p) => p.endsWith(':delegate')), ['warn:delegate']); // a program's address, by one Otus can't read: said
 
     // Your wrapped SOL account's close authority given away: whoever closes it takes its 50 SOL.
     const wrapped = (closer?: Address) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 50_002_039_280n, tokenAccountData({ mint: address('So11111111111111111111111111111111111111112'), owner: PAYER, amount: 50_000_000_000n, native: 2_039_280n, closer }));
@@ -204,8 +204,7 @@ test('your address as an authority, in any account, stays where it was', async (
     const cases: [Address, number, number, number[], string][] = [
         [TOKEN_PROGRAM_ADDRESS, 82, 4, [1], 'danger:You would lose your mint authority'],
         [SYSTEM, 80, 8, [1, 0, 0, 0, 1], 'danger:You would lose your nonce authority'],
-        // To an address no key holds (ATTACKER here is off curve): a program's, said to check; to a key, stake.test.
-        [address('Stake11111111111111111111111111111111111111'), 200, 44, [1], "warn:Your withdraw authority goes to a program's address"],
+        [address('Stake11111111111111111111111111111111111111'), 200, 44, [1], 'danger:You would lose your withdraw authority'],
         [address('BPFLoaderUpgradeab1e11111111111111111111111'), 45, 13, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 'danger:You would lose your program upgrade authority'],
         [EVIL_PROGRAM, 120, 40, [], 'warn:Your address would leave an account that held it, maybe as its authority'],
     ];

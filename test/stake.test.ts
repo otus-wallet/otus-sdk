@@ -69,7 +69,7 @@ test('your SOL into stake someone else keeps locked, made for you beforehand, is
     assert.deepEqual(await into(staked(PAYER)), []);
 });
 
-test('your SOL into a stake another key withdraws is critical, whatever the site calls it; one you withdraw is not', async () => {
+test('your SOL into a stake another key withdraws is critical, whatever the site calls it; a program’s address is said; one you withdraw is not', async () => {
     const send = getTransferSolInstructionTo(STAKED);
     const codes = ['stake-withdrawer', 'stake-staker', 'no-authority-change'];
     // A new stake account, made with 1 SOL of yours (and its rent) and given to someone else to withdraw.
@@ -101,13 +101,13 @@ test('your SOL into a stake another key withdraws is critical, whatever the site
             [account(PAYER, SYSTEM, 4n * SOL - 5000n), stakeAccount(staked(pool), SOL), ...(o.proven === false ? [] : [account(POOL, SPOOL, SOL, poolData)]), lst(MY_LST, PAYER, o.toMe === false ? 0n : 900n), lst(THEIR_LST, THIEF, o.toMe === false ? 900n : 0n)],
             codes,
         );
-    const fine = ['ok:no-authority-change Owners and authorities stay as they are'];
-    assert.deepEqual(await deposited(SPOOL), fine);
-    assert.deepEqual(await deposited(address('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4')), fine); // routed by an aggregator
-    assert.deepEqual(await deposited(SPOOL, { proven: false }), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
-    assert.deepEqual(await deposited(SPOOL, { toMe: false }), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
-    assert.deepEqual(await deposited(EVIL, { proven: false }), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
-    assert.deepEqual(await made(staked(pool)), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
+    // An address no key holds, a pool's or any program's: said, to check what comes back, never critical.
+    const told = [`warn:stake-withdrawer ${pool}, an address no key holds: check what you get back`];
+    assert.deepEqual(await deposited(SPOOL), told);
+    assert.deepEqual(await deposited(address('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4')), told); // routed by an aggregator
+    assert.deepEqual(await deposited(SPOOL, { toMe: false }), told);
+    assert.deepEqual(await deposited(EVIL, { proven: false }), told);
+    assert.deepEqual(await made(staked(pool)), [`warn:stake-withdrawer ${pool}, an address no key holds: check what you get back`]);
 });
 
 test('SOL into someone else\'s stake that is not from you, as you only pay the fee, is not called yours', async () => {
@@ -165,13 +165,13 @@ test('R1 your 50 SOL into a new stake an attacker PDA withdraws, carried by Squa
     const [pda] = await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['vault'] });
     const S = key(43);
     const r = await review(transaction([exec(S, STAKE)]), { ...context, now: 1_800_000_000 }, fakeChain([account(PAYER, SYSTEM, 60n * SOL)], [account(PAYER, SYSTEM, 10n * SOL - 5000n), account(S, STAKE, 50n * SOL, staked(pda, {}, pda))]));
-    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'stake-withdrawer').map((f) => f.level), ['danger']);
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'stake-withdrawer').map((f) => f.level), ['warn']); // a program's address: said, to check
 });
 test('R2 unlimited delegate on your token account to an attacker PDA, carried by Squads v4 execute', async () => {
     const [pda] = await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['vault'] });
     const TA = key(45);
     const r = await review(transaction([exec(TA, TOKEN)]), { ...context, now: 1_800_000_000 }, fakeChain([account(PAYER, SYSTEM, SOL), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n }))], [account(PAYER, SYSTEM, SOL - 5000n), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n, delegate: pda, delegated: 2n ** 64n - 1n }))]));
-    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'delegate').map((f) => f.level), ['danger']);
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'delegate').map((f) => f.level), ['warn']); // a program's address: said, to check
 });
 
 test('your SOL into a stake another of your wallets withdraws is a warning, unless someone else’s lockup holds it', async () => {
@@ -179,7 +179,7 @@ test('your SOL into a stake another of your wallets withdraws is a warning, unle
     const send = getTransferSolInstructionTo(STAKED);
     const into = async (data: Uint8Array) =>
         (await review(transaction([send]), { ...context, signers: [PAYER, MINE] }, fakeChain([account(PAYER, SYSTEM, 5n * SOL), stakeAccount(data, SOL)], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(data, 5n * SOL)]))).assessment.findings
-            .filter((f) => f.code === 'stake-withdrawer')
+            .filter((f) => f.code === 'stake-withdrawer' || f.code === 'stake-lockup')
             .map((f) => f.level);
     assert.deepEqual(await into(staked(MINE)), ['warn']);
     assert.deepEqual(await into(staked(MINE, { time: 2_000_000_000n, custodian: THIEF })), ['danger']);
