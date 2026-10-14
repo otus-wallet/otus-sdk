@@ -526,41 +526,47 @@ const BYSTANDERS: ReadonlySet<Address> = new Set([COMPUTE_BUDGET_PROGRAM_ADDRESS
 // An account other than a token account with your address in its data: you may be its authority, or anyone put it there.
 const holds = (state: State, key: ReadonlyUint8Array) => state !== null && state.token === null && offsetsOf(key, state).length > 0;
 
-// What instructions Otus reads send to each account, in words the user sees: SOL by the System Program, tokens by
-// the Token Programs, the SOL of an account they close, and the rent of a token account made for someone (at most what
-// one can take). Keyed "SOL:<address>" and "token:<address>".
-function sentInWords(explained: Explained[], changes: Changes): Map<string, bigint> {
-    const sent = new Map<string, bigint>();
-    const add = (key: string, amount: bigint) => sent.set(key, (sent.get(key) ?? 0n) + amount);
-    const lamports = new Map(changes.accounts.map((c) => [c.address, c.before?.lamports ?? 0n]));
+// What instructions Otus reads send, in words the user sees, to each account and from each: SOL by the System Program,
+// tokens by the Token Programs, the SOL of an account they close, and the rent a token account is made with (at most
+// what one can take). Keyed "SOL:<address>" and "token:<address>".
+function sentInWords(explained: Explained[], changes: Changes): { to: Map<string, bigint>; from: Map<string, bigint> } {
+    const [to, from] = [new Map<string, bigint>(), new Map<string, bigint>()];
+    const add = (m: Map<string, bigint>, key: string, amount: bigint) => m.set(key, (m.get(key) ?? 0n) + amount);
+    const before = new Map(changes.accounts.map((c) => [c.address, c.before?.lamports ?? 0n]));
+    const after = new Map(changes.accounts.map((c) => [c.address, c.after?.lamports ?? 0n]));
     for (const e of explained) {
         if (e.source === 'unknown') continue;
         const arg = (name: string) => {
             const v = e.args.find((a) => a.name === name)?.value ?? '';
             return /^\d+$/.test(v) ? BigInt(v) : 0n;
         };
-        const to = (role: string) => e.accounts.find((a) => a.role === role)?.address;
-        const pair = (kind: string, role: string, amount: bigint) => {
-            const a = to(role);
-            if (a) add(`${kind}:${a}`, amount);
+        const at = (role: string) => e.accounts.find((a) => a.role === role)?.address;
+        const pair = (kind: string, source: string, destination: string, amount: bigint) => {
+            const [a, b] = [at(source), at(destination)];
+            if (b) add(to, `${kind}:${b}`, amount);
+            if (a) add(from, `${kind}:${a}`, amount);
         };
         if (e.program === SYSTEM_PROGRAM_ADDRESS) {
-            if (e.name === 'TransferSol' || e.name === 'TransferSolWithSeed') pair('SOL', 'destination', arg('amount'));
-            else if (e.name === 'CreateAccount') pair('SOL', 'newAccount', arg('lamports'));
-            else if (e.name === 'CreateAccountWithSeed') pair('SOL', 'newAccount', arg('amount'));
-            else if (e.name === 'WithdrawNonceAccount') pair('SOL', 'recipientAccount', arg('withdrawAmount'));
+            if (e.name === 'TransferSol' || e.name === 'TransferSolWithSeed') pair('SOL', 'source', 'destination', arg('amount'));
+            else if (e.name === 'CreateAccount') pair('SOL', 'payer', 'newAccount', arg('lamports'));
+            else if (e.name === 'CreateAccountWithSeed') pair('SOL', 'payer', 'newAccount', arg('amount'));
+            else if (e.name === 'WithdrawNonceAccount') pair('SOL', 'nonceAccount', 'recipientAccount', arg('withdrawAmount'));
         } else if (e.program === STAKE_PROGRAM) {
-            if (e.name === 'Withdraw') pair('SOL', 'recipient', arg('args'));
-            else if (e.name === 'Split') pair('SOL', 'splitStake', arg('args'));
+            if (e.name === 'Withdraw') pair('SOL', 'stake', 'recipient', arg('args'));
+            else if (e.name === 'Split') pair('SOL', 'stake', 'splitStake', arg('args'));
         } else if (TOKEN_PROGRAMS.includes(e.program)) {
-            if (e.name === 'Transfer' || e.name === 'TransferChecked') pair('token', 'destination', arg('amount'));
+            if (e.name === 'Transfer' || e.name === 'TransferChecked') pair('token', 'source', 'destination', arg('amount'));
             else if (e.name === 'CloseAccount') {
-                const closed = to('account');
-                if (closed) pair('SOL', 'destination', lamports.get(closed) ?? 0n);
+                const closed = at('account');
+                if (closed) pair('SOL', 'account', 'destination', before.get(closed) ?? 0n);
             }
-        } else if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && (e.name === 'CreateAssociatedToken' || e.name === 'CreateAssociatedTokenIdempotent')) pair('SOL', 'ata', RENT_MOST);
+        } else if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && (e.name === 'CreateAssociatedToken' || e.name === 'CreateAssociatedTokenIdempotent')) {
+            const made = at('ata');
+            const rent = made ? (after.get(made) ?? 0n) - (before.get(made) ?? 0n) : 0n;
+            pair('SOL', 'payer', 'ata', rent < 0n ? 0n : rent > RENT_MOST ? RENT_MOST : rent);
+        }
     }
-    return sent;
+    return { to, from };
 }
 
 const name = (program: Address) => PROGRAM_NAMES.get(program) ?? program;
@@ -607,8 +613,23 @@ function roleAt(s: NonNullable<State>, offset: number): string | null {
 function leaving(programs: ProgramUse[], explained: Explained[], changes: Changes, flows: Flow[], yours: Changes, nft: boolean): Finding[] {
     const blind = programs.filter((p) => (p.signature || p.writable) && explained.some((e) => e.program === p.program && e.source === 'unknown'));
     const strange = blind.some((p) => p.name === null);
-    const seen = sentInWords(explained, changes);
-    const hidden = flows.flatMap((f) => (f.change < 0n ? f.others.filter((o) => (o.wallet || strange) && o.amount > (seen.get(`${f.asset === 'SOL' ? 'SOL' : 'token'}:${o.address}`) ?? 0n)).map((o) => ({ f, o })) : []));
+    const { to: seen, from } = sentInWords(explained, changes);
+    // What of an asset leaves your accounts through instructions Otus reads: said in words.
+    const said = (f: Flow) =>
+        yours.accounts.reduce((sum, c) => {
+            if (f.asset === 'SOL') return sum + (from.get(`SOL:${c.address}`) ?? 0n);
+            return (c.before ?? c.after)?.token?.mint === f.asset ? sum + (from.get(`token:${c.address}`) ?? 0n) : sum;
+        }, 0n);
+    // Of what others get, what can be yours unsaid: no more than what leaves you past what is said, as what they get may
+    // come from someone else (a vault's own rent for an account it opens, inside a program's call).
+    const hidden = flows.flatMap((f) => {
+        const unsaid = f.change < 0n ? -f.change - said(f) : 0n;
+        if (unsaid <= 0n) return [];
+        return f.others.flatMap((o) => {
+            const beyond = o.amount - (seen.get(`${f.asset === 'SOL' ? 'SOL' : 'token'}:${o.address}`) ?? 0n);
+            return (o.wallet || strange) && beyond > 0n ? [{ f, o: { ...o, amount: beyond < unsaid ? beyond : unsaid } }] : [];
+        });
+    });
     if (!blind.length || !hidden.length) return [];
     const by = blind.map((p) => p.name ?? 'an unknown program').join(', ');
     const subject = hidden[0].o.holder;
