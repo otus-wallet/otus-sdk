@@ -52,10 +52,13 @@ export const SIMULATION_FAILED = 'the simulation failed';
  * to the simulation and, unless the site set one, a priority fee from recent fees; then it is simulated again. Otherwise,
  * or if that would fail, it stays as the site sent it, and says so. `own`: a transfer made in Otus, whose limits are
  * the most there is for its review, fitted here as if it set none. `bare`: why it gets no guards, only its limits and
- * fee. `trade`: a trade's slack in basis points, when the wallet holds its own swap to its slippage. Never throws.
+ * fee. `trade`: a trade's slack in basis points, when the wallet holds its own swap to its slippage. `beside`: the
+ * other transactions signed with it, landing in any order: its guards leave room for what they take. Never throws.
  */
-export async function prepare(r: Review, wallet: Address, chain: Chain, own = false, bare?: string, trade?: bigint): Promise<Prepared> {
-    const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade);
+export async function prepare(r: Review, wallet: Address, chain: Chain, own = false, bare?: string, trade?: bigint, beside: Review[] = []): Promise<Prepared> {
+    // Signed with others: each may land first, its priority fee as Otus sets it too.
+    const others = beside.map((b) => ({ changes: b.changes, yours: b.assessment.yours, spare: b.signers[0] === wallet ? MAX_PRIORITY_FEE : 0n }));
+    const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade, others);
     // As the site sent it, without guards: why, for the review's Guards line; and what else was found on the way.
     const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null });
     // Without the guards it should have had: a warning too, when what it does to accounts of yours can come out otherwise.

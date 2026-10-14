@@ -388,3 +388,12 @@ test('units are measured with a price instruction in place, as the transaction w
     assert.equal(prices.length, 1);
     assert.deepEqual([...prices[0].data.slice(1)], [0, 0, 0, 0, 0, 0, 0, 0]); // at zero: it costs nothing
 });
+
+test('signed with others, the guards leave room for what they take and the fee Otus may set them, in any order', async () => {
+    // Two transfers of 1,000,000 lamports, from 5,000,000: alone, each held at 3,985,000; together, room for the other's.
+    const chain = fakeChain([account(PAYER, SYSTEM, 5_000_000n), TABLE_ACCOUNT], [account(PAYER, SYSTEM, 3_995_000n), account(RECIPIENT, SYSTEM, 1_000_000n)]);
+    const [one, two] = await Promise.all([review(transfer(), context, chain), review(transfer(), context, chain)]);
+    const p = await prepare(one, PAYER, chain, false, undefined, undefined, [two]);
+    // The other takes 1,005,000 (its fee in it) with a hundredth as slack, and up to 1,000,000 as a priority fee.
+    assert.deepEqual(p.holds, [{ kind: 'wallet', account: PAYER, atLeast: 3_985_000n - 1_015_050n - 1_000_000n, owner: SYSTEM, space: 0 }]);
+});

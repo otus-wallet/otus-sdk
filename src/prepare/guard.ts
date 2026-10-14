@@ -1,7 +1,7 @@
 import { getAddressDecoder, getAddressEncoder, getI64Encoder, getU32Decoder, getU64Encoder, type Address, type ReadonlyUint8Array } from '@solana/kit';
 
 import { STAKE_PROGRAM } from '../programs/addresses.ts';
-import { holdings, offsetsOf, type Change, type Changes } from '../review/changes.ts';
+import { holdings, offsetsOf, type Change, type Changes, type State } from '../review/changes.ts';
 
 
 /** An account of yours held to the simulated outcome. Amounts may move by the slack; owners and authorities may not move at all. */
@@ -18,23 +18,62 @@ export type Meta = { staker: Address; withdrawer: Address; time: bigint; epoch: 
 // simulation and execution; other amounts only drift, as interest does. In basis points.
 export const SLACK = { trade: 1_000n, drift: 100n };
 
+/** Another transaction signed with this one, as its review saw it: every account it writes, and yours among them.
+ *  `spare`: what it may take from the wallet past its simulation, as a priority fee set once it is reviewed. */
+export type Beside = { changes: Changes; yours: Changes; spare?: bigint };
+
 /** Your accounts the transaction can write, and others it can write with your address in them → their holds. The
  *  wallet's `atLeast` is before fees: whoever builds the transaction takes off what it pays. `trade`: the slack of a
- *  trade, in basis points; a swap the wallet builds itself holds it to the slippage it asked, tighter than a site's. */
-export function holds(yours: Changes, wallet: Address, keyed: Change[] = [], trade = SLACK.trade): Hold[] {
+ *  trade, in basis points; a swap the wallet builds itself holds it to the slippage it asked, tighter than a site's.
+ *  `beside`: the other transactions signed with it, which may land before it in any order: an amount they take out
+ *  lowers its floor by as much, slack included; an account they change past its amount (created, closed, its owner,
+ *  size, data or authorities) is not held, as what it is then depends on their order. */
+export function holds(yours: Changes, wallet: Address, keyed: Change[] = [], trade = SLACK.trade, beside: Beside[] = []): Hold[] {
     const key = getAddressEncoder().encode(wallet);
     const slack = trades(yours) ? trade : SLACK.drift;
-    const floor = (before: bigint, after: bigint) => max(0n, after - ((after > before ? after - before : before - after) * slack + 9_999n) / 10_000n);
+    const floor = (before: bigint, after: bigint, by = slack) => max(0n, after - ((after > before ? after - before : before - after) * by + 9_999n) / 10_000n);
+    // What the others may take out of an account, by its amount (`of`); null when one changes it past that.
+    const takenBeside = (address: Address, of: (s: NonNullable<State>) => bigint): bigint | null => {
+        let taken = 0n;
+        for (const b of beside) {
+            const c = b.changes.accounts.find((x) => x.address === address);
+            if (!c || (c.before === null && c.after === null)) continue;
+            if (!c.before || !c.after || !sameButAmount(c.before, c.after)) return null;
+            // The fee it pays is in what its simulation left: taken out like the rest.
+            const by = trades(b.yours) ? SLACK.trade : SLACK.drift;
+            const [was, left] = [of(c.before), of(c.after)];
+            if (left < was) taken += was - floor(was, left, by);
+            if (address === wallet) taken += b.spare ?? 0n;
+        }
+        return taken;
+    };
+    const lamports = (s: NonNullable<State>) => s.lamports;
+    const units = (s: NonNullable<State>) => s.token?.amount ?? 0n;
     return [...yours.accounts, ...keyed].flatMap(({ address, before, after }): Hold[] => {
         if (!after) return [];
-        if (address === wallet) {
-            return [{ kind: 'wallet', account: address, atLeast: floor(before?.lamports ?? 0n, after.lamports + yours.fee), owner: after.program, space: after.space }];
-        }
         const t = after.token;
-        if (t) return [{ kind: 'token', account: address, atLeast: floor(before?.token?.amount ?? 0n, t.amount), owner: t.owner, delegate: t.delegate, delegated: t.delegated, closer: t.closer }];
+        const taken = takenBeside(address, address !== wallet && t ? units : lamports);
+        if (taken === null) return [];
+        const least = (before: bigint, after: bigint) => max(0n, floor(before, after) - taken);
+        if (address === wallet) {
+            return [{ kind: 'wallet', account: address, atLeast: least(before?.lamports ?? 0n, after.lamports + yours.fee), owner: after.program, space: after.space }];
+        }
+        if (t) return [{ kind: 'token', account: address, atLeast: least(before?.token?.amount ?? 0n, t.amount), owner: t.owner, delegate: t.delegate, delegated: t.delegated, closer: t.closer }];
         const stake = metaOf(after.program, after.data);
-        return [{ kind: 'account', account: address, atLeast: floor(before?.lamports ?? 0n, after.lamports), owner: after.program, space: after.space, keys: offsetsOf(key, after), ...(stake && { stake }) }];
+        return [{ kind: 'account', account: address, atLeast: least(before?.lamports ?? 0n, after.lamports), owner: after.program, space: after.space, keys: offsetsOf(key, after), ...(stake && { stake }) }];
     });
+}
+
+// Whether an account is the same but for an amount: its lamports, or a token account's units. A token account's
+// authorities, a wallet's owner and size, any other account's data are the same.
+function sameButAmount(a: NonNullable<State>, b: NonNullable<State>): boolean {
+    if (a.program !== b.program || a.space !== b.space) return false;
+    if (a.token || b.token) {
+        if (!a.token || !b.token) return false;
+        const [x, y] = [a.token, b.token];
+        return x.mint === y.mint && x.owner === y.owner && x.delegate === y.delegate && x.delegated === y.delegated && x.closer === y.closer && x.native === y.native;
+    }
+    return a.data.length === b.data.length && a.data.every((v, i) => v === b.data[i]);
 }
 
 // A stake account (kind 1, initialized, or 2, delegated): staker at 12, withdrawer at 44, lockup time at 76, epoch at
