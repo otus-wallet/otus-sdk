@@ -293,9 +293,9 @@ const SENDS_TOLD = 8;
 function throughWords(through: Activity['through'], n: Naming): Detail[] {
     const symbol = (t: Activity['through'][number]) => (t.mint ? n.symbol(t.mint) : 'SOL');
     const dangers = through.flatMap((t): Detail[] => {
-        if (t.kind === 'approved') return [{ text: `It let ${n.who(t.to)} move up to ${quantity({ mint: t.mint, units: t.units, decimals: t.decimals }, n)} of yours`, tone: 'danger' }];
+        if (t.kind === 'approved') return [{ text: `It let ${n.who(t.to)} move up to ${quantity({ mint: t.mint, units: t.units, decimals: t.decimals }, n)} of yours`, tone: t.units === 2n ** 64n - 1n ? 'danger' : 'warn' }];
         if (t.kind === 'authority') return [{ text: `It gave your ${symbol(t)} account to ${n.who(t.to)}`, tone: 'danger' }];
-        if (t.kind === 'closed') return [{ text: `It closed your ${symbol(t)} account, its SOL to ${n.who(t.to)}`, tone: 'danger' }];
+        if (t.kind === 'closed') return [{ text: `It closed your ${symbol(t)} account, its SOL to ${n.who(t.to)}`, tone: 'warn' }];
         if (t.kind === 'assigned') return [{ text: `It gave your wallet to the program ${n.program(t.to)}`, tone: 'danger' }];
         return [];
     });

@@ -120,6 +120,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     const lent = allowed(s, explained, wallet, false).filter((a) => !mine.has(a));
     if (lent.length) add('warn', 'spends-allowance', "You move tokens from someone else's account", lent[0], 'Your wallet is allowed to: check that it should');
     const shown = findings.length;
+    // Your other wallets in Otus: what goes to one of them stays yours, said, not critical.
+    const ours = new Set<Address>([wallet, ...(context.wallets ?? [])]);
+    const toOurs = (a: Address) => ours.has(a) && a !== wallet;
     for (const { address, before, after } of [...yours.accounts, ...keyed]) {
         const [from, to] = [before?.token ?? null, after?.token ?? null];
         if (address === wallet) {
@@ -131,26 +134,35 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (from && to && from.owner !== to.owner) given.add(to.owner);
         if (to?.delegate && to.delegate !== from?.delegate) given.add(to.delegate);
         if (to?.closer && to.closer !== from?.closer) given.add(to.closer);
-        if (from && to && from.owner !== to.owner) add('danger', 'token-owner-change', 'A token account of yours changes owner', address, `New owner ${to.owner}. You lose control of it.`);
+        // One of yours given away; one given to you is yours now, nothing lost.
+        if (from && to && from.owner !== to.owner && from.owner === wallet) {
+            if (toOurs(to.owner)) add('warn', 'token-owner-change', 'A token account of yours goes to another of your wallets', address, `New owner ${to.owner}`);
+            else add('danger', 'token-owner-change', 'A token account of yours changes owner', address, `New owner ${to.owner}. You lose control of it.`);
+        }
         if (to?.delegate && (to.delegate !== from?.delegate || to.delegated > (from?.delegated ?? 0n))) {
             // Someone allowed all the account holds, or without end, takes all of it whenever it likes. A program's own
             // address, as a marketplace's, only as its program lets it: when that program set it, one Otus names.
             const all = to.delegated === U64_MAX || (to.amount > 0n && to.delegated >= to.amount);
-            if (all && (!isOffCurveAddress(to.delegate) || !byProtocol(s, address))) add('danger', 'delegate', 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
+            if (all && !toOurs(to.delegate) && (!isOffCurveAddress(to.delegate) || !byProtocol(s, address))) add('danger', 'delegate', 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
             else add('warn', 'delegate', 'A token account of yours gets a delegate, or a bigger allowance', address, `${to.delegate} could move its tokens`);
         }
         if (to?.closer && to.closer !== from?.closer) {
             // Closing a wrapped SOL account sends all its SOL where the closer says; any other, only its rent.
-            if (to.native && to.closer !== wallet) add('danger', 'close-authority', 'Someone could take the SOL in your wrapped SOL account', address, `${to.closer} could close it and take its SOL at any time`);
+            if (to.native && !ours.has(to.closer)) add('danger', 'close-authority', 'Someone could take the SOL in your wrapped SOL account', address, `${to.closer} could close it and take its SOL at any time`);
             else add('warn', 'close-authority', 'A token account of yours gets a new close authority', address, `${to.closer} could close it`);
         }
         // Your stake under a lockup in force that someone else keeps: made so now, or getting your SOL, as into a stake
         // account made for you beforehand. You can't withdraw until it ends, or they lift it.
         const [was, is] = [stake(before, clock), stake(after, clock)];
         if (is) for (const a of [is.staker, is.withdrawer, is.custodian]) if (a !== was?.staker && a !== was?.withdrawer && a !== was?.custodian) given.add(a);
-        const kept = is !== null && is.locked && is.custodian !== wallet && (was ?? is).withdrawer === wallet;
+        const kept = is !== null && is.locked && !ours.has(is.custodian) && (was ?? is).withdrawer === wallet;
         const fed = (after?.lamports ?? 0n) > (before?.lamports ?? 0n);
-        if (kept && (is.lockup !== was?.lockup || fed)) {
+        // Split or merged from a stake of yours under that same lockup: as locked as it was.
+        const same = is !== null && changes.accounts.some((c) => {
+            const from = c.address !== address ? stake(c.before, clock) : null;
+            return from !== null && from.withdrawer === wallet && from.lockup === is.lockup && (c.after?.lamports ?? 0n) < (c.before?.lamports ?? 0n);
+        });
+        if (kept && (is.lockup !== was?.lockup || fed) && !same) {
             const text = is.lockup === was?.lockup ? 'Your SOL goes into stake someone else keeps locked' : 'Your stake gets a lockup someone else holds';
             add('danger', 'stake-lockup', text, address, is.custodian === SYSTEM_PROGRAM_ADDRESS ? "No one can lift it: you can't withdraw until it ends" : `${is.custodian} can lift it: until then you can't withdraw`);
         }
@@ -162,8 +174,14 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             for (const offset of offsetsOf(key, before).filter((o) => !offsetsOf(key, after).includes(o))) {
                 const role = roleAt(before, offset);
                 const now = after.data.length >= offset + 32 ? after.data.slice(offset, offset + 32) : null;
-                if (role && now && now.some((b) => b !== 0)) given.add(getAddressDecoder().decode(now)); // who has it now
-                if (role) add('danger', 'authority-change', `You would lose your ${role}`, address);
+                const holder = now && now.some((b) => b !== 0) ? getAddressDecoder().decode(now) : null; // who has it now
+                if (role && holder) given.add(holder);
+                // Proven only where the layout is fixed: a Token-2022 mint's extensions move as they change. To another
+                // of your wallets, or to a program's account only programs Otus names act on (a stake pool taking a stake
+                // deposited), it is said, not critical.
+                const loss = role !== null && role !== 'authority in a Token-2022 mint' && !(holder && toOurs(holder)) && !(holder && isOffCurveAddress(holder) && byProtocol(s, address));
+                if (loss) add('danger', 'authority-change', `You would lose your ${role}`, address);
+                else if (role) add('warn', 'authority-change', holder && toOurs(holder) ? `Your ${role} goes to another of your wallets` : `Your ${role} goes elsewhere`, address, holder ? `Now ${holder}` : undefined);
                 else add('warn', 'authority-change', 'Your address would leave an account that held it, maybe as its authority', address);
             }
         }
@@ -177,7 +195,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         for (const o of flow.others) {
             const is = stake(changes.accounts.find((c) => c.address === o.address)?.after ?? null);
             if (is) given.add(is.withdrawer);
-            if (is && o.amount <= -flow.change && (!isOffCurveAddress(is.withdrawer) || !byProtocol(s, o.address))) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
+            if (is && !ours.has(is.withdrawer) && o.amount <= -flow.change && (!isOffCurveAddress(is.withdrawer) || !byProtocol(s, o.address))) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
         }
     }
     if (!failed && findings.length === shown) add('ok', 'no-authority-change', 'No owner or authority changes', undefined, 'Owners and authorities stay as they are');
@@ -190,9 +208,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     else if (yours.fee > 0n) add('ok', 'normal-fee', 'Normal network fee');
 
     // Who gets what from you. A program Otus doesn't know gets a word: a warning when it gets your signature or
-    // accounts, a notice otherwise (a notice too once its own IDL describes it: see described). It is critical only
-    // for what it does: taking your signature into a program that keeps something of yours no balance shows, or where
-    // Otus cannot see.
+    // accounts, a notice otherwise (a notice too once its own IDL describes it: see described). What it does is said
+    // too: taking your signature into a program that keeps something of yours no balance shows, or where Otus cannot
+    // see; warnings, as Otus infers them.
     for (const p of programs) {
         const named = p.name ?? 'An unknown program';
         const getsYou = p.signature || p.writable;
@@ -288,7 +306,7 @@ export function siteFindings({ host, signedBefore: since, now }: Pick<Context, '
  * by that name: a notice, while guards hold what it does with you (`held`: they are on, and Otus sends it now). An IDL
  * names instructions and binds nothing: unguarded, or sent later by the site, a program that gets you stays a warning.
  * One that is not described stays as it was, and says so. One whose name borrows the brand of a program Otus knows is
- * critical when it gets you: what a site does to pass a program off as another.
+ * said, a warning: what a site does to pass a program off as another.
  */
 export function described(findings: Finding[], named: Map<Address, string>, programs: ProgramUse[], held = true): Finding[] {
     const told = findings.map((f): Finding => {

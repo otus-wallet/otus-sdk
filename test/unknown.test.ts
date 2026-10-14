@@ -119,7 +119,7 @@ test("a token account handed to the wallet on the way was not its own when it mo
     assert.deepEqual(inside([getTransferInstruction({ source: at(A), destination: at(A), authority: me, amount: 1n })]).through, []);
 });
 
-test("what an unknown program hands over inside it is a danger: an approval, an account given or closed away, the wallet assigned", () => {
+test("what an unknown program hands over inside it is said: an account given away or the wallet assigned in red, a limited approval or an account closed in yellow", () => {
     const a = inside([
         getApproveInstruction({ source: at(A), delegate: at(B), owner: me, amount: 2_000_000n }),
         getSetAuthorityInstruction({ owned: at(A), owner: me, authorityType: AuthorityType.AccountOwner, newAuthority: at(B) }),
@@ -132,8 +132,8 @@ test("what an unknown program hands over inside it is a danger: an approval, an 
     assert.deepEqual(a.through.map((t) => t.kind), ['approved', 'authority', 'closed', 'assigned']);
     const [row] = rows([a], naming);
     assert.deepEqual(
-        row.details.filter((d) => d.unknown && d.tone === 'danger').map((d) => d.text),
-        [`It let ${at(B)} move up to 2 ${USDC} of yours`, `It gave your ${USDC} account to ${at(B)}`, `It closed your ${USDC} account, its SOL to ${at(B)}`, `It gave your wallet to the program ${MIXER}`],
+        row.details.filter((d) => d.unknown && d.text.startsWith('It ')).map((d) => `${d.tone}: ${d.text}`),
+        [`warn: It let ${at(B)} move up to 2 ${USDC} of yours`, `danger: It gave your ${USDC} account to ${at(B)}`, `warn: It closed your ${USDC} account, its SOL to ${at(B)}`, `danger: It gave your wallet to the program ${MIXER}`],
     );
     // A danger marks the line, as any other does.
     assert.equal(row.tone, 'danger');

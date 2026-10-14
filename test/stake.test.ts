@@ -97,3 +97,37 @@ test('SOL into someone else\'s stake that is not from you, as you only pay the f
     const moved = await findings(touch, [account(PAYER, SYSTEM, 5n * SOL), stakeAccount(staked(THIEF), SOL)], [account(PAYER, SYSTEM, 5n * SOL - 5000n), stakeAccount(staked(THIEF), 3n * SOL)], ['stake-withdrawer']);
     assert.deepEqual(moved, []);
 });
+
+test('what goes to another of your wallets stays yours: said, never critical', async () => {
+    const MINE = key(60); // another wallet of yours in Otus
+    const ours = { ...context, wallets: [PAYER, MINE] };
+    const authorize: Instruction = { programAddress: STAKE, accounts: [{ address: STAKED, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([1, 0, 0, 0]) };
+    const wallet = account(PAYER, SYSTEM, SOL);
+    const moved = async (to: Address) =>
+        (await review(transaction([authorize]), ours, fakeChain([wallet, stakeAccount(staked(PAYER, {}, THIEF))], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(staked(to, {}, THIEF))]))).assessment.findings
+            .filter((f) => f.code === 'authority-change')
+            .map((f) => `${f.level}:${f.text}`);
+    assert.deepEqual(await moved(MINE), ['warn:Your withdraw authority goes to another of your wallets']);
+    assert.deepEqual(await moved(key(62)), ['danger:You would lose your withdraw authority']);
+});
+
+test('a stake split from one of yours under the same lockup is as locked as it was: not critical', async () => {
+    const split: Instruction = { programAddress: STAKE, accounts: [{ address: STAKED, role: W }, { address: key(61), role: W }, { address: PAYER, role: RS }], data: new Uint8Array([3, 0, 0, 0]) };
+    const lockup = { time: 2_000_000_000n, custodian: THIEF };
+    const before = [account(PAYER, SYSTEM, SOL), stakeAccount(staked(PAYER, lockup))];
+    const after = [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(staked(PAYER, lockup), 6n * SOL), account(key(61), STAKE, 4n * SOL, staked(PAYER, lockup))];
+    assert.deepEqual(await findings(split, before, after, ['stake-lockup']), []);
+});
+
+test('a token account given to you is yours now: nothing lost, nothing critical', async () => {
+    const { TOKEN_PROGRAM_ADDRESS, getSetAuthorityInstruction, AuthorityType } = await import('@solana-program/token');
+    const { tokenAccountData, MINT } = await import('./helpers.ts');
+    const { createNoopSigner } = await import('@solana/kit');
+    const GIVEN = key(63);
+    const giver = key(64);
+    const give = getSetAuthorityInstruction({ owned: GIVEN, owner: createNoopSigner(giver), authorityType: AuthorityType.AccountOwner, newAuthority: PAYER });
+    const held = (owner: Address) => account(GIVEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner, amount: 5n }));
+    const r = await review(transaction([give]), context, fakeChain([account(PAYER, SYSTEM, SOL), held(giver)], [account(PAYER, SYSTEM, SOL - 10_000n), held(PAYER)]));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'token-owner-change'), []);
+    assert.notEqual(r.assessment.verdict, 'danger');
+});

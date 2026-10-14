@@ -27,7 +27,7 @@ export function isData(message: ReadonlyUint8Array): boolean {
     return ENCODED.test(t) && !WORD.test(t);
 }
 
-/** What the review says about a message to sign: data warns as critical. */
+/** What the review says about a message to sign: data warns, as a program could take it as an order. */
 export function messageFindings(message: ReadonlyUint8Array): Finding[] {
     if (!isData(message)) return [];
     return [{ level: 'warn', code: 'message-data', text: 'Unreadable message', note: 'A program could take your signature as an order' }];

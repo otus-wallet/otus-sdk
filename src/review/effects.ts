@@ -39,6 +39,13 @@ const DEFAULT_ADDRESS = '11111111111111111111111111111111'; // an unset address 
 
 const AUTHORITY: Record<string, string> = { 0: 'The right to mint', 1: 'The right to freeze', 2: 'The ownership', 3: 'The right to close' };
 
+// An authority of yours given away: the ownership or a mint's rights, red; the right to close, which takes only rent
+// (but wrapped SOL), yellow; to yourself, or of nothing of yours, plain.
+function setAuthorityTone(to: string, type: string, hurt: Tone, wallet: Address): Tone {
+    if (to === wallet || hurt === 'plain') return 'plain';
+    return type === '3' ? 'warn' : 'danger';
+}
+
 /** One explained instruction → its story. `risky`: its program may be harmful, so what it does to you shows in red.
  *  `first`: it leads a transaction about to be signed, where a nonce's advance makes the whole transaction durable;
  *  anywhere else (later in it, inside a proposal, once landed) the advance only moves the nonce on. */
@@ -111,7 +118,7 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
             case 'SetAuthority': {
                 const to = arg('newAuthority');
                 const right = AUTHORITY[arg('authorityType')] ?? 'An authority';
-                return { args: `${right.replace(/^The /, '')} → ${to === 'none' ? 'nobody' : who(to as Address)}`, effects: [line(`${right} of ${who(acc('owned'))} goes to ${to === 'none' ? 'nobody' : who(to as Address)}`, to !== n.wallet ? hurts(acc('owned')) === 'plain' ? 'plain' : 'danger' : 'plain')] };
+                return { args: `${right.replace(/^The /, '')} → ${to === 'none' ? 'nobody' : who(to as Address)}`, effects: [line(`${right} of ${who(acc('owned'))} goes to ${to === 'none' ? 'nobody' : who(to as Address)}`, setAuthorityTone(to, arg('authorityType'), hurts(acc('owned')), n.wallet))] };
             }
             case 'CloseAccount': {
                 const [account, to] = [acc('account'), acc('destination')];
