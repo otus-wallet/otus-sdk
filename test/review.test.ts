@@ -51,7 +51,7 @@ const tokens = (o: { delegated?: bigint } = {}, address = USER_TOKEN) => {
 };
 
 test('a plain transfer, from a known site, by programs Otus knows, is OK', async () => {
-    const r = await review(transfer(), context(), fakeChain([wallet(5_000_000n)]));
+    const r = await review(transfer(), context(), fakeChain([wallet(5_000_000n)], [wallet(3_995_000n), account(RECIPIENT, SYSTEM, 1_000_000n)]));
     assert.equal(r.assessment.verdict, 'ok');
     assert.deepEqual(
         r.assessment.findings.map((f) => f.code),
@@ -279,7 +279,7 @@ test('refuses a transaction this wallet does not sign', async () => {
 });
 
 test('your own transfer to a program’s account is warned about; to a wallet, it is not', async () => {
-    const own = (owner: Address) => review(transfer(), context({ own: true, to: RECIPIENT }), fakeChain([wallet(5_000_000n), account(RECIPIENT, owner, 1_000_000n)]));
+    const own = (owner: Address) => review(transfer(), context({ own: true, to: RECIPIENT }), fakeChain([wallet(5_000_000n), account(RECIPIENT, owner, 1_000_000n)], [wallet(3_995_000n), account(RECIPIENT, owner, 2_000_000n)]));
     assert.ok(!(await own(SYSTEM)).assessment.findings.some((f) => f.code === 'to-program'));
     const toProgram = await own(EVIL_PROGRAM);
     assert.deepEqual(problems(toProgram), ['warn:to-program']);

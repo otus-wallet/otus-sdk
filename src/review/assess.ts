@@ -18,6 +18,7 @@ import { STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../pr
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { BRANDS, HOLDS, PROGRAM_NAMES } from '../programs/known.ts';
 import { holdings, offsetsOf, plain, read, units, type Change, type Changes, type State } from './changes.ts';
+import { untold } from './consistency.ts';
 import { durable } from './decode.ts';
 import type { Explained } from './explain.ts';
 import type { Deployment } from './programs.ts';
@@ -93,7 +94,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // When it is, for a stake lockup: the time, and the epoch from the slot (432,000 slots each; where early epochs were
     // shorter, this reads one below the true epoch, so a lockup counts a little longer, never shorter).
     const clock: Clock = { now: context.now ?? null, epoch: s.slot / SLOTS_PER_EPOCH };
-    const mine = yourAccounts(s, changes, wallet, clock);
+    const mine = yourAccounts(s, changes, explained, wallet, clock);
     const yours: Changes = { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: changes.accounts.filter((c) => mine.has(c.address)) };
     // Your address inside an account does not make it yours: anyone can write it into theirs.
     const keyed = changes.accounts.filter((c) => !mine.has(c.address) && (holds(c.before, key) || holds(c.after, key)));
@@ -108,6 +109,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     const failed = s.simulation.error !== null;
     if (failed) add('danger', 'simulation-failed', 'The transaction would fail now, so its effects cannot be seen', undefined, 'A site can make it fail on purpose, to hide what it does');
     else add('ok', 'simulated', 'Changes');
+    // What its instructions say they take, left out of the simulation: an RPC that hides it, from the review and the guards.
+    const hidden = untold(s, changes, explained);
+    if (hidden.length) add('danger', 'untold', 'The simulation leaves out what it sends', hidden[0], "Its instructions take more out of this account than the RPC's simulation shows");
     const shown = findings.length;
     for (const { address, before, after } of [...yours.accounts, ...keyed]) {
         const [from, to] = [before?.token ?? null, after?.token ?? null];
@@ -358,12 +362,37 @@ export function ago(seconds: number): string {
     return `${n} ${unit}${n === 1 ? '' : 's'} ago`;
 }
 
-// Yours: your wallet, every token account it owns before or after, and the accounts whose SOL only you can take out.
-function yourAccounts(s: Simulated, changes: Changes, wallet: Address, clock: Clock): Set<Address> {
+// Yours: your wallet, every token account it owns before or after, the accounts whose SOL only you can take out, and
+// those your signature takes value out of.
+function yourAccounts(s: Simulated, changes: Changes, explained: Explained[], wallet: Address, clock: Clock): Set<Address> {
     const owned = (state: State) => state?.token?.owner === wallet || withdrawer(state, clock) === wallet;
     const before = s.accounts.filter((a) => owned(read(a.state))).map((a) => a.address);
     const after = changes.accounts.filter((c) => owned(c.after)).map((c) => c.address);
-    return new Set([wallet, ...before, ...after]);
+    return new Set([wallet, ...before, ...after, ...authorized(explained, wallet)]);
+}
+
+// The accounts your wallet, as their authority, takes value out of in the instructions Otus reads: a token account it
+// transfers, burns, closes or gives an allowance from, as its owner or delegate; a stake or nonce account it withdraws.
+// Yours in what it does, whoever the RPC says holds them: one that named someone else would keep them, and their
+// guards, out of the review.
+const AUTHORIZED: Record<string, [string, string]> = {
+    Transfer: ['authority', 'source'],
+    TransferChecked: ['authority', 'source'],
+    Burn: ['authority', 'account'],
+    BurnChecked: ['authority', 'account'],
+    CloseAccount: ['owner', 'account'],
+    Approve: ['owner', 'source'],
+    ApproveChecked: ['owner', 'source'],
+    Withdraw: ['withdrawAuthority', 'stake'],
+    WithdrawNonceAccount: ['nonceAuthority', 'nonceAccount'],
+};
+function authorized(explained: Explained[], wallet: Address): Address[] {
+    return explained.flatMap((e) => {
+        const native = TOKEN_PROGRAMS.includes(e.program) || e.program === STAKE_PROGRAM || e.program === SYSTEM_PROGRAM_ADDRESS;
+        const roles = e.source === 'plugin' && native && Object.hasOwn(AUTHORIZED, e.name) ? AUTHORIZED[e.name] : null;
+        const [by, of] = roles ? roles.map((role) => e.accounts.find((a) => a.role === role)?.address) : [];
+        return by === wallet && of ? [of] : [];
+    });
 }
 
 // Who can take the SOL out of an account other than a token account: a nonce account's authority, or a stake account's
