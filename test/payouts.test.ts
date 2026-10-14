@@ -40,7 +40,8 @@ test('funds out of a program’s custody to someone else’s wallet are said exa
     assert.deepEqual(thief.findings, ['warn:Funds go to someone else, not to you']);
     assert.deepEqual(thief.payouts, [{ holder: THIEF, known: null, program: false, amounts: [{ asset: MINT, amount: 1_000n * USDC }], programs: [MARGINFI] }]);
     assert.deepEqual((await withdraw(PAYER)).findings, []); // a token account of yours, an ATA or not
-    assert.deepEqual((await withdraw(THIEF, { wallets: [THIEF] })).findings, []); // one of your other wallets, or one you watch
+    assert.deepEqual((await withdraw(THIEF, { wallets: [THIEF], signers: [THIEF] })).findings, []); // another of your wallets Otus signs for
+    assert.deepEqual((await withdraw(THIEF, { wallets: [THIEF] })).findings, ['warn:Funds go to someone else, not to you']); // one you only watch could be anyone's
     assert.deepEqual((await withdraw(THIEF, { contacts: new Map([[THIEF, 'Ana']]) })).findings, ['notice:Funds go to Ana']); // one you keep
 });
 

@@ -175,9 +175,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
                 const holder = now && now.some((b) => b !== 0) ? getAddressDecoder().decode(now) : null; // who has it now
                 if (role && holder) given.add(holder);
                 // Proven only where the layout is fixed: a Token-2022 mint's extensions move as they change. To another
-                // of your wallets, or to a program's account only programs Otus names act on (a stake pool taking a stake
-                // deposited), it is said, not critical.
-                const loss = role !== null && role !== 'authority in a Token-2022 mint' && !(holder && toOurs(holder)) && !pooled(before, offset, holder);
+                // of your wallets Otus signs for, it is said, not critical. To anyone else, a program's account included,
+                // it is lost: a stake pool that keeps the account (not merging it away) reads so too.
+                const loss = role !== null && role !== 'authority in a Token-2022 mint' && !(holder && toOurs(holder));
                 if (loss) add('danger', 'authority-change', `You would lose your ${role}`, address);
                 else if (role) add('warn', 'authority-change', holder && toOurs(holder) ? `Your ${role} goes to another of your wallets` : `Your ${role} goes elsewhere`, address, holder ? `Now ${holder}` : undefined);
                 else add('warn', 'authority-change', 'Your address would leave an account that held it, maybe as its authority', address);
@@ -194,15 +194,8 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             const is = stake(changes.accounts.find((c) => c.address === o.address)?.after ?? null);
             if (is) given.add(is.withdrawer);
             if (is && toOurs(is.withdrawer) && o.amount <= -flow.change) add('warn', 'stake-withdrawer', 'Another of your wallets can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
-            else if (is && is.withdrawer !== wallet && o.amount <= -flow.change && (!isOffCurveAddress(is.withdrawer) || !byProtocol(s, o.address))) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
+            else if (is && is.withdrawer !== wallet && o.amount <= -flow.change && (!isOffCurveAddress(is.withdrawer) || !byPool(s, o.address))) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
         }
-    }
-    // A stake account of yours deposited into a stake pool: its stake or withdraw authority goes to the pool's own
-    // address, only stake pool programs act, and something comes back to you (its token). Anything else is a loss.
-    function pooled(before: State, offset: number, holder: Address | null): boolean {
-        if (!before || before.program !== STAKE_PROGRAM || ![12, 44].includes(offset) || !holder || !isOffCurveAddress(holder)) return false;
-        const acting = programs.filter((p) => !CORE_PROGRAMS.has(p.program) && !BYSTANDERS.has(p.program)).map((p) => p.program);
-        return acting.length > 0 && acting.every((p) => STAKE_POOLS.has(p)) && flows.some((f) => f.change > 0n);
     }
     if (!failed && findings.length === shown) add('ok', 'no-authority-change', 'No owner or authority changes', undefined, 'Owners and authorities stay as they are');
     if (!failed) for (const [what, subject] of outflows(yours)) add('warn', 'large-outflow', `You send almost all ${what}`, subject);
@@ -542,9 +535,19 @@ function byProtocol(s: Simulated, account: Address): boolean {
     const naming = s.message.instructions.filter((ix) => ix.accountIndices.some((j) => s.accounts[j].address === account)).map((ix) => s.accounts[ix.programAddressIndex].address);
     // A budget, a memo, an assertion or an associated account made beside it give no one a say over it.
     const acting = naming.filter((p) => !BYSTANDERS.has(p));
-    return acting.length > 0 && acting.every((p) => PROGRAM_NAMES.has(p) && !CORE_PROGRAMS.has(p));
+    return acting.length > 0 && acting.every((p) => PROGRAM_NAMES.has(p) && !CORE_PROGRAMS.has(p) && !EXECUTORS.has(p));
 }
-// The stake pool programs Otus names, which take a stake's authorities on deposit and give their token back.
+// Programs that run whatever their members or voters decided, with the signatures they are given: they vouch for no
+// account of theirs.
+const EXECUTORS: ReadonlySet<Address> = new Set(
+    ['SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf', 'SMPLecH534NA9acpos4G6x7uf3LWbCAwZQE9e8ZekMu', 'GovER5Lthms3bLBqWub97yVrMmEogzX7xNjdXpPPCVZw', 'GovaE4iu227srtG2s3tZzB4RmWBzw8sTwrCLZz7kN7rY'].map((a) => address(a)),
+);
+// A stake account only stake pool programs name: one of a pool's own, as its reserve.
+function byPool(s: Simulated, account: Address): boolean {
+    const naming = s.message.instructions.filter((ix) => ix.accountIndices.some((j) => s.accounts[j].address === account)).map((ix) => s.accounts[ix.programAddressIndex].address).filter((p) => !BYSTANDERS.has(p));
+    return naming.length > 0 && naming.every((p) => STAKE_POOLS.has(p));
+}
+// The stake pool programs Otus names, whose own accounts hold the stake deposited with them.
 const STAKE_POOLS: ReadonlySet<Address> = new Set(
     ['SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy', 'SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY', 'SPMBzsVUuoHA4Jm6KunbsotaahvVikZs1JyTW6iJvbn', 'MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD', 'stkitrT1Uoy18Dk1fTrgPw8W6MVzoCfYoAFT4MLsmhq'].map((a) => address(a)),
 );
@@ -737,7 +740,7 @@ function namedTo(explained: Explained[]): Address[] {
 // paid and nothing came back, any (what your trade buys, sent elsewhere). Each part on its own: a twentieth or less of
 // what comes to you in the same asset is a fee; SOL this small, rent given back. Shared out to those that got most first.
 function payoutsOf(s: Simulated, changes: Changes, mine: Set<Address>, yours: Changes, flows: Flow[], context: Context): Payout[] {
-    const own = new Set<Address>([context.wallet, ...(context.wallets ?? [])]);
+    const own = new Set<Address>([context.wallet, ...(context.signers ?? [])]); // one only watched could be anyone's
     const [back, paidAny] = [flows.some((f) => f.change > 0n), flows.some((f) => f.change < 0n)];
     const amount = (state: State, asset: string) => (asset === 'SOL' ? (state?.lamports ?? 0n) : units(state, asset));
     const gains = new Map<string, { holder: Address; address: Address; amount: bigint; wallet: boolean }[]>();

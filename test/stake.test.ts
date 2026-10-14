@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { AccountRole, address, getAddressEncoder, getProgramDerivedAddress, getI64Encoder, getU32Encoder, getU64Encoder, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import { review } from '../src/review/review.ts';
-import { account, fakeChain, key, PAYER, SYSTEM, transaction } from './helpers.ts';
+import { account, fakeChain, key, MINT, PAYER, SYSTEM, tokenAccountData, transaction } from './helpers.ts';
 
 const SOL = 1_000_000_000n;
 const STAKE = address('Stake11111111111111111111111111111111111111');
@@ -123,7 +123,6 @@ test('a stake split from one of yours under someone else’s lockup is still tol
 
 test('a token account given to you is yours now: nothing lost, nothing critical', async () => {
     const { TOKEN_PROGRAM_ADDRESS, getSetAuthorityInstruction, AuthorityType } = await import('@solana-program/token');
-    const { tokenAccountData, MINT } = await import('./helpers.ts');
     const { createNoopSigner } = await import('@solana/kit');
     const GIVEN = key(63);
     const giver = key(64);
@@ -132,4 +131,23 @@ test('a token account given to you is yours now: nothing lost, nothing critical'
     const r = await review(transaction([give]), context, fakeChain([account(PAYER, SYSTEM, SOL), held(giver)], [account(PAYER, SYSTEM, SOL - 10_000n), held(PAYER)]));
     assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'token-owner-change'), []);
     assert.notEqual(r.assessment.verdict, 'danger');
+});
+
+// A program that runs what its members decided vouches for no account: what it carries is as any other's.
+const SQUADS = address('SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf');
+const TOKEN = address('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const R = AccountRole.READONLY;
+const exec = (target: Address, program: Address): Instruction => ({ programAddress: SQUADS, accounts: [{ address: key(70), role: R }, { address: key(71), role: W }, { address: key(72), role: R }, { address: PAYER, role: WS }, { address: target, role: W }, { address: program, role: R }], data: new Uint8Array([0xc2, 0x08, 0xa1, 0x57, 0x99, 0xa4, 0x19, 0xab]) });
+
+test('R1 your 50 SOL into a new stake an attacker PDA withdraws, carried by Squads v4 execute', async () => {
+    const [pda] = await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['vault'] });
+    const S = key(43);
+    const r = await review(transaction([exec(S, STAKE)]), { ...context, now: 1_800_000_000 }, fakeChain([account(PAYER, SYSTEM, 60n * SOL)], [account(PAYER, SYSTEM, 10n * SOL - 5000n), account(S, STAKE, 50n * SOL, staked(pda, {}, pda))]));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'stake-withdrawer').map((f) => f.level), ['danger']);
+});
+test('R2 unlimited delegate on your token account to an attacker PDA, carried by Squads v4 execute', async () => {
+    const [pda] = await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['vault'] });
+    const TA = key(45);
+    const r = await review(transaction([exec(TA, TOKEN)]), { ...context, now: 1_800_000_000 }, fakeChain([account(PAYER, SYSTEM, SOL), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n }))], [account(PAYER, SYSTEM, SOL - 5000n), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n, delegate: pda, delegated: 2n ** 64n - 1n }))]));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'delegate').map((f) => f.level), ['danger']);
 });
