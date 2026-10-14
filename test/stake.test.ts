@@ -11,6 +11,7 @@ const STAKE = address('Stake11111111111111111111111111111111111111');
 const THIEF = address('HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk'); // a key someone holds
 const EVIL = key(22);
 const STAKED = key(43);
+const TOKEN = address('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const context = { wallet: PAYER, signedBefore: 0, host: 'app.example.com' };
 const { WRITABLE: W, READONLY_SIGNER: RS, WRITABLE_SIGNER: WS } = AccountRole;
 // A plain System transfer of 4 SOL from you to this account.
@@ -82,13 +83,30 @@ test('your SOL into a stake another key withdraws is critical, whatever the site
     const topped = (data: Uint8Array) => findings(send, [account(PAYER, SYSTEM, 5n * SOL), stakeAccount(data, SOL)], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(data, 5n * SOL)], codes);
     assert.deepEqual(await topped(staked(THIEF)), [`danger:stake-withdrawer ${THIEF} can take the SOL out`]);
     assert.deepEqual(await topped(staked(PAYER, {}, THIEF)), [`warn:stake-staker ${THIEF} can unstake it or change its validator`]);
-    // A program's own address withdrawing, as a stake pool's reserve: as its program lets it, not someone's key, when a
-    // pool Otus names puts it there. Sent there straight, or by a program Otus doesn't know, it is critical.
+    // A stake pool's reserve, proven: the pool's own account names it its reserve, and the pool's token comes to you,
+    // whoever routes the deposit. Without that pool account, or with its token going elsewhere, it is critical.
     const [pool] = await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['withdraw'] });
-    const through = (program: Address): Instruction => ({ programAddress: program, accounts: [{ address: PAYER, role: WS }, { address: STAKED, role: W }], data: new Uint8Array([14]) });
-    const deposited = (program: Address) => findings(through(program), [account(PAYER, SYSTEM, 5n * SOL)], [account(PAYER, SYSTEM, 4n * SOL - 5000n), stakeAccount(staked(pool), SOL)], codes);
-    assert.deepEqual(await deposited(address('SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy')), ['ok:no-authority-change Owners and authorities stay as they are']);
-    assert.deepEqual(await deposited(EVIL), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
+    const SPOOL = address('SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy');
+    const [POOL, LST, MY_LST, THEIR_LST] = [key(64), key(65), key(66), key(67)];
+    const poolData = new Uint8Array(611);
+    poolData[0] = 1;
+    poolData.set(getAddressEncoder().encode(STAKED), 130);
+    poolData.set(getAddressEncoder().encode(LST), 162);
+    const lst = (at: Address, owner: Address, amount: bigint) => account(at, TOKEN, 2_039_280n, tokenAccountData({ mint: LST, owner, amount }));
+    const through = (program: Address): Instruction => ({ programAddress: program, accounts: [{ address: PAYER, role: WS }, { address: STAKED, role: W }, { address: POOL, role: W }, { address: MY_LST, role: W }, { address: THEIR_LST, role: W }], data: new Uint8Array([14]) });
+    const deposited = (program: Address, o: { proven?: boolean; toMe?: boolean } = {}) =>
+        findings(
+            through(program),
+            [account(PAYER, SYSTEM, 5n * SOL), ...(o.proven === false ? [] : [account(POOL, SPOOL, SOL, poolData)]), lst(MY_LST, PAYER, 0n), lst(THEIR_LST, THIEF, 0n)],
+            [account(PAYER, SYSTEM, 4n * SOL - 5000n), stakeAccount(staked(pool), SOL), ...(o.proven === false ? [] : [account(POOL, SPOOL, SOL, poolData)]), lst(MY_LST, PAYER, o.toMe === false ? 0n : 900n), lst(THEIR_LST, THIEF, o.toMe === false ? 900n : 0n)],
+            codes,
+        );
+    const fine = ['ok:no-authority-change Owners and authorities stay as they are'];
+    assert.deepEqual(await deposited(SPOOL), fine);
+    assert.deepEqual(await deposited(address('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4')), fine); // routed by an aggregator
+    assert.deepEqual(await deposited(SPOOL, { proven: false }), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
+    assert.deepEqual(await deposited(SPOOL, { toMe: false }), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
+    assert.deepEqual(await deposited(EVIL, { proven: false }), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
     assert.deepEqual(await made(staked(pool)), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
 });
 
@@ -135,7 +153,6 @@ test('a token account given to you is yours now: nothing lost, nothing critical'
 
 // A program that runs what its members decided vouches for no account: what it carries is as any other's.
 const SQUADS = address('SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf');
-const TOKEN = address('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const R = AccountRole.READONLY;
 const exec = (target: Address, program: Address): Instruction => ({ programAddress: SQUADS, accounts: [{ address: key(70), role: R }, { address: key(71), role: W }, { address: key(72), role: R }, { address: PAYER, role: WS }, { address: target, role: W }, { address: program, role: R }], data: new Uint8Array([0xc2, 0x08, 0xa1, 0x57, 0x99, 0xa4, 0x19, 0xab]) });
 
@@ -150,4 +167,15 @@ test('R2 unlimited delegate on your token account to an attacker PDA, carried by
     const TA = key(45);
     const r = await review(transaction([exec(TA, TOKEN)]), { ...context, now: 1_800_000_000 }, fakeChain([account(PAYER, SYSTEM, SOL), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n }))], [account(PAYER, SYSTEM, SOL - 5000n), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n, delegate: pda, delegated: 2n ** 64n - 1n }))]));
     assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'delegate').map((f) => f.level), ['danger']);
+});
+
+test('your SOL into a stake another of your wallets withdraws is a warning, unless someone else’s lockup holds it', async () => {
+    const MINE = key(68);
+    const send = getTransferSolInstructionTo(STAKED);
+    const into = async (data: Uint8Array) =>
+        (await review(transaction([send]), { ...context, signers: [PAYER, MINE] }, fakeChain([account(PAYER, SYSTEM, 5n * SOL), stakeAccount(data, SOL)], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(data, 5n * SOL)]))).assessment.findings
+            .filter((f) => f.code === 'stake-withdrawer')
+            .map((f) => f.level);
+    assert.deepEqual(await into(staked(MINE)), ['warn']);
+    assert.deepEqual(await into(staked(MINE, { time: 2_000_000_000n, custodian: THIEF })), ['danger']);
 });
