@@ -2,7 +2,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { getTransferSolInstruction } from '@solana-program/system';
-import { getCreateAssociatedTokenIdempotentInstruction, getSyncNativeInstruction, getTransferCheckedInstruction, getTransferInstruction, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
+import {
+    AuthorityType,
+    getApproveInstruction,
+    getCloseAccountInstruction,
+    getCreateAssociatedTokenIdempotentInstruction,
+    getSetAuthorityInstruction,
+    getSyncNativeInstruction,
+    getTransferCheckedInstruction,
+    getTransferInstruction,
+    TOKEN_PROGRAM_ADDRESS,
+} from '@solana-program/token';
 import { AccountRole, address, createNoopSigner, getProgramDerivedAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import { holds } from '../src/prepare/guard.ts';
@@ -103,4 +113,43 @@ test('tokens your wallet moves out of someone else’s account as its delegate: 
     // The RPC saying it is someone's, and not the wallet's to move at all: then only its owner could, and it is yours.
     const theirs = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, ATTACKER, 1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, ATTACKER, 0n), usdc(THEIRS, ATTACKER, 1_000_000n * USDC), mint]);
     assert.ok(theirs.assessment.mine.has(USER_TOKEN));
+});
+
+test('what an instruction leaves an account as must show: closed, its allowance, its new owner; and it must have been there', async () => {
+    const WSOL = address('So11111111111111111111111111111111111111112');
+    const native = (lamports: bigint, amount: bigint, owner: Address = PAYER, at: Address = USER_TOKEN) => account(at, TOKEN_PROGRAM_ADDRESS, lamports, tokenAccountData({ mint: WSOL, owner, amount, native: 2_039_280n }));
+    const funded = [wallet(5_000_000n), native(100_002_039_280n, 100_000_000_000n), account(ATTACKER, SYSTEM, 1n)];
+
+    // An idempotent create naming your token account, there already, does not take it out of the check.
+    const ata = getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: MINT });
+    const before = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
+    const hidden = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
+    assert.ok(codes(await reviewed([ata, drain(99n * USDC)], before, hidden)).includes('danger:untold'));
+
+    // Wrapped SOL synced, then sent: its units can't have come from nowhere.
+    const sync = getSyncNativeInstruction({ account: USER_TOKEN });
+    const out = getTransferInstruction({ source: USER_TOKEN, destination: THEIRS, authority: signer, amount: 99_000_000_000n });
+    const theirs = account(THEIRS, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: WSOL, owner: ATTACKER, amount: 0n, native: 2_039_280n }));
+    assert.ok(codes(await reviewed([sync, out], [...funded, theirs], [wallet(5_000_000n - FEE), native(100_002_039_280n, 100_000_000_000n), account(ATTACKER, SYSTEM, 1n), theirs])).includes('danger:untold'));
+
+    // Closed to someone else: shown still there, untold; shown closed, told.
+    const close = getCloseAccountInstruction({ account: USER_TOKEN, destination: ATTACKER, owner: signer });
+    assert.ok(codes(await reviewed([close], funded, [wallet(5_000_000n - FEE), native(100_002_039_280n, 100_000_000_000n), account(ATTACKER, SYSTEM, 1n)])).includes('danger:untold'));
+    const closed = await review(transaction([close]), context, fakeChain(funded, [wallet(5_000_000n - FEE), { exists: false, address: USER_TOKEN }, account(ATTACKER, SYSTEM, 100_002_039_281n)]));
+    assert.ok(!codes(closed).includes('danger:untold'));
+    // Closed though the RPC says it never was: untold. Made and closed in the same transaction: told.
+    assert.ok(codes(await reviewed([close], [wallet(5_000_000n), account(ATTACKER, SYSTEM, 1n)], [wallet(5_000_000n - FEE), account(ATTACKER, SYSTEM, 1n)])).includes('danger:untold'));
+    const wrapAndClose = [getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: WSOL }), getCloseAccountInstruction({ account: USER_TOKEN, destination: PAYER, owner: signer })];
+    assert.ok(!codes(await reviewed(wrapAndClose, [wallet(5_000_000n)], [wallet(5_000_000n - FEE)])).includes('danger:untold'));
+
+    // An allowance without end, or a new owner, left out of the simulation: untold.
+    const approve = getApproveInstruction({ source: USER_TOKEN, delegate: ATTACKER, owner: signer, amount: 2n ** 64n - 1n });
+    const usdcBefore = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
+    const asBefore = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
+    assert.ok(codes(await reviewed([approve], usdcBefore, asBefore)).includes('danger:untold'));
+    const allowed = account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 100n * USDC, delegate: ATTACKER, delegated: 2n ** 64n - 1n }));
+    const told = await reviewed([approve], usdcBefore, [wallet(5_000_000n - FEE), allowed, mint]);
+    assert.deepEqual(codes(told).filter((c) => c.endsWith('untold') || c.endsWith(':delegate')), ['danger:delegate']);
+    const owner = getSetAuthorityInstruction({ owned: USER_TOKEN, owner: signer, authorityType: AuthorityType.AccountOwner, newAuthority: ATTACKER });
+    assert.ok(codes(await reviewed([owner], usdcBefore, asBefore)).includes('danger:untold'));
 });
