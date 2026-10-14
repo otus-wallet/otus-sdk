@@ -16,8 +16,12 @@ export type Source = 'metadata' | 'anchor';
 /** A program's IDL, as a Codama tree, and where it was published. */
 export type Idl = { root: RootNode; from: Source };
 
-const MAX_STORED = 512 * 1024; // bytes an IDL may take as stored, compressed
+export const MAX_STORED = 512 * 1024; // bytes an IDL may take as stored, compressed
 const MAX_TEXT = 2 * 1024 * 1024; // bytes once inflated; the largest seen on mainnet, Marginfi's, is under 500 KB
+// What an IDL may describe: instructions, and defined types. Each costs work for every instruction told with it, and
+// programs on mainnet have a few hundred at most.
+export const MAX_INSTRUCTIONS = 1_000;
+export const MAX_TYPES = 2_000;
 const ANCHOR_IDL = [24, 70, 98, 191, 58, 144, 123, 158]; // Anchor's IdlAccount: sha256("internal:IdlAccount"), first 8 bytes
 const METADATA = 2; // the Program Metadata Program's discriminator for a metadata account
 const COMPRESSION = [null, 'gzip', 'deflate'] as const; // its none, gzip and zlib; 'deflate' is zlib's wrapper in a browser
@@ -96,20 +100,23 @@ async function inflated(bytes: Uint8Array, how: 'gzip' | 'deflate'): Promise<Uin
 
 // An IDL's text → its Codama tree: Anchor's, of either spec, converted as it is (without the passes that ready a tree
 // for a client: none is needed to read an instruction); Codama's own, as it is. Anything else, or anything that does
-// not convert, is no IDL. An Anchor IDL with generic types is no IDL either: Codama writes a generic type out again at
-// each use, so a few hundred bytes of them nesting can come to millions of nodes, built at once, before anything can
-// measure them. No published IDL seen on mainnet has one.
+// not convert, is no IDL; nor one that describes more instructions or types than any program has. An Anchor IDL with
+// generic types is no IDL either: Codama writes a generic type out again at each use, so a few hundred bytes of them
+// nesting can come to millions of nodes, built at once, before anything can measure them. No published IDL seen on
+// mainnet has one.
 function rootOf(text: Uint8Array): RootNode | null {
     try {
         const idl: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(text));
         if (!idl || typeof idl !== 'object') return null;
-        const o = idl as { kind?: unknown; standard?: unknown; program?: { kind?: unknown }; instructions?: unknown };
-        if (o.kind === 'rootNode' && o.standard === 'codama' && o.program?.kind === 'programNode') return idl as RootNode;
-        if (!Array.isArray(o.instructions)) return null;
-        const types = (idl as { types?: unknown }).types;
-        if (Array.isArray(types) && types.some((t) => t !== null && typeof t === 'object' && 'generics' in t)) return null;
+        const o = idl as { kind?: unknown; standard?: unknown; program?: { kind?: unknown; instructions?: unknown; definedTypes?: unknown }; instructions?: unknown; types?: unknown };
+        if (o.kind === 'rootNode' && o.standard === 'codama' && o.program?.kind === 'programNode') return within(o.program.instructions, o.program.definedTypes) ? (idl as RootNode) : null;
+        if (!Array.isArray(o.instructions) || !within(o.instructions, o.types)) return null;
+        if (Array.isArray(o.types) && o.types.some((t) => t !== null && typeof t === 'object' && 'generics' in t)) return null;
         return rootNodeFromAnchorWithoutDefaultVisitor(idl as AnchorIdl);
     } catch {
         return null;
     }
 }
+
+// Lists of instructions and of types no longer than an IDL may have; either may be missing.
+const within = (instructions: unknown, types: unknown) => (!Array.isArray(instructions) || instructions.length <= MAX_INSTRUCTIONS) && (!Array.isArray(types) || types.length <= MAX_TYPES);

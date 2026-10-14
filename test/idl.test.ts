@@ -6,8 +6,11 @@ import { deflateSync, gzipSync } from 'node:zlib';
 import { getAddressEncoder, type Address, type MaybeEncodedAccount } from '@solana/kit';
 
 
+import type { Chain } from '../src/chain.ts';
 import { tellWith } from '../src/idl/explain.ts';
-import { idlAddresses, PROGRAM_METADATA, readIdl, type Idl, type Source } from '../src/idl/read.ts';
+import { toldByIdl } from '../src/idl/idl.ts';
+import { idlAddresses, MAX_INSTRUCTIONS, MAX_STORED, MAX_TYPES, PROGRAM_METADATA, readIdl, type Idl, type Source } from '../src/idl/read.ts';
+import type { Review } from '../src/review/review.ts';
 import { key, PAYER, SYSTEM } from './helpers.ts';
 
 const DIR = new URL('./idl/', import.meta.url);
@@ -152,4 +155,41 @@ test('a program’s name from its own IDL: plain letters, folded and kept short;
     assert.equal(named('Jupit\u0435r'), ''); // a Cyrillic е
     assert.equal(named('raydium\u202Eclmm'), '');
     assert.equal(named(`long${'x'.repeat(80)}`).length, 48);
+});
+
+test('a hostile IDL costs little: refused past what programs describe, and matched by its discriminators’ bytes', async () => {
+    // An Anchor IDL of `count` instructions, each told apart by its own 8 bytes, with this argument and these types.
+    const many = (count: number, type: unknown, types: unknown[] = []) =>
+        JSON.stringify({ address: SOME, metadata: { name: 'evil', version: '0.1.0', spec: '0.1.0' }, instructions: Array.from({ length: count }, (_, n) => ({ name: `ix${n}`, discriminator: [9, 9, 9, 9, ...new Uint8Array(new Uint32Array([n]).buffer)], accounts: [], args: [{ name: 'arg', type }] })), types });
+    const read = (json: string) => readIdl(anchorAccount(SOME, json), 'anchor', SOME);
+    const chain = Array.from({ length: 30 }, (_, i) => ({ name: `T${i}`, type: { kind: 'struct', fields: ['a', 'b'].map((f) => ({ name: f, type: i === 29 ? 'u8' : { defined: { name: `T${i + 1}` } } })) } }));
+    const empties = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `D${i}`, type: { kind: 'struct', fields: [] } }));
+    // More instructions or types than any program has: no IDL.
+    assert.equal(await read(many(MAX_INSTRUCTIONS + 1, 'u8')), null);
+    assert.equal(await read(many(1, 'u8', empties(MAX_TYPES + 1))), null);
+    // As many as an IDL may have, every type deep or many: 64 instructions it doesn't know, told in a moment.
+    const time = (f: () => unknown) => {
+        const t = performance.now();
+        f();
+        return performance.now() - t;
+    };
+    for (const idl of [(await read(many(MAX_INSTRUCTIONS, { defined: { name: 'T0' } }, chain)))!, (await read(many(MAX_INSTRUCTIONS, 'u8', empties(MAX_TYPES))))!]) {
+        tellWith([idl], new Uint8Array([0]), [PAYER]); // its marks, worked out once
+        assert.ok(time(() => {
+            for (let i = 0; i < 64; i++) assert.equal(tellWith([idl], new Uint8Array([i]), [PAYER]), null);
+        }) < 300);
+    }
+    // One it knows is told; one whose types are too deep for a reader, matched, is not.
+    const fine = (await read(many(MAX_INSTRUCTIONS, 'u8', empties(MAX_TYPES))))!;
+    assert.equal(tellWith([fine], new Uint8Array([9, 9, 9, 9, 7, 0, 0, 0, 5]), [PAYER])?.name, 'Ix7');
+    const deep = (await read(many(MAX_INSTRUCTIONS, { defined: { name: 'T0' } }, chain)))!;
+    assert.equal(tellWith([deep], new Uint8Array([9, 9, 9, 9, 7, 0, 0, 0, 5]), [PAYER]), null);
+});
+
+test('reads only as much of an IDL’s account as an IDL can take', async () => {
+    const asked: number[] = [];
+    const chain = { heads: async (addresses: readonly Address[], length: number) => (asked.push(length), addresses.map((address) => ({ exists: false as const, address }))), accounts: async () => assert.fail('read whole') } as unknown as Chain;
+    const r = { explained: [{ source: 'unknown', program: SOME, data: new Uint8Array([1]), accounts: [] }] } as unknown as Review;
+    assert.equal((await toldByIdl(r, chain)).size, 0);
+    assert.deepEqual(asked, [96 + MAX_STORED]);
 });

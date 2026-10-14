@@ -7,11 +7,12 @@ import type { Address } from '@solana/kit';
 import type { Chain } from '../chain.ts';
 import type { Review } from '../review/review.ts';
 import { tellWith, type IdlInstruction } from './explain.ts';
-import { idlAddresses, readIdl, type Idl } from './read.ts';
+import { idlAddresses, MAX_STORED, readIdl, type Idl } from './read.ts';
 
 export type { IdlInstruction };
 
 const MAX_PROGRAMS = 8; // programs whose IDLs one review reads
+const MAX_READ = 96 + MAX_STORED; // bytes of each place read: the most an IDL is read from, its header included
 
 /** Review → its instructions no plugin reads, told by their programs' IDLs, by their place in the transaction. */
 export async function toldByIdl(r: Review, chain: Chain): Promise<Map<number, IdlInstruction>> {
@@ -20,7 +21,8 @@ export async function toldByIdl(r: Review, chain: Chain): Promise<Map<number, Id
     const told = new Map<number, IdlInstruction>();
     if (!programs.length) return told;
     const places = await Promise.all(programs.map(idlAddresses));
-    const { accounts } = await chain.accounts(places.flatMap((p) => [p.metadata, p.anchor]));
+    // Only as much of each account as an IDL can take: one can be made far larger.
+    const accounts = await chain.heads(places.flatMap((p) => [p.metadata, p.anchor]), MAX_READ);
     const idls = new Map<Address, Idl[]>();
     await Promise.all(
         programs.map(async (program, k) => {

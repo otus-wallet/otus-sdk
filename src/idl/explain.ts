@@ -1,7 +1,8 @@
 // An instruction no plugin reads, told with its program's own IDL: which of the IDL's instructions it is, by its
 // discriminator; its arguments; and what the IDL calls each of its accounts. An IDL can describe types that would take
-// forever to build a reader for, or to read: an instruction's types are measured first, and refused past a size, or
-// where a list could go on without reading a byte. Names come from the program, so they are cleaned and kept short.
+// forever to build a reader for, or to read: an instruction is known by its discriminator's bytes, and only then are its
+// types measured, and refused past a size or where a list could go on without reading a byte. Names come from the
+// program, so they are cleaned and kept short.
 import { getNodeCodecVisitor, getValueNodeVisitor } from '@codama/dynamic-codecs';
 import { isNode, pascalCase, VALUE_NODE_KINDS, type InstructionNode, type ProgramNode, type RootNode } from '@codama/nodes';
 import { getRecordLinkablesVisitor, LinkableDictionary, NodeStack, visit } from '@codama/visitors-core';
@@ -43,14 +44,9 @@ export function linkablesOf(root: RootNode): LinkableDictionary {
 
 function tell({ root, from }: Idl, data: ReadonlyUint8Array, accounts: Address[]): IdlInstruction | null {
     const program = root.program;
-    const linkables = linkablesOf(root);
-    for (const instruction of program.instructions ?? []) {
-        if (!instruction.discriminators?.length || !bounded(program, instruction)) continue;
-        const stack = new NodeStack([root, program, instruction]);
-        const codecs = getNodeCodecVisitor(linkables, { stack });
-        const values = getValueNodeVisitor(linkables, { stack });
-        if (!matches(instruction, data, codecs, values)) continue;
-        const decoded = visit(instruction, getNodeCodecVisitor(linkables, { stack: new NodeStack([root, program]) })).decode(data) as Record<string, unknown>;
+    for (const { instruction, marks } of markedIn(root)) {
+        if (!marks.every((m) => ('size' in m ? data.length === m.size : at(data, m.bytes, m.offset))) || !bounded(program, instruction)) continue;
+        const decoded = visit(instruction, getNodeCodecVisitor(linkablesOf(root), { stack: new NodeStack([root, program]) })).decode(data) as Record<string, unknown>;
         const name = clean(pascalCase(instruction.name.normalize('NFKC'))); // Codama keeps letters and digits of a-z alone
         if (!name) return null;
         return { name, args: argsOf(instruction, decoded), accounts: accountsOf(instruction, accounts), program: plain(program.name) ?? '', from };
@@ -58,18 +54,54 @@ function tell({ root, from }: Idl, data: ReadonlyUint8Array, accounts: Address[]
     return null;
 }
 
+// What tells an instruction apart: bytes at an offset (a field's default value, or a constant), or a size.
+type Mark = { size: number } | { offset: number; bytes: ReadonlyUint8Array };
+
+// Each instruction of an IDL with its marks, worked out once per IDL, so that an instruction is matched by comparing
+// bytes, and only the one that matches is measured whole. One with no discriminator cannot be told apart; one whose
+// discriminators' own types are not small, or do not encode, is never matched either.
+const marked = new WeakMap<RootNode, { instruction: InstructionNode; marks: Mark[] }[]>();
+function markedIn(root: RootNode): { instruction: InstructionNode; marks: Mark[] }[] {
+    const found = marked.get(root);
+    if (found) return found;
+    const program = root.program;
+    const stack = new NodeStack([root, program]);
+    const [codecs, values] = [getNodeCodecVisitor(linkablesOf(root), { stack }), getValueNodeVisitor(linkablesOf(root), { stack })];
+    const list = (program.instructions ?? []).flatMap((instruction) => {
+        try {
+            const marks = marksOf(program, instruction, codecs, values);
+            return marks ? [{ instruction, marks }] : [];
+        } catch {
+            return []; // a discriminator that does not encode
+        }
+    });
+    marked.set(root, list);
+    return list;
+}
+
 type Codecs = ReturnType<typeof getNodeCodecVisitor>;
 type Values = ReturnType<typeof getValueNodeVisitor>;
 
-// Whether the data starts as this instruction's discriminators say: a field's default value at its offset, a constant at
-// its offset, or a size. An instruction with no discriminator cannot be told apart, and is never matched.
-function matches(instruction: InstructionNode, data: ReadonlyUint8Array, codecs: Codecs, values: Values): boolean {
-    return (instruction.discriminators ?? []).every((d) => {
-        if (d.kind === 'sizeDiscriminatorNode') return data.length === d.size;
-        if (d.kind === 'constantDiscriminatorNode') return at(data, visit(d.constant.type, codecs).encode(visit(d.constant.value, values)), d.offset);
+// An instruction's discriminators as marks; null when it has none, or one that can't be worked out small.
+function marksOf(program: ProgramNode, instruction: InstructionNode, codecs: Codecs, values: Values): Mark[] | null {
+    const discriminators = instruction.discriminators ?? [];
+    if (!discriminators.length) return null;
+    const marks: Mark[] = [];
+    for (const d of discriminators) {
+        if (d.kind === 'sizeDiscriminatorNode') {
+            marks.push({ size: d.size });
+            continue;
+        }
+        if (d.kind === 'constantDiscriminatorNode') {
+            if (!boundedTypes(program, [d.constant])) return null;
+            marks.push({ offset: d.offset, bytes: visit(d.constant.type, codecs).encode(visit(d.constant.value, values)) });
+            continue;
+        }
         const field = (instruction.arguments ?? []).find((a) => a.name === d.name);
-        return isNode(field?.defaultValue, VALUE_NODE_KINDS) && at(data, visit(field.type, codecs).encode(visit(field.defaultValue, values)), d.offset);
-    });
+        if (!field || !isNode(field.defaultValue, VALUE_NODE_KINDS) || !boundedTypes(program, [field.type])) return null;
+        marks.push({ offset: d.offset, bytes: visit(field.type, codecs).encode(visit(field.defaultValue, values)) });
+    }
+    return marks;
 }
 
 const at = (data: ReadonlyUint8Array, bytes: ReadonlyUint8Array, offset: number) => offset + bytes.length <= data.length && bytes.every((b, i) => data[offset + i] === b);
@@ -107,8 +139,7 @@ function bounded(program: ProgramNode, instruction: InstructionNode): boolean {
 /** Whether the reader of these types (an instruction's, an account's) stays small and comes to an end, as bounded()
  *  says for an instruction. */
 export function boundedTypes(program: ProgramNode, read: unknown[]): boolean {
-    const types = new Map<string, unknown>((program.definedTypes ?? []).map((t) => [t.name, t.type]));
-    const empty = emptiness(types);
+    const { types, empty } = definedIn(program);
     let nodes = 0;
     const fits = (node: unknown, links: number): boolean => {
         if (Array.isArray(node)) return node.every((n) => fits(n, links));
@@ -126,6 +157,18 @@ export function boundedTypes(program: ProgramNode, read: unknown[]): boolean {
         return Object.values(n).every((v) => fits(v, links));
     };
     return fits(read, 0);
+}
+
+// A program's defined types by name, and whether each can take no bytes: worked out once per IDL, not for each
+// instruction measured.
+const defined = new WeakMap<ProgramNode, { types: Map<string, unknown>; empty: (type: unknown) => boolean }>();
+function definedIn(program: ProgramNode): { types: Map<string, unknown>; empty: (type: unknown) => boolean } {
+    const found = defined.get(program);
+    if (found) return found;
+    const types = new Map<string, unknown>((program.definedTypes ?? []).map((t) => [t.name, t.type]));
+    const made = { types, empty: emptiness(types) };
+    defined.set(program, made);
+    return made;
 }
 
 // Whether a value of a type can take no bytes. In doubt, it can: bytes or a text to the end, an option to the end, a
