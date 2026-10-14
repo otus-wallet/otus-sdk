@@ -397,3 +397,28 @@ test('signed with others, the guards leave room for what they take and the fee O
     // The other takes 1,005,000 (its fee in it) with a hundredth as slack, and up to 1,000,000 as a priority fee.
     assert.deepEqual(p.holds, [{ kind: 'wallet', account: PAYER, atLeast: 3_985_000n - 1_015_050n - 1_000_000n, owner: SYSTEM, space: 0 }]);
 });
+
+test('signed with others, a guard another weakens, or room it leaves for what others move between your accounts, is said', async () => {
+    const lent = (delegate: Address | undefined) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1000n, ...(delegate && { delegate, delegated: 10n }) }));
+    const before = [account(PAYER, SYSTEM, 5_000_000_000n), lent(key(70))];
+    // A: a program Otus doesn't know touching your token account. B: it revoked.
+    const aChain = fakeChain(before, [account(PAYER, SYSTEM, 4_999_995_000n), lent(key(70))]);
+    const a = await review(transaction([touching(USER_TOKEN)]), context, aChain);
+    const bChain = fakeChain(before, [account(PAYER, SYSTEM, 4_999_995_000n), lent(undefined)]);
+    const b = await review(transaction([touching(USER_TOKEN)]), context, bChain);
+    const p = await prepare(a, PAYER, aChain, false, undefined, undefined, [b]);
+    assert.deepEqual(p.loose, [USER_TOKEN]);
+    assert.deepEqual(p.findings.map((f) => f.code), ['guards-partial']);
+    assert.equal(p.holds.find((h) => h.account === USER_TOKEN && h.kind === 'token' && h.delegate === undefined)?.account, USER_TOKEN);
+    // C: 4 SOL from the wallet into your own token account's lamports, nothing of yours leaving.
+    const WRAPPED = key(71);
+    const native = (lamports: bigint) => account(WRAPPED, TOKEN_PROGRAM_ADDRESS, lamports, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n }));
+    const cChain = fakeChain([account(PAYER, SYSTEM, 5_000_000_000n), native(2_039_280n)], [account(PAYER, SYSTEM, 995_000n), native(4_002_039_280n)]);
+    const c = await review(transaction([touching(WRAPPED)]), context, cChain);
+    const q = await prepare(a, PAYER, aChain, false, undefined, undefined, [c]);
+    assert.ok(q.leeway.lamports >= 3_999_000_000n, String(q.leeway.lamports));
+    assert.ok(q.findings.some((f) => f.code === 'guards-leeway'));
+    // Alone: nothing of the kind.
+    const alone = await prepare(a, PAYER, aChain);
+    assert.deepEqual([alone.loose, alone.leeway, alone.findings], [[], { lamports: 0n, units: 0n }, []]);
+});

@@ -15,7 +15,7 @@ import type { Review } from '../review/review.ts';
 import { LIGHTHOUSE } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { PROGRAM_NAMES } from '../programs/known.ts';
-import { assertions, holds, type Hold } from './guard.ts';
+import { assertions, holds, roomBeside, type Hold } from './guard.ts';
 
 /** The transaction to sign, as the user approves it, and what preparing it found. */
 /** Where a priority fee Otus sets comes from: the price the RPC recommends (Helius), or what recent blocks took. */
@@ -32,6 +32,8 @@ export type Prepared = {
     priced: Pricing | null; // where the priority fee Otus set comes from, when it set one
     room: number | null; // the account data a v1 transaction may load, when Otus changed it
     priority: bigint | null; // lamports: the priority fee Otus set, when it set one
+    loose: Address[]; // signed with others: your accounts its guards hold less than alone, as another changes them
+    leeway: { lamports: bigint; units: bigint }; // signed with others: what its guards let pass past its own review, for what the others move between your accounts
 };
 
 const GUARD_UNITS = 4_000; // compute units per assertion added to a site's own limit; Lighthouse uses about 2,000
@@ -56,11 +58,15 @@ export const SIMULATION_FAILED = 'the simulation failed';
  * other transactions signed with it, landing in any order: its guards leave room for what they take. Never throws.
  */
 export async function prepare(r: Review, wallet: Address, chain: Chain, own = false, bare?: string, trade?: bigint, beside: Review[] = []): Promise<Prepared> {
-    // Signed with others: each may land first, its priority fee as Otus sets it too.
+    // Signed with others: each may land first, its priority fee as Otus sets it too. What its guards hold less than
+    // alone, and let pass more, is said.
     const others = beside.map((b) => ({ changes: b.changes, yours: b.assessment.yours, spare: b.signers[0] === wallet ? MAX_PRIORITY_FEE : 0n }));
     const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade, others);
+    const alone = bare || others.length === 0 ? gross : holds(r.assessment.yours, wallet, r.assessment.keyed, trade);
+    const loose = alone.filter((h) => weaker(h, gross.find((g) => g.account === h.account))).map((h) => h.account);
+    const leeway = bare ? { lamports: 0n, units: 0n } : roomBeside(r.assessment.yours, wallet, others);
     // As the site sent it, without guards: why, for the review's Guards line; and what else was found on the way.
-    const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null });
+    const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null, loose: [], leeway: { lamports: 0n, units: 0n } });
     // Without the guards it should have had: a warning too, when what it does to accounts of yours can come out otherwise.
     const unheld = (reason: string): Prepared => asIs(reason, exposed(r) ? [UNGUARDED] : []);
     // Changed, the transaction would need every signature again: one another account made, or will make over it as it is.
@@ -138,7 +144,21 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         const { message, held, price, bytes, hash, check } = tried;
         if (check.error !== null) return failed(check.error, limit);
         const total = check.fee ?? fee(message);
-        return { bytes, hash, fee: total, holds: held, unguarded: held.length > 0 ? null : (bare ?? NOTHING_TO_HOLD), findings: [...feeFindings(r, wallet, total), ...differs(r, message, check)], units: limit, priced: price > 0n && market ? market.from : null, room: room !== siteRoom ? room : null, priority: price > 0n && market ? priorityFee(message) : null };
+        const beside = [...(loose.length ? [{ ...PARTIAL, subject: loose[0] }] : []), ...(leeway.lamports > 0n || leeway.units > 0n ? [LEEWAY] : [])];
+        return {
+            bytes,
+            hash,
+            fee: total,
+            holds: held,
+            unguarded: held.length > 0 ? null : (bare ?? NOTHING_TO_HOLD),
+            findings: [...feeFindings(r, wallet, total), ...differs(r, message, check), ...beside],
+            units: limit,
+            priced: price > 0n && market ? market.from : null,
+            room: room !== siteRoom ? room : null,
+            priority: price > 0n && market ? priorityFee(message) : null,
+            loose,
+            leeway,
+        };
     } catch (cause) {
         console.error('Otus: preparing', cause);
         return unheld("Otus couldn't add guards because the network didn't answer");
@@ -166,6 +186,19 @@ function feeFindings(r: Review, wallet: Address, total: bigint): Finding[] {
     if (total > HUGE_FEE && reviewed <= HUGE_FEE) return [{ level: 'danger', code: 'high-fee', text: 'A huge network fee', note: 'It goes to whoever makes the block' }];
     if (total > HIGH_FEE && reviewed <= HIGH_FEE) return [{ level: 'warn', code: 'high-fee', text: 'High network fee' }];
     return [];
+}
+
+// Signed with others: guards that hold less than they would alone, as another changes those accounts; and room they
+// leave past this one's review, for what others move between your accounts (and the site may never send).
+const PARTIAL: Finding = { level: 'warn', code: 'guards-partial', text: 'Some guards hold less', note: 'Another transaction here changes those accounts' };
+const LEEWAY: Finding = { level: 'warn', code: 'guards-leeway', text: 'Its guards leave room for the others', note: 'Others here move funds between your accounts' };
+
+// Whether a hold made beside others asserts less than `alone`, the one made without them: none at all, or a field less.
+function weaker(alone: Hold, beside: Hold | undefined): boolean {
+    if (!beside) return true;
+    const fields = (h: Hold) => Object.keys(h).filter((k) => !['atLeast', 'keys'].includes(k)).length;
+    const keys = (h: Hold) => (h.kind === 'account' ? h.keys.length : 0);
+    return fields(beside) < fields(alone) || keys(beside) < keys(alone);
 }
 
 // Unguarded, what a program other than Solana's own does to accounts of yours (a swap, a protocol, one Otus doesn't

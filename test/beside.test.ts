@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 
-import { holds, type Beside, type Hold } from '../src/prepare/guard.ts';
+import { assertions, holds, roomBeside, type Beside, type Hold } from '../src/prepare/guard.ts';
 import type { Change, Changes, State, Token } from '../src/review/changes.ts';
 import { key, MINT, PAYER, SYSTEM } from './helpers.ts';
 
@@ -39,19 +39,46 @@ test('what another only adds, or an account it does not touch, changes nothing',
     assert.deepEqual(holds(a, PAYER, [], undefined, [beside(tx(0n))]), holds(a, PAYER));
 });
 
-test('an account another changes past its amount is not held: what it is depends on their order', () => {
+test('a field another changes is not held, the rest still is: what it is then depends on their order', () => {
     const lends = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(1000n, { delegate: key(41), delegated: 50n })));
+    const owned = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(1000n, { owner: key(42) })));
+    const token = (h: Hold[]) => h.find((x) => x.account === USER_TOKEN);
+    // Its delegate let go, its amount, owner and close authority held.
+    assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(lends)])), { kind: 'token', account: USER_TOKEN, atLeast: least(holds(a, PAYER), USER_TOKEN), owner: PAYER, closer: null });
+    assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(owned)])), { kind: 'token', account: USER_TOKEN, atLeast: least(holds(a, PAYER), USER_TOKEN), delegate: null, delegated: 0n, closer: null });
+    // Closed by another, or made by it as this one finds it: held as alone.
     const closes = tx(5_000n, change(USER_TOKEN, tokens(1000n), null));
     const opens = tx(5_000n, change(USER_TOKEN, null, tokens(0n)));
-    const owned = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(1000n, { owner: key(42) })));
-    for (const other of [lends, closes, opens, owned]) {
-        const h = holds(a, PAYER, [], undefined, [beside(other)]);
-        assert.equal(least(h, USER_TOKEN), null);
-        assert.ok(least(h, PAYER) !== null); // the wallet still held
-    }
-    // A wallet another assigns elsewhere, or whose data another writes: not held either.
+    for (const other of [closes, opens]) assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(other)])), token(holds(a, PAYER)));
+    // Of another mint, or kind: not held at all.
+    const remade = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(1000n, { mint: key(44) })));
+    assert.equal(token(holds(a, PAYER, [], undefined, [beside(remade)])), undefined);
+    // A wallet another assigns elsewhere: its lamports held, not its owner.
     const assigned = tx(5_000n, change(PAYER, wallet(10n * SOL), { ...wallet(10n * SOL)!, program: key(43) }));
-    assert.equal(least(holds(a, PAYER, [], undefined, [beside(assigned)]), PAYER), null);
+    const w = holds(a, PAYER, [], undefined, [beside(assigned)]).find((x) => x.account === PAYER)!;
+    assert.deepEqual(w, { kind: 'wallet', account: PAYER, atLeast: least(holds(a, PAYER), PAYER), space: 0 });
+});
+
+test('what others move between your own accounts is room its guards leave past its review, and said', () => {
+    const WRAPPED = key(45);
+    // B wraps 4 SOL into your own wrapped SOL account: you lose nothing, but A's wallet floor makes room for it.
+    const native = (amount: bigint): State => ({ lamports: 2_039_280n + amount, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: key(46), owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: true } });
+    const wraps = tx(5_000n, change(PAYER, wallet(10n * SOL), wallet(6n * SOL - 5_000n)), change(WRAPPED, native(0n), native(4n * SOL)));
+    const room = roomBeside(a, PAYER, [beside(wraps)]);
+    assert.ok(room.lamports >= 4n * SOL && room.lamports < 4n * SOL + SOL / 10n, String(room.lamports));
+    // What another sends away is no room: it is in its own review.
+    assert.deepEqual(roomBeside(a, PAYER, [beside(b)]), { lamports: 0n, units: 0n });
+    // A token account's rent moved among yours is too little to say.
+    const opensYours = tx(5_000n, change(PAYER, wallet(10n * SOL), wallet(10n * SOL - 2_039_280n - 5_000n)), change(WRAPPED, null, native(0n)));
+    assert.deepEqual(roomBeside(a, PAYER, [beside(opensYours)]), { lamports: 0n, units: 0n });
+});
+
+test('a partial hold asserts only what it holds', () => {
+    const partial: Hold = { kind: 'token', account: USER_TOKEN, atLeast: 5n, owner: PAYER, closer: null };
+    const [data] = assertions(partial, PAYER);
+    assert.deepEqual([...data.slice(0, 4)], [10, 0, 3, 2]); // token multi, silent, three assertions, amount first
+    const bare: Hold = { kind: 'wallet', account: PAYER, atLeast: 7n };
+    assert.deepEqual([...assertions(bare, PAYER)[0].slice(0, 4)], [6, 0, 1, 0]); // account info multi, one: lamports
 });
 
 test('several beside: what each takes adds up; a floor never goes below nothing', () => {
