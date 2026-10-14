@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { getCreateAccountWithSeedInstruction } from '@solana-program/system';
-import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
+import { getCreateAssociatedTokenIdempotentInstruction, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { AccountRole, address, createNoopSigner, getProgramDerivedAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import { review } from '../src/review/review.ts';
@@ -66,4 +66,28 @@ test('SOL a new account is made with, beside a program Otus doesn’t know, is s
     const made = getCreateAccountWithSeedInstruction({ payer: createNoopSigner(PAYER), newAccount: THIEF, baseAccount: createNoopSigner(PAYER), base: PAYER, seed: 'x', amount: 2n * SOL, space: 0, programAddress: SYSTEM });
     const r = await review(transaction([touch, made]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain([account(PAYER, SYSTEM, 5n * SOL)], [account(PAYER, SYSTEM, 3n * SOL - 5000n), account(THIEF, SYSTEM, 2n * SOL)]));
     assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet'), []);
+});
+
+test('the rent of a token account made for a wallet, beside a program Otus doesn’t read, is said in words: not hidden', async () => {
+    // A multisig's run, its vault's tokens to another wallet, with that wallet's token account made first, at your cost.
+    const SQUADS = address('SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf');
+    const [vault, proposal] = [key(30), key(31)];
+    const run: Instruction = { programAddress: SQUADS, accounts: [{ address: PAYER, role: WS }, { address: proposal, role: W }, { address: VAULT, role: W }, { address: THIEF_TOKEN, role: W }] };
+    const made = getCreateAssociatedTokenIdempotentInstruction({ payer: createNoopSigner(PAYER), ata: THIEF_TOKEN, owner: THIEF, mint: MINT });
+    const before = [account(PAYER, SYSTEM, 5n * SOL), account(proposal, SQUADS, SOL / 100n, new Uint8Array(64)), tokens(VAULT, vault, 1000n)];
+    const after = [account(PAYER, SYSTEM, 5n * SOL - 5000n - 2_039_280n), account(proposal, SQUADS, SOL / 100n, new Uint8Array(64)), tokens(VAULT, vault, 0n), tokens(THIEF_TOKEN, THIEF, 1000n)];
+    const r = await review(transaction([made, run]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain(before, after));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet'), []);
+
+    // More than a token account's rent into it, or your tokens to it, through a program Otus doesn't read: hidden still.
+    const drain: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }, { address: USER_TOKEN, role: W }, { address: THIEF_TOKEN, role: W }] };
+    const rich = { ...account(THIEF_TOKEN, TOKEN_PROGRAM_ADDRESS, 2n * SOL, tokenAccountData({ mint: MINT, owner: THIEF, amount: 0n })) };
+    const sol = await review(transaction([made, drain]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain([account(PAYER, SYSTEM, 5n * SOL)], [account(PAYER, SYSTEM, 3n * SOL - 5000n), rich]));
+    const swept = await review(
+        transaction([made, drain]),
+        { wallet: PAYER, signedBefore: 0, host: 'app.example.com' },
+        fakeChain([account(PAYER, SYSTEM, 5n * SOL), tokens(USER_TOKEN, PAYER, 1000n)], [account(PAYER, SYSTEM, 5n * SOL - 5000n - 2_039_280n), tokens(USER_TOKEN, PAYER, 0n), tokens(THIEF_TOKEN, THIEF, 1000n)]),
+    );
+    const level = (r: Awaited<ReturnType<typeof review>>) => r.assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level);
+    assert.deepEqual([level(sol), level(swept)], [['danger'], ['danger']]);
 });

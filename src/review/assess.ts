@@ -21,7 +21,7 @@ import { LIGHTHOUSE, STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS }
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { BRANDS, HOLDS, PROGRAM_NAMES } from '../programs/known.ts';
 import { holdings, offsetsOf, plain, read, units, type Change, type Changes, type State } from './changes.ts';
-import { untold } from './consistency.ts';
+import { RENT_MOST, untold } from './consistency.ts';
 import { durable } from './decode.ts';
 import type { Explained } from './explain.ts';
 import type { Deployment } from './programs.ts';
@@ -527,7 +527,8 @@ const BYSTANDERS: ReadonlySet<Address> = new Set([COMPUTE_BUDGET_PROGRAM_ADDRESS
 const holds = (state: State, key: ReadonlyUint8Array) => state !== null && state.token === null && offsetsOf(key, state).length > 0;
 
 // What instructions Otus reads send to each account, in words the user sees: SOL by the System Program, tokens by
-// the Token Programs, and the SOL of an account they close. Keyed "SOL:<address>" and "token:<address>".
+// the Token Programs, the SOL of an account they close, and the rent of a token account made for someone (at most what
+// one can take). Keyed "SOL:<address>" and "token:<address>".
 function sentInWords(explained: Explained[], changes: Changes): Map<string, bigint> {
     const sent = new Map<string, bigint>();
     const add = (key: string, amount: bigint) => sent.set(key, (sent.get(key) ?? 0n) + amount);
@@ -557,7 +558,7 @@ function sentInWords(explained: Explained[], changes: Changes): Map<string, bigi
                 const closed = to('account');
                 if (closed) pair('SOL', 'destination', lamports.get(closed) ?? 0n);
             }
-        }
+        } else if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && (e.name === 'CreateAssociatedToken' || e.name === 'CreateAssociatedTokenIdempotent')) pair('SOL', 'ata', RENT_MOST);
     }
     return sent;
 }

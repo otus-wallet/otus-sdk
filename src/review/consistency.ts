@@ -36,7 +36,7 @@ type Effect = {
     leaves?: [Address, (after: State) => boolean][];
 };
 
-const RENT_MOST = 10_000_000n; // lamports: the most a new token account's rent takes, extensions included
+export const RENT_MOST = 10_000_000n; // lamports: the most a new token account's rent takes, extensions included
 
 /** Each account the simulation shows otherwise than the instructions Otus reads say: worth more after the transaction
  *  than they can leave it, left as they don't leave it, or acted on though it was not there. Empty for a simulation
