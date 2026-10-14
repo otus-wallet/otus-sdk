@@ -204,3 +204,11 @@ test('wrapped SOL paid in words from an account made here is said too: not criti
     const after = [account(PAYER, SYSTEM, 2n * SOL - RENT - 5_000n), wsol(wrapped, PAYER, 0n), wsol(theirs, THIEF, SOL)];
     assert.deepEqual(await drained([pay, touch], before, after), []);
 });
+
+test('a token account made at an address only sent SOL before is made and paid for: said', async () => {
+    const made = getCreateAssociatedTokenIdempotentInstruction({ payer: createNoopSigner(PAYER), ata: THIEF_TOKEN, owner: THIEF, mint: MINT });
+    const touch: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }] };
+    const before = [account(PAYER, SYSTEM, 5n * SOL), account(THIEF_TOKEN, SYSTEM, 1_000n)];
+    const after = [account(PAYER, SYSTEM, 5n * SOL - RENT + 1_000n - 5_000n), held(THIEF_TOKEN, THIEF, 0n)];
+    assert.deepEqual(await drained([made, touch], before, after), []);
+});

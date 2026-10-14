@@ -562,8 +562,10 @@ function sentInWords(explained: Explained[], changes: Changes): Send[] {
             }
         } else if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && (e.name === 'CreateAssociatedToken' || e.name === 'CreateAssociatedTokenIdempotent')) {
             const ata = at('ata');
-            // Only one made here: one there already ("nothing changes", its words say) takes no rent.
-            if (!ata || made.has(ata) || (before.get(ata) ?? 0n) > 0n) continue;
+            // Only one made here: a token account there already ("nothing changes", its words say) takes no rent. An
+            // address only sent SOL before is still made, and paid for.
+            const there = changes.accounts.find((c) => c.address === ata)?.before;
+            if (!ata || made.has(ata) || (there && (there.token || there.program !== SYSTEM_PROGRAM_ADDRESS))) continue;
             made.add(ata);
             const rent = (after.get(ata) ?? 0n) - (before.get(ata) ?? 0n);
             pair('SOL', 'payer', 'ata', rent < 0n ? 0n : rent > RENT_MOST ? RENT_MOST : rent);
