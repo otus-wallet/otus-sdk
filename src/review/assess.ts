@@ -112,6 +112,10 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // What its instructions say they take, left out of the simulation: an RPC that hides it, from the review and the guards.
     const hidden = untold(s, changes, explained);
     if (hidden.length) add('danger', 'untold', 'The simulation leaves out what it sends', hidden[0], "Its instructions take more out of this account than the RPC's simulation shows");
+    // Tokens your wallet moves out of someone else's account, as its delegate: seldom done, and what a lie about who
+    // holds an account of yours looks like.
+    const lent = allowed(s, explained, wallet).filter((a) => !mine.has(a));
+    if (lent.length) add('warn', 'spends-allowance', "You move tokens from someone else's account", lent[0], 'Your wallet is allowed to: check that it should');
     const shown = findings.length;
     for (const { address, before, after } of [...yours.accounts, ...keyed]) {
         const [from, to] = [before?.token ?? null, after?.token ?? null];
@@ -363,18 +367,30 @@ export function ago(seconds: number): string {
 }
 
 // Yours: your wallet, every token account it owns before or after, the accounts whose SOL only you can take out, and
-// those your signature takes value out of.
+// those your signature takes value out of as only their owner could.
 function yourAccounts(s: Simulated, changes: Changes, explained: Explained[], wallet: Address, clock: Clock): Set<Address> {
     const owned = (state: State) => state?.token?.owner === wallet || withdrawer(state, clock) === wallet;
     const before = s.accounts.filter((a) => owned(read(a.state))).map((a) => a.address);
     const after = changes.accounts.filter((c) => owned(c.after)).map((c) => c.address);
-    return new Set([wallet, ...before, ...after, ...authorized(explained, wallet)]);
+    const lent = new Set(allowed(s, explained, wallet));
+    return new Set([wallet, ...before, ...after, ...authorized(explained, wallet).flatMap(([, a]) => (lent.has(a) ? [] : [a]))]);
+}
+
+// The token accounts of someone else your wallet takes tokens or SOL out of, as the RPC says it may: as their delegate,
+// or closing one as its close authority. Theirs, used with their leave.
+function allowed(s: Simulated, explained: Explained[], wallet: Address): Address[] {
+    return authorized(explained, wallet).flatMap(([name, a]) => {
+        const state = s.accounts.find((x) => x.address === a)?.state;
+        const token = state ? read(state)?.token : null;
+        if (!token || token.owner === wallet) return [];
+        return (name === 'CloseAccount' ? token.closer : token.delegate) === wallet ? [a] : [];
+    });
 }
 
 // The accounts your wallet, as their authority, takes value out of in the instructions Otus reads: a token account it
-// transfers, burns, closes or gives an allowance from, as its owner or delegate; a stake or nonce account it withdraws.
-// Yours in what it does, whoever the RPC says holds them: one that named someone else would keep them, and their
-// guards, out of the review.
+// transfers, burns, closes or gives an allowance from; a stake or nonce account it withdraws. Unless the RPC says it may
+// as someone else's delegate or close authority, only their owner could: yours, whoever the RPC says holds them, as one
+// that named someone else would keep them, and their guards, out of the review.
 const AUTHORIZED: Record<string, [string, string]> = {
     Transfer: ['authority', 'source'],
     TransferChecked: ['authority', 'source'],
@@ -386,12 +402,12 @@ const AUTHORIZED: Record<string, [string, string]> = {
     Withdraw: ['withdrawAuthority', 'stake'],
     WithdrawNonceAccount: ['nonceAuthority', 'nonceAccount'],
 };
-function authorized(explained: Explained[], wallet: Address): Address[] {
-    return explained.flatMap((e) => {
+function authorized(explained: Explained[], wallet: Address): [string, Address][] {
+    return explained.flatMap((e): [string, Address][] => {
         const native = TOKEN_PROGRAMS.includes(e.program) || e.program === STAKE_PROGRAM || e.program === SYSTEM_PROGRAM_ADDRESS;
         const roles = e.source === 'plugin' && native && Object.hasOwn(AUTHORIZED, e.name) ? AUTHORIZED[e.name] : null;
         const [by, of] = roles ? roles.map((role) => e.accounts.find((a) => a.role === role)?.address) : [];
-        return by === wallet && of ? [of] : [];
+        return by === wallet && of ? [[e.name, of]] : [];
     });
 }
 
