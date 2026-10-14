@@ -82,9 +82,14 @@ test('your SOL into a stake another key withdraws is critical, whatever the site
     const topped = (data: Uint8Array) => findings(send, [account(PAYER, SYSTEM, 5n * SOL), stakeAccount(data, SOL)], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(data, 5n * SOL)], codes);
     assert.deepEqual(await topped(staked(THIEF)), [`danger:stake-withdrawer ${THIEF} can take the SOL out`]);
     assert.deepEqual(await topped(staked(PAYER, {}, THIEF)), [`warn:stake-staker ${THIEF} can unstake it or change its validator`]);
-    // A program's own address withdrawing, as a stake pool's reserve: as its program lets it, not someone's key.
+    // A program's own address withdrawing, as a stake pool's reserve: as its program lets it, not someone's key, when a
+    // pool Otus names puts it there. Sent there straight, or by a program Otus doesn't know, it is critical.
     const [pool] = await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['withdraw'] });
-    assert.deepEqual(await made(staked(pool)), ['ok:no-authority-change Owners and authorities stay as they are']);
+    const through = (program: Address): Instruction => ({ programAddress: program, accounts: [{ address: PAYER, role: WS }, { address: STAKED, role: W }], data: new Uint8Array([14]) });
+    const deposited = (program: Address) => findings(through(program), [account(PAYER, SYSTEM, 5n * SOL)], [account(PAYER, SYSTEM, 4n * SOL - 5000n), stakeAccount(staked(pool), SOL)], codes);
+    assert.deepEqual(await deposited(address('SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy')), ['ok:no-authority-change Owners and authorities stay as they are']);
+    assert.deepEqual(await deposited(EVIL), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
+    assert.deepEqual(await made(staked(pool)), [`danger:stake-withdrawer ${pool} can take the SOL out`]);
 });
 
 test('SOL into someone else\'s stake that is not from you, as you only pay the fee, is not called yours', async () => {

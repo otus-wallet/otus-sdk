@@ -116,9 +116,12 @@ test('a durable nonce is danger, read as the runtime reads it', async () => {
 });
 
 test('a token account of yours: a bigger allowance is a warning, a fresh one at a used address is no owner change', async () => {
-    const approve = transaction([getApproveInstruction({ source: USER_TOKEN, delegate: key(70), owner: signer, amount: 2n ** 64n - 1n })]);
-    const more = await review(approve, context(), fakeChain([wallet(5_000_000n), tokens({ delegated: 1n })], [wallet(4_995_000n), tokens({ delegated: 2n ** 64n - 1n })]));
-    assert.deepEqual(problems(more), ['warn:delegate']);
+    const raised = async (to: bigint) => {
+        const approve = transaction([getApproveInstruction({ source: USER_TOKEN, delegate: key(70), owner: signer, amount: to })]);
+        return problems(await review(approve, context(), fakeChain([wallet(5_000_000n), tokens({ delegated: 1n })], [wallet(4_995_000n), tokens({ delegated: to })])));
+    };
+    assert.deepEqual(await raised(500n), ['warn:delegate']);
+    assert.deepEqual(await raised(2n ** 64n - 1n), ['danger:delegate']); // without end
 
     const ata = key(80);
     const created = tokens({}, ata);
@@ -137,7 +140,18 @@ test('someone’s key allowed all of a token account of yours, or the close of y
     assert.deepEqual(await said(thief, 2n ** 64n - 1n), ['danger:delegate']); // without end
     assert.deepEqual(await said(thief, 1000n), ['danger:delegate']); // all it holds
     assert.deepEqual(await said(thief, 10n), ['warn:delegate']);
-    assert.deepEqual(await said(key(70), 2n ** 64n - 1n), ['warn:delegate']); // an address no key holds: a program's, as a marketplace's
+    // An address no key holds, a program's: as the site asks it of the Token program, it is critical all the same
+    assert.deepEqual(await said(key(70), 2n ** 64n - 1n), ['danger:delegate']);
+    assert.deepEqual(await said(key(70), 1000n), ['danger:delegate']);
+    assert.deepEqual(await said(key(70), 10n), ['warn:delegate']);
+    // set by a program Otus names, as a marketplace sets its own to list what you sell, it is a warning; by one it
+    // doesn't know, critical.
+    const listed = async (program: Address) => {
+        const list = { programAddress: program, accounts: [{ address: USER_TOKEN, role: AccountRole.WRITABLE }, { address: PAYER, role: AccountRole.READONLY_SIGNER }, { address: key(70), role: AccountRole.READONLY }], data: new Uint8Array([1]) };
+        return problems(await review(transaction([list]), context(), fakeChain([wallet(5_000_000n), tokens()], [wallet(4_995_000n), allowed(key(70), 1000n)])));
+    };
+    assert.deepEqual(await listed(address('TCMPhJdwDryooaGtiocG1u3xcYbRpiJzb283XfCZsDp')), ['warn:delegate']);
+    assert.deepEqual((await listed(EVIL_PROGRAM)).filter((p) => p.endsWith(':delegate')), ['danger:delegate']);
 
     // Your wrapped SOL account's close authority given away: whoever closes it takes its 50 SOL.
     const wrapped = (closer?: Address) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 50_002_039_280n, tokenAccountData({ mint: address('So11111111111111111111111111111111111111112'), owner: PAYER, amount: 50_000_000_000n, native: 2_039_280n, closer }));

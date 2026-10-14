@@ -15,6 +15,7 @@ import {
 
 import { alike, told } from '../format.ts';
 import { STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
+import { CORE_PROGRAMS } from '../programs/core.ts';
 import { BRANDS, HOLDS, PROGRAM_NAMES } from '../programs/known.ts';
 import { holdings, offsetsOf, plain, read, units, type Change, type Changes, type State } from './changes.ts';
 import { durable } from './decode.ts';
@@ -121,10 +122,10 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (to?.closer && to.closer !== from?.closer) given.add(to.closer);
         if (from && to && from.owner !== to.owner) add('danger', 'token-owner-change', 'A token account of yours changes owner', address, `New owner ${to.owner}. You lose control of it.`);
         if (to?.delegate && (to.delegate !== from?.delegate || to.delegated > (from?.delegated ?? 0n))) {
-            // Someone's key allowed all the account holds, or without end, takes all of it whenever it likes; a
-            // program's own address, as a marketplace's, only as its program lets it.
-            const all = !isOffCurveAddress(to.delegate) && (to.delegated === U64_MAX || (to.amount > 0n && to.delegated >= to.amount));
-            if (all) add('danger', 'delegate', 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
+            // Someone allowed all the account holds, or without end, takes all of it whenever it likes. A program's own
+            // address, as a marketplace's, only as its program lets it: when that program set it, one Otus names.
+            const all = to.delegated === U64_MAX || (to.amount > 0n && to.delegated >= to.amount);
+            if (all && (!isOffCurveAddress(to.delegate) || !byProtocol(s, address))) add('danger', 'delegate', 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
             else add('warn', 'delegate', 'A token account of yours gets a delegate, or a bigger allowance', address, `${to.delegate} could move its tokens`);
         }
         if (to?.closer && to.closer !== from?.closer) {
@@ -159,13 +160,13 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // An upgrade authority of yours used: new code for your program, or its program data closed, ending it for good.
     for (const [program, text] of upgrades(s, wallet)) add('danger', 'program-change', text, program, 'Signed with your upgrade authority');
     // Your SOL into a stake account another key withdraws: theirs to take out, whatever the site calls it. Only SOL that
-    // could have come from you, not more than you send. A program's own address withdrawing, as a stake pool's, takes it
-    // only as its program lets it.
+    // could have come from you, not more than you send. A program's own address withdrawing, as a stake pool's reserve,
+    // takes it only as its program lets it: when only programs Otus names put it there.
     for (const flow of flows.filter((f) => f.asset === 'SOL' && f.change < 0n)) {
         for (const o of flow.others) {
             const is = stake(changes.accounts.find((c) => c.address === o.address)?.after ?? null);
             if (is) given.add(is.withdrawer);
-            if (is && o.amount <= -flow.change && !isOffCurveAddress(is.withdrawer)) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
+            if (is && o.amount <= -flow.change && (!isOffCurveAddress(is.withdrawer) || !byProtocol(s, o.address))) add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
         }
     }
     if (!failed && findings.length === shown) add('ok', 'no-authority-change', 'No owner or authority changes', undefined, 'Owners and authorities stay as they are');
@@ -460,6 +461,14 @@ function upgrades(s: Simulated, wallet: Address): [Address, string][] {
         if (kind === 5 && signs(2) && data) return [[at(3)?.address ?? at(0)!.address, 'Your program is closed for good']];
         return [];
     });
+}
+
+// Whether only programs Otus names that act by their own rules (a marketplace, a stake pool) name this account: then an
+// address of their own it gets is theirs, used as their program lets it. Not when Solana's own programs name it, which
+// a site asks directly with what it likes (Token's Approve, System's and Stake's), nor a program Otus doesn't know.
+function byProtocol(s: Simulated, account: Address): boolean {
+    const naming = s.message.instructions.filter((ix) => ix.accountIndices.some((j) => s.accounts[j].address === account)).map((ix) => s.accounts[ix.programAddressIndex].address);
+    return naming.length > 0 && naming.every((p) => PROGRAM_NAMES.has(p) && !CORE_PROGRAMS.has(p));
 }
 
 // An account other than a token account with your address in its data: you may be its authority, or anyone put it there.
