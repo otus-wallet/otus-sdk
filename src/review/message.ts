@@ -30,5 +30,5 @@ export function isData(message: ReadonlyUint8Array): boolean {
 /** What the review says about a message to sign: data warns as critical. */
 export function messageFindings(message: ReadonlyUint8Array): Finding[] {
     if (!isData(message)) return [];
-    return [{ level: 'danger', code: 'message-data', text: 'Unreadable message', note: 'A program could take your signature as an order' }];
+    return [{ level: 'warn', code: 'message-data', text: 'Unreadable message', note: 'A program could take your signature as an order' }];
 }

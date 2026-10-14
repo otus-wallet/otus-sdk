@@ -75,7 +75,7 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
             case 'AdvanceNonceAccount':
                 // Anywhere else, it only moves the nonce on: what was signed on it before can no longer run.
                 if (!first) return { args: who(acc('nonceAccount')), effects: [line(`Moves the nonce of ${who(acc('nonceAccount'))} on: what was signed on it can no longer run`)] };
-                return { args: who(acc('nonceAccount')), effects: [line('Uses a durable nonce: this transaction never expires', 'danger')] };
+                return { args: who(acc('nonceAccount')), effects: [line('Uses a durable nonce: this transaction never expires', 'warn')] };
             case 'InitializeNonceAccount':
                 return { args: `${Who(acc('nonceAccount'))}, used by ${who(arg('nonceAuthority') as Address)}`, effects: [line(`Only ${who(arg('nonceAuthority') as Address)} can use it`)] };
             case 'WithdrawNonceAccount':

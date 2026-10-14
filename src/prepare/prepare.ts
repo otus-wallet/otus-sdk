@@ -224,8 +224,8 @@ function unpriced(m: Message): Message {
 async function whyFailed(r: Review, chain: Chain): Promise<Finding> {
     const again = await chain.simulate(r.bytes, [], r.slot);
     return again.error === null
-        ? { level: 'danger', code: 'guards-fail', text: 'It fails when held to what the simulation showed' }
-        : { level: 'danger', code: 'simulation-failed', text: 'The transaction would fail now, so its effects cannot be seen' };
+        ? { level: 'warn', code: 'guards-fail', text: 'It fails when held to what the simulation showed' }
+        : { level: 'warn', code: 'simulation-failed', text: 'The transaction would fail now, so its effects cannot be seen' };
 }
 
 // The price of a unit, in micro-lamports: what the RPC recommends to write the same accounts, when it can (Helius, from
@@ -253,7 +253,7 @@ function differs(r: Review, guarded: Message, check: Simulation): Finding[] {
     const fresh = callsIn(check.inner, guarded.instructions.map((ix) => guarded.staticAccounts[ix.programAddressIndex]))
         .filter((c) => !seen.has(pair(c)) && !(PROGRAM_NAMES.has(c.caller) && PROGRAM_NAMES.has(c.program)));
     const programs = [...new Set(fresh.map((c) => c.program))].map((q) => PROGRAM_NAMES.get(q) ?? q);
-    return programs.length ? [{ level: 'danger', code: 'guards-differ', text: 'It acts differently once guarded', note: `It then calls ${programs.join(', ')}, which the review did not see` }] : [];
+    return programs.length ? [{ level: 'warn', code: 'guards-differ', text: 'It acts differently once guarded', note: `It then calls ${programs.join(', ')}, which the review did not see` }] : [];
 }
 
 // A message as the transaction's bytes, unsigned, and the hash of what is signed; null when it is too large to send.

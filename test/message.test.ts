@@ -45,5 +45,5 @@ test('data is data: bytes that are not text, or text that is one run of an encod
         new Uint8Array(4096).fill(0x41).map((b, i) => (i % 7 ? b : 0x31)), // a long run
     ])
         assert.equal(isData(m), true, Buffer.from(m).toString('hex').slice(0, 40));
-    assert.deepEqual(messageFindings(order), [{ level: 'danger', code: 'message-data', text: 'Unreadable message', note: 'A program could take your signature as an order' }]);
+    assert.deepEqual(messageFindings(order), [{ level: 'warn', code: 'message-data', text: 'Unreadable message', note: 'A program could take your signature as an order' }]);
 });

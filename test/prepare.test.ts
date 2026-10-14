@@ -224,8 +224,8 @@ test('says why it leaves a transaction as the site sent it, for the review’s G
         [transfer('legacy', new Uint8Array(1000)), prepared(transfer('legacy', new Uint8Array(1000))), /no room left/, []],
         [tabled, prepare(await review(tabled, context, chain), PAYER, chain), /lookup tables/, ['warn:blocks-guards']],
         [transfer(), prepared(transfer(), { unitsConsumed: 1n }, { fees: async () => Promise.reject(new Error('429')) }), /network didn't answer/, []],
-        [original, prepare(await review(original, context, failing(false)), PAYER, failing(false)), /fails with them/, ['danger:guards-fail']],
-        [original, prepare(await review(original, context, failing(true)), PAYER, failing(true)), /fails with them/, ['danger:simulation-failed']],
+        [original, prepare(await review(original, context, failing(false)), PAYER, failing(false)), /fails with them/, ['warn:guards-fail']],
+        [original, prepare(await review(original, context, failing(true)), PAYER, failing(true)), /fails with them/, ['warn:simulation-failed']],
     ];
     for (const [sent, result, reason, findings] of cases) {
         const p = await result;

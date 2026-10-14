@@ -33,17 +33,17 @@ const codes = (r: Review) => r.assessment.findings.filter((f) => f.level !== 'ok
 const drain = (amount: bigint) => getTransferCheckedInstruction({ source: USER_TOKEN, mint: MINT, destination: THEIRS, authority: signer, amount, decimals: 6 });
 const reviewed = (ixs: Instruction[], before: MaybeEncodedAccount[], after: MaybeEncodedAccount[]) => review(transaction(ixs), context, fakeChain(before, after));
 
-test('a balance the RPC reads lower than it is, with the drain left out, is critical: the guard would let it go', async () => {
+test('a balance the RPC reads lower than it is, with the drain left out, is told: the guard would let it go', async () => {
     // The account holds 1,000,000 USDC; the RPC says 100, and that nothing moves. 999,900 go.
     const before = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
     const after = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
     const r = await reviewed([drain(999_900n * USDC)], before, after);
-    assert.equal(r.assessment.verdict, 'danger');
-    assert.deepEqual(codes(r), ['danger:untold']);
+    assert.equal(r.assessment.verdict, 'warn'); // a fact Otus can't trust, not a proof of harm: a warning
+    assert.deepEqual(codes(r), ['warn:untold']);
     assert.equal(r.assessment.findings.find((f) => f.code === 'untold')?.subject, USER_TOKEN);
     // Told as it is, it shows what goes, and nothing is untold.
     const told = await reviewed([drain(999_900n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 999_900n * USDC), mint]);
-    assert.ok(!codes(told).includes('danger:untold'));
+    assert.ok(!codes(told).includes('warn:untold'));
     assert.ok(codes(told).includes('warn:large-outflow'));
 });
 
@@ -59,10 +59,10 @@ test('an account the RPC says is someone else’s is yours when your wallet move
     assert.deepEqual(guard && guard.kind === 'token' && guard.owner, vault);
     // The RPC says it is someone's, and that nothing moves: untold.
     const hid = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, ATTACKER, 1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, ATTACKER, 1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint]);
-    assert.ok(codes(hid).includes('danger:untold'));
+    assert.ok(codes(hid).includes('warn:untold'));
     // Or that it is no token account at all.
     const none = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), account(USER_TOKEN, SYSTEM, 1n), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), account(USER_TOKEN, SYSTEM, 1n), usdc(THEIRS, ATTACKER, 0n), mint]);
-    assert.ok(codes(none).includes('danger:untold'));
+    assert.ok(codes(none).includes('warn:untold'));
 });
 
 test('SOL your wallet sends, left out of the simulation, is critical; what only pays rent or asserts does not hide it', async () => {
@@ -72,11 +72,11 @@ test('SOL your wallet sends, left out of the simulation, is critical; what only 
     const asserts: Instruction = { programAddress: LIGHTHOUSE, accounts: [{ address: PAYER, role: AccountRole.READONLY }], data: new Uint8Array([6, 0, 0]) };
     const before = [wallet(1_000_000_000n), account(ATTACKER, SYSTEM, 1n), mint];
     const after = [wallet(1_000_000_000n - FEE), account(ATTACKER, SYSTEM, 1n), mint];
-    assert.ok(codes(await reviewed([send], before, after)).includes('danger:untold'));
-    assert.ok(codes(await reviewed([made, send, asserts], before, [...after, usdc(THEIRS, ATTACKER, 0n)])).includes('danger:untold'));
+    assert.ok(codes(await reviewed([send], before, after)).includes('warn:untold'));
+    assert.ok(codes(await reviewed([made, send, asserts], before, [...after, usdc(THEIRS, ATTACKER, 0n)])).includes('warn:untold'));
     // Shown as it is, nothing untold.
     const shown = await reviewed([send], [wallet(100_000_000_000n), account(ATTACKER, SYSTEM, 1n)], [wallet(1_000_000_000n - FEE), account(ATTACKER, SYSTEM, 99_000_000_001n)]);
-    assert.ok(!codes(shown).includes('danger:untold'));
+    assert.ok(!codes(shown).includes('warn:untold'));
 });
 
 test('what a program Otus can’t read to the unit could bring into an account is not judged here', async () => {
@@ -85,24 +85,24 @@ test('what a program Otus can’t read to the unit could bring into an account i
     const before = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
     const after = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
     const r = await reviewed([given, drain(50n * USDC)], before, after);
-    assert.ok(!codes(r).includes('danger:untold'));
+    assert.ok(!codes(r).includes('warn:untold'));
     assert.ok(codes(r).includes('warn:unknown-program'));
     // Wrapped SOL synced: its units count its SOL.
     const WSOL = address('So11111111111111111111111111111111111111112');
     const native = (lamports: bigint, amount: bigint) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, lamports, tokenAccountData({ mint: WSOL, owner: PAYER, amount, native: 2_039_280n }));
     const wrap = [getTransferSolInstruction({ source: signer, destination: USER_TOKEN, amount: 1_000_000_000n }), getSyncNativeInstruction({ account: USER_TOKEN })];
     const wrapped = await reviewed(wrap, [wallet(5_000_000_000n), native(2_039_280n, 0n)], [wallet(4_000_000_000n - FEE), native(1_002_039_280n, 1_000_000_000n)]);
-    assert.ok(!codes(wrapped).includes('danger:untold'));
+    assert.ok(!codes(wrapped).includes('warn:untold'));
     // Moved between two wrapped SOL accounts, its SOL moves with it.
     const other = (lamports: bigint, amount: bigint) => account(THEIRS, TOKEN_PROGRAM_ADDRESS, lamports, tokenAccountData({ mint: WSOL, owner: ATTACKER, amount, native: 2_039_280n }));
     const moved = await reviewed([getTransferInstruction({ source: USER_TOKEN, destination: THEIRS, authority: signer, amount: 500_000_000n })], [wallet(5_000_000n), native(1_002_039_280n, 1_000_000_000n), other(2_039_280n, 0n)], [wallet(5_000_000n - FEE), native(502_039_280n, 500_000_000n), other(502_039_280n, 500_000_000n)]);
-    assert.ok(!codes(moved).includes('danger:untold'));
+    assert.ok(!codes(moved).includes('warn:untold'));
 });
 
 test('a simulation that failed shows nothing moving, and is critical on its own: nothing is untold', async () => {
     const before = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
     const r = await review(transaction([drain(999_900n * USDC)]), context, fakeChain(before, before, { error: { InstructionError: [0, { Custom: 1 }] } }));
-    assert.deepEqual(codes(r).filter((c) => c.includes('untold') || c.includes('simulation-failed')), ['danger:simulation-failed']);
+    assert.deepEqual(codes(r).filter((c) => c.includes('untold') || c.includes('simulation-failed')), ['warn:simulation-failed']);
 });
 
 test('tokens your wallet moves out of someone else’s account as its delegate: theirs, and worth a word', async () => {
@@ -124,34 +124,34 @@ test('what an instruction leaves an account as must show: closed, its allowance,
     const ata = getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: MINT });
     const before = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
     const hidden = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 0n), mint];
-    assert.ok(codes(await reviewed([ata, drain(99n * USDC)], before, hidden)).includes('danger:untold'));
+    assert.ok(codes(await reviewed([ata, drain(99n * USDC)], before, hidden)).includes('warn:untold'));
 
     // Wrapped SOL synced, then sent: its units can't have come from nowhere.
     const sync = getSyncNativeInstruction({ account: USER_TOKEN });
     const out = getTransferInstruction({ source: USER_TOKEN, destination: THEIRS, authority: signer, amount: 99_000_000_000n });
     const theirs = account(THEIRS, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: WSOL, owner: ATTACKER, amount: 0n, native: 2_039_280n }));
-    assert.ok(codes(await reviewed([sync, out], [...funded, theirs], [wallet(5_000_000n - FEE), native(100_002_039_280n, 100_000_000_000n), account(ATTACKER, SYSTEM, 1n), theirs])).includes('danger:untold'));
+    assert.ok(codes(await reviewed([sync, out], [...funded, theirs], [wallet(5_000_000n - FEE), native(100_002_039_280n, 100_000_000_000n), account(ATTACKER, SYSTEM, 1n), theirs])).includes('warn:untold'));
 
     // Closed to someone else: shown still there, untold; shown closed, told.
     const close = getCloseAccountInstruction({ account: USER_TOKEN, destination: ATTACKER, owner: signer });
-    assert.ok(codes(await reviewed([close], funded, [wallet(5_000_000n - FEE), native(100_002_039_280n, 100_000_000_000n), account(ATTACKER, SYSTEM, 1n)])).includes('danger:untold'));
+    assert.ok(codes(await reviewed([close], funded, [wallet(5_000_000n - FEE), native(100_002_039_280n, 100_000_000_000n), account(ATTACKER, SYSTEM, 1n)])).includes('warn:untold'));
     const closed = await review(transaction([close]), context, fakeChain(funded, [wallet(5_000_000n - FEE), { exists: false, address: USER_TOKEN }, account(ATTACKER, SYSTEM, 100_002_039_281n)]));
-    assert.ok(!codes(closed).includes('danger:untold'));
+    assert.ok(!codes(closed).includes('warn:untold'));
     // Closed though the RPC says it never was: untold. Made and closed in the same transaction: told.
-    assert.ok(codes(await reviewed([close], [wallet(5_000_000n), account(ATTACKER, SYSTEM, 1n)], [wallet(5_000_000n - FEE), account(ATTACKER, SYSTEM, 1n)])).includes('danger:untold'));
+    assert.ok(codes(await reviewed([close], [wallet(5_000_000n), account(ATTACKER, SYSTEM, 1n)], [wallet(5_000_000n - FEE), account(ATTACKER, SYSTEM, 1n)])).includes('warn:untold'));
     const wrapAndClose = [getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: WSOL }), getCloseAccountInstruction({ account: USER_TOKEN, destination: PAYER, owner: signer })];
-    assert.ok(!codes(await reviewed(wrapAndClose, [wallet(5_000_000n)], [wallet(5_000_000n - FEE)])).includes('danger:untold'));
+    assert.ok(!codes(await reviewed(wrapAndClose, [wallet(5_000_000n)], [wallet(5_000_000n - FEE)])).includes('warn:untold'));
 
     // An allowance without end, or a new owner, left out of the simulation: untold.
     const approve = getApproveInstruction({ source: USER_TOKEN, delegate: ATTACKER, owner: signer, amount: 2n ** 64n - 1n });
     const usdcBefore = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
     const asBefore = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
-    assert.ok(codes(await reviewed([approve], usdcBefore, asBefore)).includes('danger:untold'));
+    assert.ok(codes(await reviewed([approve], usdcBefore, asBefore)).includes('warn:untold'));
     const allowed = account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 100n * USDC, delegate: ATTACKER, delegated: 2n ** 64n - 1n }));
     const told = await reviewed([approve], usdcBefore, [wallet(5_000_000n - FEE), allowed, mint]);
     assert.deepEqual(codes(told).filter((c) => c.endsWith('untold') || c.endsWith(':delegate')), ['danger:delegate']);
     const owner = getSetAuthorityInstruction({ owned: USER_TOKEN, owner: signer, authorityType: AuthorityType.AccountOwner, newAuthority: ATTACKER });
-    assert.ok(codes(await reviewed([owner], usdcBefore, asBefore)).includes('danger:untold'));
+    assert.ok(codes(await reviewed([owner], usdcBefore, asBefore)).includes('warn:untold'));
 });
 
 test('an account only paid may grow by others meanwhile: busy tip and merchant accounts read as told', async () => {
@@ -159,9 +159,9 @@ test('an account only paid may grow by others meanwhile: busy tip and merchant a
     const send = getTransferSolInstruction({ source: signer, destination: tip, amount: 10_000n });
     // Others tipped the same account between the read and the simulation: it grew by more than this sends.
     const r = await reviewed([send], [wallet(5_000_000n), account(tip, SYSTEM, 1_000_000_000n)], [wallet(5_000_000n - 10_000n - FEE), account(tip, SYSTEM, 1_000_500_000n)]);
-    assert.ok(!codes(r).includes('danger:untold'));
+    assert.ok(!codes(r).includes('warn:untold'));
     const pay = await reviewed([drain(10n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 7_000n * USDC), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 90n * USDC), usdc(THEIRS, ATTACKER, 7_500n * USDC), mint]);
-    assert.ok(!codes(pay).includes('danger:untold'));
+    assert.ok(!codes(pay).includes('warn:untold'));
 });
 
 test('an assertion or an associated account made where one is already, after what an instruction leaves, hides nothing', async () => {
@@ -170,12 +170,12 @@ test('an assertion or an associated account made where one is already, after wha
     const again = getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: MINT });
     const before = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
     const asBefore = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
-    for (const after of [asserts, again]) assert.ok(codes(await reviewed([approve, after], before, asBefore)).includes('danger:untold'));
+    for (const after of [asserts, again]) assert.ok(codes(await reviewed([approve, after], before, asBefore)).includes('warn:untold'));
 });
 
 test('a Token-2022 mint’s close authority given away is not read as a token account’s', async () => {
     const mint22 = account(MINT, address('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'), 2_000_000n, Object.assign(new Uint8Array(200), { 44: 6, 45: 1, 165: 1 }));
     const give: Instruction = getSetAuthorityInstruction({ owned: MINT, owner: signer, authorityType: AuthorityType.CloseAccount, newAuthority: ATTACKER }, { programAddress: address('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb') });
     const r = await reviewed([give], [wallet(5_000_000n), mint22], [wallet(5_000_000n - FEE), mint22]);
-    assert.ok(!codes(r).includes('danger:untold'));
+    assert.ok(!codes(r).includes('warn:untold'));
 });

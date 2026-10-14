@@ -110,11 +110,11 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
 
     // What the simulation shows. A failed one shows nothing, and a site can make it fail on purpose.
     const failed = s.simulation.error !== null;
-    if (failed) add('danger', 'simulation-failed', 'The transaction would fail now, so its effects cannot be seen', undefined, 'A site can make it fail on purpose, to hide what it does');
+    if (failed) add('warn', 'simulation-failed', 'The transaction would fail now, so its effects cannot be seen', undefined, 'A site can make it fail on purpose, to hide what it does');
     else add('ok', 'simulated', 'Changes');
     // What its instructions say they take, left out of the simulation: an RPC that hides it, from the review and the guards.
     const hidden = untold(s, changes, explained);
-    if (hidden.length) add('danger', 'untold', 'The simulation leaves out what it does', hidden[0], "Its instructions do more to this account than the RPC's simulation shows");
+    if (hidden.length) add('warn', 'untold', 'The simulation leaves out what it does', hidden[0], "Its instructions do more to this account than the RPC's simulation shows");
     // Tokens your wallet moves out of someone else's account, as its delegate: seldom done, and what a lie about who
     // holds an account of yours looks like.
     const lent = allowed(s, explained, wallet, false).filter((a) => !mine.has(a));
@@ -126,7 +126,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             if (after && !plain(after)) add('danger', 'wallet-change', 'Your wallet would no longer be yours', address, `A program takes it over, with all it holds: ${name(after.program)}`);
         } else if (before && after && !plain(before) && before.program !== after.program) {
             if (mine.has(address)) add('danger', 'owner-change', 'An account of yours changes owner', address, `New owner ${name(after.program)}. You lose control of it.`);
-            else add('danger', 'owner-change', 'An account with your address in it changes owner', address, `New owner ${name(after.program)}. Your place in it may go.`);
+            else add('warn', 'owner-change', 'An account with your address in it changes owner', address, `New owner ${name(after.program)}. Your place in it may go.`);
         }
         if (from && to && from.owner !== to.owner) given.add(to.owner);
         if (to?.delegate && to.delegate !== from?.delegate) given.add(to.delegate);
@@ -184,7 +184,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     if (!failed) for (const [what, subject] of outflows(yours)) add('warn', 'large-outflow', `You send almost all ${what}`, subject);
 
     // What the message asks for.
-    if (durable(s.message)) add('danger', 'durable-nonce', 'Durable nonce: this transaction never expires', undefined, 'It can be kept and sent at any time later');
+    if (durable(s.message)) add('warn', 'durable-nonce', 'Durable nonce: this transaction never expires', undefined, 'It can be kept and sent at any time later');
     if (yours.fee > HUGE_FEE) add('danger', 'high-fee', 'A huge network fee', undefined, 'It goes to whoever makes the block');
     else if (yours.fee > HIGH_FEE) add('warn', 'high-fee', 'High network fee');
     else if (yours.fee > 0n) add('ok', 'normal-fee', 'Normal network fee');
@@ -199,24 +199,24 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (p.name === null) {
             const what = p.accounts > 0 ? `It uses ${p.accounts} of your accounts` : 'It uses your signature';
             add(getsYou ? 'warn' : 'notice', 'unknown-program', `${p.program} is not a program Otus knows`, p.program, getsYou ? what : 'It touches nothing of yours');
-            if (p.unseen) add('danger', 'reach-unseen', "Otus can't see what an unknown program does with your signature", p.program, 'The RPC did not list what it calls');
+            if (p.unseen) add('warn', 'reach-unseen', "Otus can't see what an unknown program does with your signature", p.program, 'The RPC did not list what it calls');
         }
         const d = context.deployments?.get(p.program);
         const age = d?.deployed && context.now ? Math.max(0, context.now - d.deployed) : null;
         // Known programs redeploy often; a fresh one only counts for a program no one can name.
         if (d && age !== null && age < FRESH && !d.builtin && p.name === null) {
-            add(age < DAY && getsYou && p.name === null ? 'danger' : 'warn', 'fresh-program', `${named} was deployed ${ago(age)}`, p.program, d.upgradeable ? 'Its authority can still change it' : 'It can no longer change');
+            add('warn', 'fresh-program', `${named} was deployed ${ago(age)}`, p.program, d.upgradeable ? 'Its authority can still change it' : 'It can no longer change');
         }
     }
     // Where your signature reaches: a program Otus doesn't know calling one that keeps something of yours, at any depth;
     // or given it beside one, which it can call once it lands, whatever it did when simulated.
     const reached = holdsCalls(s, wallet);
     const where = (held: Set<Address>) => [...held].map((q) => PROGRAM_NAMES.get(q)).join(', ');
-    for (const [caller, held] of reached) add('danger', 'reaches-holdings', `An unknown program uses your signature in ${where(held)}`, caller, HOLDINGS);
+    for (const [caller, held] of reached) add('warn', 'reaches-holdings', `An unknown program uses your signature in ${where(held)}`, caller, HOLDINGS);
     const seen = new Set([...reached.values()].flatMap((held) => [...held]));
     for (const [caller, held] of holdsBeside(s, wallet)) {
         const fresh = new Set([...held].filter((q) => !seen.has(q)));
-        if (fresh.size) add('danger', 'reaches-holdings', `An unknown program can use your signature in ${where(fresh)}`, caller, HOLDINGS);
+        if (fresh.size) add('warn', 'reaches-holdings', `An unknown program can use your signature in ${where(fresh)}`, caller, HOLDINGS);
     }
     if (programs.length > 0 && programs.every((p) => p.name !== null)) add('ok', 'all-known', 'Known programs', undefined, programs.map((p) => p.name).join(', '));
 
@@ -302,8 +302,7 @@ export function described(findings: Finding[], named: Map<Address, string>, prog
         const brand = name && p.name === null ? borrowed(name) : null;
         const core = name && p.name === null && !brand ? posingAs(name) : null; // a plain word, as a crate may be called
         if (!name || !(brand || core)) return [];
-        const level = brand && (p.signature || p.writable) ? 'danger' : 'warn';
-        return [{ level, code: 'imitation-program', text: `An unknown program calls itself ${name}`, subject: p.program, note: `It is not the ${brand ?? core} program Otus knows: ${p.program}` }];
+        return [{ level: 'warn', code: 'imitation-program', text: `An unknown program calls itself ${name}`, subject: p.program, note: `It is not the ${brand ?? core} program Otus knows: ${p.program}` }];
     });
     return [...told, ...posing];
 }
@@ -610,12 +609,12 @@ function roleAt(s: NonNullable<State>, offset: number): string | null {
     return null;
 }
 
-// Your assets going to someone else in a way Otus cannot read in words: what a drainer does (what an instruction
-// Otus reads sends is shown in words, so that much counts as seen). Through a program Otus doesn't know, whoever
-// receives counts, its own accounts included; through programs it knows, a wallet (their own accounts are where
-// deposits go). Something coming back to you makes it a trade: through programs Otus knows, nothing to say; through
-// one it doesn't, worth checking, never critical. Nothing coming back: to a wallet, critical unless a small share, as a
-// fee is; into a program's accounts, a warning, critical when it takes almost all of one of your assets.
+// Your assets going to someone else in a way Otus cannot read in words (what an instruction Otus reads sends is shown
+// in words, so that much counts as seen). Through a program Otus doesn't know, whoever receives counts, its own
+// accounts included; through programs it knows, a wallet (their own accounts are where deposits go). Something coming
+// back to you makes it a trade: through programs Otus knows, nothing to say; through one it doesn't, worth checking.
+// Nothing coming back: said, with how much and to whom, a small share told as a fee maybe. Always a warning, never
+// critical: it is what the balances show and Otus cannot read, not a proof of harm.
 function leaving(programs: ProgramUse[], explained: Explained[], changes: Changes, flows: Flow[], yours: Changes, nft: boolean): Finding[] {
     const blind = programs.filter((p) => (p.signature || p.writable) && explained.some((e) => e.program === p.program && e.source === 'unknown'));
     const strange = blind.some((p) => p.name === null);
@@ -657,16 +656,12 @@ function leaving(programs: ProgramUse[], explained: Explained[], changes: Change
     const by = blind.map((p) => p.name ?? 'an unknown program').join(', ');
     const subject = hidden[0].o.holder;
     if (nft || flows.some((f) => f.change > 0n)) return strange ? [{ level: 'warn', code: 'check-balances', text: 'Check the balances', subject, note: `A trade through ${by}, which Otus cannot read`, programs: blind.filter((p) => p.name === null).map((p) => p.program) }] : [];
-    const swept = new Set<string>(outflows(yours).map(([, mint]) => mint ?? 'SOL'));
     // A fee is a small share of an asset in all, not to each: split across many wallets, a drain is no fee.
-    const toWallets = new Map<Flow, bigint>();
-    for (const { f, o } of hidden) if (o.wallet) toWallets.set(f, (toWallets.get(f) ?? 0n) + o.amount);
     const share = (f: Flow) => hidden.filter((h) => h.f === f).reduce((sum, h) => sum + h.o.amount, 0n);
     const small = hidden.every(({ f }) => share(f) * 20n <= -f.change);
-    const critical = [...toWallets].some(([f, amount]) => amount * 20n > -f.change) || hidden.some(({ f, o }) => !o.wallet && swept.has(f.asset));
     const assets = new Set(hidden.map(({ f }) => f.asset)).size;
     const text = small ? 'A small part of your assets goes to someone else' : assets === 1 ? 'An asset of yours goes to someone else' : `${assets} of your assets go to someone else`;
-    return [{ level: critical ? 'danger' : 'warn', code: 'sends-to-wallet', text, subject, note: `Through ${by}, which Otus cannot read${small ? ': a fee, maybe' : ''}`, programs: (strange ? blind.filter((p) => p.name === null) : blind).map((p) => p.program) }];
+    return [{ level: 'warn', code: 'sends-to-wallet', text, subject, note: `Through ${by}, which Otus cannot read${small ? ': a fee, maybe' : ''}`, programs: (strange ? blind.filter((p) => p.name === null) : blind).map((p) => p.program) }];
 }
 
 /**

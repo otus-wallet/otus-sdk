@@ -111,7 +111,7 @@ test('a durable nonce is danger, read as the runtime reads it', async () => {
         data: new Uint8Array([4, 0, 0, 0]),
     };
     for (const ix of [advance, short]) {
-        assert.deepEqual(problems(await review(transaction([ix]), context(), fakeChain([]))), ['danger:durable-nonce']);
+        assert.deepEqual(problems(await review(transaction([ix]), context(), fakeChain([]))), ['warn:durable-nonce']);
     }
 });
 
@@ -244,11 +244,11 @@ test('an unknown program that gets your signature is a warning: what it does dec
     assert.deepEqual(problems(r), ['warn:unknown-program']);
 });
 
-test('a failed simulation is danger: a site can make it fail to hide what it does', async () => {
+test('a failed simulation is a warning: Otus cannot see what it does, which a site can make it hide', async () => {
     const chain = fakeChain([], [], { fee: 6_000_000n, error: { InstructionError: [0, { Custom: 1 }] } });
     const r = await review(transfer(), context({ signedBefore: null }), chain);
-    assert.equal(r.assessment.verdict, 'danger');
-    assert.deepEqual(problems(r), ['danger:simulation-failed', 'warn:high-fee', 'warn:first-visit']);
+    assert.equal(r.assessment.verdict, 'warn');
+    assert.deepEqual(problems(r), ['warn:simulation-failed', 'warn:high-fee', 'warn:first-visit']);
 });
 
 test('a site hosted where anyone can put one up is a warning, with the host it is on', async () => {

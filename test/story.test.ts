@@ -91,10 +91,10 @@ test('a drainer: where your tokens go, what each account is, and a program deplo
     assert.deepEqual(flows, [{ asset: MINT, change: -1_000n, others: [{ address: THIEF_TOKEN, holder: THIEF, amount: 1_000n, wallet: true }] }]);
     assert.deepEqual([kinds.get(PAYER), kinds.get(USER_TOKEN), kinds.get(THIEF_TOKEN), kinds.get(EVIL_PROGRAM)], ['you', 'your-tokens', 'tokens', 'new']);
     const codes = findings.filter((f) => f.level !== 'ok').map((f) => `${f.level}:${f.code}`);
-    assert.ok(codes.includes('danger:sends-to-wallet') && codes.includes('warn:unknown-program'), codes.join());
+    assert.ok(codes.includes('warn:sends-to-wallet') && codes.includes('warn:unknown-program'), codes.join());
     // Deployed two hours ago, as the deployments step finds it, an unknown program that gets you is danger.
     const assessed = assess(r, r.changes, r.explained, context({ now, deployments: deployed }));
-    assert.deepEqual(assessed.findings.find((f) => f.code === 'fresh-program'), { level: 'danger', code: 'fresh-program', text: 'An unknown program was deployed 2 hours ago', note: 'Its authority can still change it', subject: EVIL_PROGRAM });
+    assert.deepEqual(assessed.findings.find((f) => f.code === 'fresh-program'), { level: 'warn', code: 'fresh-program', text: 'An unknown program was deployed 2 hours ago', note: 'Its authority can still change it', subject: EVIL_PROGRAM });
 });
 
 test('reads when an upgradeable program was deployed, from its program data account', async () => {
@@ -145,7 +145,7 @@ test('end to end: an unknown program deployed two hours ago, as the chain tells 
         blockTime: async (slot: bigint) => (slot === 123_456n ? 1_700_000_000 : null),
     };
     const r = await review(DRAIN, context({ now: 1_700_007_200 }), chain);
-    assert.deepEqual(r.assessment.findings.find((f) => f.code === 'fresh-program'), { level: 'danger', code: 'fresh-program', text: 'An unknown program was deployed 2 hours ago', note: 'Its authority can still change it', subject: EVIL_PROGRAM });
+    assert.deepEqual(r.assessment.findings.find((f) => f.code === 'fresh-program'), { level: 'warn', code: 'fresh-program', text: 'An unknown program was deployed 2 hours ago', note: 'Its authority can still change it', subject: EVIL_PROGRAM });
 });
 
 // What each instruction says, given how the transaction's accounts read.
@@ -190,7 +190,7 @@ test('a compute limit says what the transaction used beside it, when that is kno
 test('a nonce moved on leads a durable transaction; anywhere else it only takes back what was signed on it', () => {
     const e: Explained = { program: address('11111111111111111111111111111111'), programName: 'System Program', source: 'plugin', data: new Uint8Array([4, 0, 0, 0]), name: 'AdvanceNonceAccount', accounts: [{ role: 'nonceAccount', address: address('11111111111111111111111111111112') }], args: [] };
     const n = { who: (a: Address) => a.slice(0, 4) } as unknown as Names;
-    assert.deepEqual(story(e, n, false, true).effects, [{ text: 'Uses a durable nonce: this transaction never expires', tone: 'danger' }]);
+    assert.deepEqual(story(e, n, false, true).effects, [{ text: 'Uses a durable nonce: this transaction never expires', tone: 'warn' }]);
     assert.deepEqual(story(e, n, false, false).effects, [{ text: 'Moves the nonce of 1111 on: what was signed on it can no longer run', tone: 'plain' }]);
 });
 

@@ -53,7 +53,7 @@ test('a stake account is whoever can withdraw it: your SOL into a thief’s goes
     const deposit: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }, { address: STAKED, role: W }] };
     const into = (data: Uint8Array) =>
         findings(deposit, [account(PAYER, SYSTEM, 5n * SOL), stakeAccount(data, SOL)], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(data, 5n * SOL)], ['sends-to-wallet', 'check-balances']);
-    assert.deepEqual(await into(staked(THIEF)), ['danger:sends-to-wallet Through an unknown program, which Otus cannot read']);
+    assert.deepEqual(await into(staked(THIEF)), ['warn:sends-to-wallet Through an unknown program, which Otus cannot read']);
     assert.deepEqual(await into(staked(PAYER)), []);
     // Yours, though someone else's lockup holds it: still not someone else's.
     assert.deepEqual(await into(staked(PAYER, { time: 2_000_000_000n, custodian: THIEF })), []);
