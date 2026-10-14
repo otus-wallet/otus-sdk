@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { getBase58Decoder } from '@solana/kit';
 
 import { Refused } from '../src/errors.ts';
-import { decode, durable, encode, sanitize, type Message } from '../src/review/decode.ts';
+import { decode, durable, encode, sanitize, startsAsMessage, type Message } from '../src/review/decode.ts';
 import { key, PAYER, TABLE, TRANSFER_DATA, transfer, transferV1, transferWithTable } from './helpers.ts';
 
 // Offsets in an unsigned legacy transfer: one signature slot, then the message.
@@ -95,4 +95,18 @@ test('applies the runtime limits', async () => {
         [{ ...m, version: 0, lookups: [{ lookupTableAddress: TABLE, writableIndexes: [], readonlyIndexes: [] }] }, /empty lookup/],
     ];
     for (const [message, reason] of cases) assert.throws(() => sanitize(message), refusedFor(reason), String(reason));
+});
+
+test('tells bytes that start with a transaction message, whatever follows, from text', async () => {
+    for (const tx of [transfer(), transfer(0), transferV1({ computeUnitLimit: 10_000 })]) {
+        const { messageBytes } = await decode(tx);
+        assert.ok(startsAsMessage(messageBytes));
+        assert.ok(startsAsMessage(new Uint8Array([...messageBytes, 1, 2, 3])));
+    }
+    const text = (s: string) => new TextEncoder().encode(s);
+    assert.equal(startsAsMessage(text('Sign in to example.com: nonce 8f3a')), false);
+    assert.equal(startsAsMessage(text('x'.repeat(4096))), false);
+    assert.equal(startsAsMessage(new Uint8Array()), false);
+    // Read as a header and accounts, but no message the runtime takes: an instruction's program index past them.
+    assert.equal(startsAsMessage(new Uint8Array([1, 0, 0, 1, ...new Uint8Array(32), ...new Uint8Array(32), 1, 5, 0, 0])), false);
 });

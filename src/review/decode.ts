@@ -62,6 +62,17 @@ export async function decode(bytes: Uint8Array): Promise<Decoded> {
     };
 }
 
+/** Whether bytes start with a transaction message the runtime would take, whatever follows it: signed as a message,
+ *  it would be a signature of that transaction. */
+export function startsAsMessage(bytes: ReadonlyUint8Array): boolean {
+    try {
+        sanitize(normalize(getCompiledTransactionMessageDecoder().read(bytes, 0)[0]));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // Encoding the result again must give back the same bytes. That refuses trailing bytes,
 // overlong lengths and an envelope that does not fit the message version.
 function parse(bytes: Uint8Array) {
