@@ -115,3 +115,13 @@ test('SOL someone else sends a wallet in words does not cover yours going there 
     const r = await review(transaction([decoy, drain]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain(before, after));
     assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level), ['danger']);
 });
+
+test('what you send yourself in words does not cover yours leaving unsaid', async () => {
+    // A transfer of 1 SOL to yourself, in words; a program Otus doesn't read takes 1 SOL of yours to a wallet.
+    const self = getTransferSolInstruction({ source: createNoopSigner(PAYER), destination: PAYER, amount: SOL });
+    const drain: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }, { address: THIEF, role: W }] };
+    const before = [account(PAYER, SYSTEM, 5n * SOL), account(THIEF, SYSTEM, SOL)];
+    const after = [account(PAYER, SYSTEM, 4n * SOL - 5_000n), account(THIEF, SYSTEM, 2n * SOL)];
+    const r = await review(transaction([self, drain]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain(before, after));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level), ['danger']);
+});
