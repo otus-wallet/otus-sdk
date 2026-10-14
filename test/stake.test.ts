@@ -99,8 +99,8 @@ test('SOL into someone else\'s stake that is not from you, as you only pay the f
 });
 
 test('what goes to another of your wallets stays yours: said, never critical', async () => {
-    const MINE = key(60); // another wallet of yours in Otus
-    const ours = { ...context, wallets: [PAYER, MINE] };
+    const MINE = key(60); // another wallet of yours Otus signs for
+    const ours = { ...context, wallets: [PAYER, MINE, key(62)], signers: [PAYER, MINE] }; // key(62): only watched
     const authorize: Instruction = { programAddress: STAKE, accounts: [{ address: STAKED, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([1, 0, 0, 0]) };
     const wallet = account(PAYER, SYSTEM, SOL);
     const moved = async (to: Address) =>
@@ -111,12 +111,14 @@ test('what goes to another of your wallets stays yours: said, never critical', a
     assert.deepEqual(await moved(key(62)), ['danger:You would lose your withdraw authority']);
 });
 
-test('a stake split from one of yours under the same lockup is as locked as it was: not critical', async () => {
+test('a stake split from one of yours under someone else’s lockup is still told critical: Otus can’t prove where its SOL came from', async () => {
+    // An honest split of a vesting stake reads like SOL put into a stake someone else locks: told as such, as one an
+    // attacker made for you, with your wallet as withdrawer and their lockup, would read the same.
     const split: Instruction = { programAddress: STAKE, accounts: [{ address: STAKED, role: W }, { address: key(61), role: W }, { address: PAYER, role: RS }], data: new Uint8Array([3, 0, 0, 0]) };
     const lockup = { time: 2_000_000_000n, custodian: THIEF };
     const before = [account(PAYER, SYSTEM, SOL), stakeAccount(staked(PAYER, lockup))];
     const after = [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(staked(PAYER, lockup), 6n * SOL), account(key(61), STAKE, 4n * SOL, staked(PAYER, lockup))];
-    assert.deepEqual(await findings(split, before, after, ['stake-lockup']), []);
+    assert.deepEqual((await findings(split, before, after, ['stake-lockup'])).map((f) => f.split(' ')[0]), ['danger:stake-lockup']);
 });
 
 test('a token account given to you is yours now: nothing lost, nothing critical', async () => {
