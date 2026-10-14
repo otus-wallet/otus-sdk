@@ -522,7 +522,8 @@ function sentInWords(explained: Explained[], changes: Changes): Map<string, bigi
         };
         if (e.program === SYSTEM_PROGRAM_ADDRESS) {
             if (e.name === 'TransferSol' || e.name === 'TransferSolWithSeed') pair('SOL', 'destination', arg('amount'));
-            else if (e.name === 'CreateAccount' || e.name === 'CreateAccountWithSeed') pair('SOL', 'newAccount', arg('lamports'));
+            else if (e.name === 'CreateAccount') pair('SOL', 'newAccount', arg('lamports'));
+            else if (e.name === 'CreateAccountWithSeed') pair('SOL', 'newAccount', arg('amount'));
             else if (e.name === 'WithdrawNonceAccount') pair('SOL', 'recipientAccount', arg('withdrawAmount'));
         } else if (e.program === STAKE_PROGRAM) {
             if (e.name === 'Withdraw') pair('SOL', 'recipient', arg('args'));

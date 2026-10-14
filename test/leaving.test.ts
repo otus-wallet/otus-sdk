@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { getCreateAccountWithSeedInstruction } from '@solana-program/system';
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { AccountRole, address, getProgramDerivedAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
+import { AccountRole, address, createNoopSigner, getProgramDerivedAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import { review } from '../src/review/review.ts';
 import { account, fakeChain, key, MINT, PAYER, SYSTEM, tokenAccountData, transaction } from './helpers.ts';
@@ -58,4 +59,11 @@ test('a trade, something coming back to you: nothing to say through a program Ot
     const after = [account(PAYER, SYSTEM, 4n * SOL - 5000n), account(THIEF, SYSTEM, 2n * SOL), tokens(USDC_IN, PAYER, 121_649_541n, USDC), tokens(THIEF_TOKEN, THIEF, 500_000_000n - 121_649_541n, USDC)];
     assert.deepEqual(await problems(fill(ORDER_ENGINE), before, after), []);
     assert.deepEqual(await problems(fill(EVIL), before, after), ['warn:check-balances']);
+});
+
+test('SOL a new account is made with, beside a program Otus doesn’t know, is said in words: not hidden', async () => {
+    const touch: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }] };
+    const made = getCreateAccountWithSeedInstruction({ payer: createNoopSigner(PAYER), newAccount: THIEF, baseAccount: createNoopSigner(PAYER), base: PAYER, seed: 'x', amount: 2n * SOL, space: 0, programAddress: SYSTEM });
+    const r = await review(transaction([touch, made]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain([account(PAYER, SYSTEM, 5n * SOL)], [account(PAYER, SYSTEM, 3n * SOL - 5000n), account(THIEF, SYSTEM, 2n * SOL)]));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet'), []);
 });
