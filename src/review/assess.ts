@@ -1,5 +1,8 @@
+import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from '@solana-program/compute-budget';
 import { LOADER_V3_PROGRAM_ADDRESS } from '@solana-program/loader-v3';
+import { LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, MEMO_PROGRAM_ADDRESS } from '@solana-program/memo';
 import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
+import { ASSOCIATED_TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import {
     address,
     getAddressDecoder,
@@ -14,7 +17,7 @@ import {
 } from '@solana/kit';
 
 import { alike, told } from '../format.ts';
-import { STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
+import { LIGHTHOUSE, STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { BRANDS, HOLDS, PROGRAM_NAMES } from '../programs/known.ts';
 import { holdings, offsetsOf, plain, read, units, type Change, type Changes, type State } from './changes.ts';
@@ -111,10 +114,10 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     else add('ok', 'simulated', 'Changes');
     // What its instructions say they take, left out of the simulation: an RPC that hides it, from the review and the guards.
     const hidden = untold(s, changes, explained);
-    if (hidden.length) add('danger', 'untold', 'The simulation leaves out what it sends', hidden[0], "Its instructions take more out of this account than the RPC's simulation shows");
+    if (hidden.length) add('danger', 'untold', 'The simulation leaves out what it does', hidden[0], "Its instructions do more to this account than the RPC's simulation shows");
     // Tokens your wallet moves out of someone else's account, as its delegate: seldom done, and what a lie about who
     // holds an account of yours looks like.
-    const lent = allowed(s, explained, wallet).filter((a) => !mine.has(a));
+    const lent = allowed(s, explained, wallet, false).filter((a) => !mine.has(a));
     if (lent.length) add('warn', 'spends-allowance', "You move tokens from someone else's account", lent[0], 'Your wallet is allowed to: check that it should');
     const shown = findings.length;
     for (const { address, before, after } of [...yours.accounts, ...keyed]) {
@@ -377,13 +380,14 @@ function yourAccounts(s: Simulated, changes: Changes, explained: Explained[], wa
 }
 
 // The token accounts of someone else your wallet takes tokens or SOL out of, as the RPC says it may: as their delegate,
-// or closing one as its close authority. Theirs, used with their leave.
-function allowed(s: Simulated, explained: Explained[], wallet: Address): Address[] {
+// or (`closing`) closing one as its close authority, which moves only its rent. Theirs, used with their leave.
+function allowed(s: Simulated, explained: Explained[], wallet: Address, closing = true): Address[] {
     return authorized(explained, wallet).flatMap(([name, a]) => {
         const state = s.accounts.find((x) => x.address === a)?.state;
         const token = state ? read(state)?.token : null;
         if (!token || token.owner === wallet) return [];
-        return (name === 'CloseAccount' ? token.closer : token.delegate) === wallet ? [a] : [];
+        if (name === 'CloseAccount') return closing && token.closer === wallet ? [a] : [];
+        return token.delegate === wallet ? [a] : [];
     });
 }
 
@@ -513,8 +517,11 @@ function upgrades(s: Simulated, wallet: Address): [Address, string][] {
 // a site asks directly with what it likes (Token's Approve, System's and Stake's), nor a program Otus doesn't know.
 function byProtocol(s: Simulated, account: Address): boolean {
     const naming = s.message.instructions.filter((ix) => ix.accountIndices.some((j) => s.accounts[j].address === account)).map((ix) => s.accounts[ix.programAddressIndex].address);
-    return naming.length > 0 && naming.every((p) => PROGRAM_NAMES.has(p) && !CORE_PROGRAMS.has(p));
+    // A budget, a memo, an assertion or an associated account made beside it give no one a say over it.
+    const acting = naming.filter((p) => !BYSTANDERS.has(p));
+    return acting.length > 0 && acting.every((p) => PROGRAM_NAMES.has(p) && !CORE_PROGRAMS.has(p));
 }
+const BYSTANDERS: ReadonlySet<Address> = new Set([COMPUTE_BUDGET_PROGRAM_ADDRESS, MEMO_PROGRAM_ADDRESS, LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3, ASSOCIATED_TOKEN_PROGRAM_ADDRESS, LIGHTHOUSE]);
 
 // An account other than a token account with your address in its data: you may be its authority, or anyone put it there.
 const holds = (state: State, key: ReadonlyUint8Array) => state !== null && state.token === null && offsetsOf(key, state).length > 0;

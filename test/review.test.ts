@@ -151,6 +151,10 @@ test('someone’s key allowed all of a token account of yours, or the close of y
         return problems(await review(transaction([list]), context(), fakeChain([wallet(5_000_000n), tokens()], [wallet(4_995_000n), allowed(key(70), 1000n)])));
     };
     assert.deepEqual(await listed(address('TCMPhJdwDryooaGtiocG1u3xcYbRpiJzb283XfCZsDp')), ['warn:delegate']);
+    // With your token account made beside it, where it is already, as listings may: the same.
+    const made = getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: MINT });
+    const list = { programAddress: address('M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K'), accounts: [{ address: USER_TOKEN, role: AccountRole.WRITABLE }, { address: PAYER, role: AccountRole.READONLY_SIGNER }, { address: key(70), role: AccountRole.READONLY }], data: new Uint8Array([1]) };
+    assert.deepEqual(problems(await review(transaction([made, list]), context(), fakeChain([wallet(5_000_000n), tokens()], [wallet(4_995_000n), allowed(key(70), 1000n)]))), ['warn:delegate']);
     assert.deepEqual((await listed(EVIL_PROGRAM)).filter((p) => p.endsWith(':delegate')), ['danger:delegate']);
 
     // Your wrapped SOL account's close authority given away: whoever closes it takes its 50 SOL.

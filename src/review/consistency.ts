@@ -1,9 +1,10 @@
 // What the instructions Otus reads to the unit say they do, held against what the simulation shows. An RPC that answers
 // otherwise (a balance read lower than it is, a move left out, an allowance or an owner change left out) would have the
 // review, and the guards made from it, miss what the instructions themselves say. Two checks:
-// - Value: an account is checked where every instruction that names it is one Otus reads so: what those take out of it
-//   must show as gone, less the most they can bring in. One named by a program Otus can't read so (a swap, a protocol,
-//   one it doesn't know) could bring in any amount, and is not checked here.
+// - Value: an account those instructions take value out of is checked where every instruction that names it is one Otus
+//   reads so: what they take out of it must show as gone, less the most they can bring in. One named by a program Otus
+//   can't read so (a swap, a protocol, one it doesn't know) could bring in any amount, and is not checked here; nor one
+//   only paid, whose value may grow by others' transactions between the read and the simulation, and hides nothing.
 // - State: what an instruction leaves an account as (closed, with its delegate, with its new owner) must show after it,
 //   where no later instruction names the account; and an account it takes from or acts on must have been there, or
 //   made earlier in the transaction.
@@ -51,9 +52,17 @@ export function untold(s: Simulated, changes: Changes, explained: Explained[]): 
     };
     const states = new Map(changes.accounts.map((c) => [c.address, c]));
     const before = (a: Address) => (states.has(a) ? states.get(a)!.before : read(s.accounts.find((x) => x.address === a)?.state ?? { exists: false, address: a }));
-    // The last instruction to name each account: what one leaves an account as holds only if none comes after it.
+    // The last instruction to name each account that could change it: what one leaves an account as holds only if none
+    // comes after it. An assertion, a budget, a memo, or an associated account made where there is one already, change
+    // nothing.
     const last = new Map<Address, number>();
-    s.message.instructions.forEach((ix, i) => ix.accountIndices.forEach((j) => last.set(s.accounts[j].address, i)));
+    s.message.instructions.forEach((ix, i) => {
+        const e = explained[i];
+        for (const j of ix.accountIndices) {
+            const a = s.accounts[j].address;
+            if (!still(e, a, before)) last.set(a, i);
+        }
+    });
     const made = new Set<Address>();
     const syncs = new Set<Address>();
     const wrong = new Set<Address>();
@@ -81,11 +90,11 @@ export function untold(s: Simulated, changes: Changes, explained: Explained[]): 
         units.open ||= lamports.open;
         units.in += lamports.in + surplus(before(a));
     }
-    // An account no instruction names changes only by the fee it pays.
+    // What leaves an account must show as gone. (One no instruction names changes only by the fee it pays.)
     for (const { address, before: was, after } of changes.accounts) {
         const more = ASSETS.some((asset) => {
-            const t = tallies.get(`${asset} ${address}`) ?? { in: 0n, out: 0n, open: false };
-            return !t.open && valueOf(after, asset) - valueOf(was, asset) > t.in - t.out;
+            const t = tallies.get(`${asset} ${address}`);
+            return t !== undefined && !t.open && t.out > 0n && valueOf(after, asset) - valueOf(was, asset) > t.in - t.out;
         });
         if (more) wrong.add(address);
     }
@@ -107,6 +116,16 @@ function surplus(state: State): bigint {
 }
 
 const FREE: Effect = { out: [], in: [], open: [] };
+
+// Whether an instruction leaves this account as it was: an assertion, a budget, a memo, or an associated token account
+// made where one was already, or naming it otherwise.
+function still(e: Explained, a: Address, before: (a: Address) => State): boolean {
+    if (e.program === LIGHTHOUSE) return e.data[0] !== undefined && e.data[0] >= 2;
+    if (e.program === COMPUTE_BUDGET_PROGRAM_ADDRESS || MEMOS.includes(e.program)) return true;
+    if (e.program !== ASSOCIATED_TOKEN_PROGRAM_ADDRESS || e.source !== 'plugin' || !e.name.startsWith('CreateAssociatedToken')) return false;
+    const ata = e.accounts.find((x) => x.role === 'ata')?.address;
+    return ata !== a || before(a) !== null;
+}
 const MEMOS: readonly Address[] = [MEMO_PROGRAM_ADDRESS, LEGACY_MEMO_PROGRAM_ADDRESS_V1, LEGACY_MEMO_PROGRAM_ADDRESS_V3];
 const NOBODY = '11111111111111111111111111111111';
 
@@ -221,7 +240,8 @@ function tokenEffect(name: string, acc: Roles, text: (name: string) => string, a
             const [owned, kind, to] = [acc('owned'), text('authorityType'), text('newAuthority')];
             if (!owned) return null;
             if (kind === '2') return { ...FREE, needs: [owned], leaves: [[owned, (after) => after?.token?.owner === to]] };
-            if (kind === '3') return { ...FREE, needs: [owned], leaves: [[owned, (after) => (after?.token?.closer ?? 'none') === (to === NOBODY ? 'none' : to)]] };
+            // A Token-2022 mint has a close authority too, of another layout: only a token account's is read here.
+            if (kind === '3') return { ...FREE, needs: [owned], leaves: [[owned, (after) => !after?.token || (after.token.closer ?? 'none') === (to === NOBODY ? 'none' : to)]] };
             return FREE;
         }
         case 'FreezeAccount':

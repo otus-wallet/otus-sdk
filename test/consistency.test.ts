@@ -153,3 +153,29 @@ test('what an instruction leaves an account as must show: closed, its allowance,
     const owner = getSetAuthorityInstruction({ owned: USER_TOKEN, owner: signer, authorityType: AuthorityType.AccountOwner, newAuthority: ATTACKER });
     assert.ok(codes(await reviewed([owner], usdcBefore, asBefore)).includes('danger:untold'));
 });
+
+test('an account only paid may grow by others meanwhile: busy tip and merchant accounts read as told', async () => {
+    const tip = key(60);
+    const send = getTransferSolInstruction({ source: signer, destination: tip, amount: 10_000n });
+    // Others tipped the same account between the read and the simulation: it grew by more than this sends.
+    const r = await reviewed([send], [wallet(5_000_000n), account(tip, SYSTEM, 1_000_000_000n)], [wallet(5_000_000n - 10_000n - FEE), account(tip, SYSTEM, 1_000_500_000n)]);
+    assert.ok(!codes(r).includes('danger:untold'));
+    const pay = await reviewed([drain(10n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), usdc(THEIRS, ATTACKER, 7_000n * USDC), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 90n * USDC), usdc(THEIRS, ATTACKER, 7_500n * USDC), mint]);
+    assert.ok(!codes(pay).includes('danger:untold'));
+});
+
+test('an assertion or an associated account made where one is already, after what an instruction leaves, hides nothing', async () => {
+    const approve = getApproveInstruction({ source: USER_TOKEN, delegate: ATTACKER, owner: signer, amount: 2n ** 64n - 1n });
+    const asserts: Instruction = { programAddress: LIGHTHOUSE, accounts: [{ address: USER_TOKEN, role: AccountRole.READONLY }], data: new Uint8Array([10, 0, 0]) };
+    const again = getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: USER_TOKEN, owner: PAYER, mint: MINT });
+    const before = [wallet(5_000_000n), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
+    const asBefore = [wallet(5_000_000n - FEE), usdc(USER_TOKEN, PAYER, 100n * USDC), mint];
+    for (const after of [asserts, again]) assert.ok(codes(await reviewed([approve, after], before, asBefore)).includes('danger:untold'));
+});
+
+test('a Token-2022 mint’s close authority given away is not read as a token account’s', async () => {
+    const mint22 = account(MINT, address('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'), 2_000_000n, Object.assign(new Uint8Array(200), { 44: 6, 45: 1, 165: 1 }));
+    const give: Instruction = getSetAuthorityInstruction({ owned: MINT, owner: signer, authorityType: AuthorityType.CloseAccount, newAuthority: ATTACKER }, { programAddress: address('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb') });
+    const r = await reviewed([give], [wallet(5_000_000n), mint22], [wallet(5_000_000n - FEE), mint22]);
+    assert.ok(!codes(r).includes('danger:untold'));
+});
