@@ -204,7 +204,8 @@ test('your address as an authority, in any account, stays where it was', async (
     const cases: [Address, number, number, number[], string][] = [
         [TOKEN_PROGRAM_ADDRESS, 82, 4, [1], 'danger:You would lose your mint authority'],
         [SYSTEM, 80, 8, [1, 0, 0, 0, 1], 'danger:You would lose your nonce authority'],
-        [address('Stake11111111111111111111111111111111111111'), 200, 44, [1], 'danger:You would lose your withdraw authority'],
+        // To an address no key holds (ATTACKER here is off curve): a program's, said to check; to a key, stake.test.
+        [address('Stake11111111111111111111111111111111111111'), 200, 44, [1], "warn:Your withdraw authority goes to a program's address"],
         [address('BPFLoaderUpgradeab1e11111111111111111111111'), 45, 13, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 'danger:You would lose your program upgrade authority'],
         [EVIL_PROGRAM, 120, 40, [], 'warn:Your address would leave an account that held it, maybe as its authority'],
     ];

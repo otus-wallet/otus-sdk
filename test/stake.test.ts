@@ -126,17 +126,22 @@ test('what goes to another of your wallets stays yours: said, never critical', a
             .filter((f) => f.code === 'authority-change')
             .map((f) => `${f.level}:${f.text}`);
     assert.deepEqual(await moved(MINE), ['warn:Your withdraw authority goes to another of your wallets']);
-    assert.deepEqual(await moved(key(62)), ['danger:You would lose your withdraw authority']);
+    assert.deepEqual(await moved(THIEF), ['danger:You would lose your withdraw authority']); // someone's key
+    assert.deepEqual(await moved((await getProgramDerivedAddress({ programAddress: EVIL, seeds: ['deposit'] }))[0]), ["warn:Your withdraw authority goes to a program's address"]); // a program's address: said, to check
 });
 
-test('a stake split from one of yours under someone else’s lockup is still told critical: Otus can’t prove where its SOL came from', async () => {
-    // An honest split of a vesting stake reads like SOL put into a stake someone else locks: told as such, as one an
-    // attacker made for you, with your wallet as withdrawer and their lockup, would read the same.
+test('a stake split from one of yours under the same lockup is as locked as it was; a free stake of yours newly locked is critical', async () => {
     const split: Instruction = { programAddress: STAKE, accounts: [{ address: STAKED, role: W }, { address: key(61), role: W }, { address: PAYER, role: RS }], data: new Uint8Array([3, 0, 0, 0]) };
     const lockup = { time: 2_000_000_000n, custodian: THIEF };
+    const RENT = 2_282_880n;
+    // The new account's rent from your wallet, the rest moved from the locked stake.
     const before = [account(PAYER, SYSTEM, SOL), stakeAccount(staked(PAYER, lockup))];
-    const after = [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(staked(PAYER, lockup), 6n * SOL), account(key(61), STAKE, 4n * SOL, staked(PAYER, lockup))];
-    assert.deepEqual((await findings(split, before, after, ['stake-lockup'])).map((f) => f.split(' ')[0]), ['danger:stake-lockup']);
+    const after = [account(PAYER, SYSTEM, SOL - RENT - 5000n), stakeAccount(staked(PAYER, lockup), 6n * SOL), account(key(61), STAKE, 4n * SOL + RENT, staked(PAYER, lockup))];
+    assert.deepEqual(await findings(split, before, after, ['stake-lockup']), []);
+    // Your free stake put under that lockup, beside a stake made for you under it that shrinks: newly locked.
+    const setLockup: Instruction = { programAddress: STAKE, accounts: [{ address: STAKED, role: W }, { address: key(61), role: W }, { address: PAYER, role: RS }], data: new Uint8Array([6, 0, 0, 0]) };
+    const tricked = await findings(setLockup, [account(PAYER, SYSTEM, SOL), stakeAccount(staked(PAYER), 500n * SOL), account(key(61), STAKE, SOL, staked(PAYER, lockup))], [account(PAYER, SYSTEM, SOL - 5000n), stakeAccount(staked(PAYER, lockup), 500n * SOL), account(key(61), STAKE, SOL / 2n, staked(PAYER, lockup))], ['stake-lockup']);
+    assert.deepEqual(tricked.map((f) => f.split(' ')[0]), ['danger:stake-lockup']);
 });
 
 test('a token account given to you is yours now: nothing lost, nothing critical', async () => {
