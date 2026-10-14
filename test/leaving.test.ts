@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { getCreateAccountWithSeedInstruction } from '@solana-program/system';
+import { getCreateAccountWithSeedInstruction, getTransferSolInstruction } from '@solana-program/system';
 import { getCreateAssociatedTokenIdempotentInstruction, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { AccountRole, address, createNoopSigner, getProgramDerivedAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
@@ -90,4 +90,28 @@ test('the rent of a token account made for a wallet, beside a program Otus doesn
     );
     const level = (r: Awaited<ReturnType<typeof review>>) => r.assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level);
     assert.deepEqual([level(sol), level(swept)], [['danger'], ['danger']]);
+});
+
+test('what others get from someone else is not yours: a vault opening an account inside a call, your tip said in words', async () => {
+    // A multisig's run: you pay a tip in words; inside, its vault pays the rent of a token account it opens for a wallet
+    // and sends it tokens. Nothing of yours goes unsaid.
+    const SQUADS = address('SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf');
+    const [vault, proposal, tip] = [key(32), key(33), key(34)];
+    const run: Instruction = { programAddress: SQUADS, accounts: [{ address: PAYER, role: WS }, { address: proposal, role: W }, { address: vault, role: W }, { address: VAULT, role: W }, { address: THIEF_TOKEN, role: W }] };
+    const tipped = getTransferSolInstruction({ source: createNoopSigner(PAYER), destination: tip, amount: 100_000n });
+    const before = [account(PAYER, SYSTEM, SOL), account(tip, SYSTEM, 690_880n), account(proposal, SQUADS, SOL / 100n, new Uint8Array(64)), account(vault, SYSTEM, 4n * SOL), tokens(VAULT, vault, 1_000_000n)];
+    const after = [account(PAYER, SYSTEM, SOL - 100_000n - 5_000n), account(tip, SYSTEM, 790_880n), account(proposal, SQUADS, SOL / 100n, new Uint8Array(64)), account(vault, SYSTEM, 4n * SOL - 1_488_440n), tokens(VAULT, vault, 0n), account(THIEF_TOKEN, TOKEN_PROGRAM_ADDRESS, 1_488_440n, tokenAccountData({ mint: MINT, owner: THIEF, amount: 1_000_000n }))];
+    const r = await review(transaction([tipped, run]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain(before, after));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet'), []);
+});
+
+test('SOL someone else sends a wallet in words does not cover yours going there unsaid', async () => {
+    // Another signer sends the thief 1 SOL in words; a program Otus doesn't read takes 1 SOL of yours there too.
+    const other = key(35);
+    const decoy = getTransferSolInstruction({ source: createNoopSigner(other), destination: THIEF, amount: SOL });
+    const drain: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }, { address: THIEF, role: W }] };
+    const before = [account(PAYER, SYSTEM, 5n * SOL), account(other, SYSTEM, 2n * SOL), account(THIEF, SYSTEM, SOL)];
+    const after = [account(PAYER, SYSTEM, 4n * SOL - 10_000n), account(other, SYSTEM, SOL), account(THIEF, SYSTEM, 3n * SOL)];
+    const r = await review(transaction([decoy, drain]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain(before, after));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level), ['danger']);
 });
