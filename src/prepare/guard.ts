@@ -9,7 +9,7 @@ import { holdings, offsetsOf, type Change, type Changes, type State } from '../r
 export type Hold =
     | { kind: 'wallet'; account: Address; atLeast: bigint; owner?: Address; space?: number } // lamports
     | { kind: 'token'; account: Address; atLeast: bigint; owner?: Address; delegate?: Address | null; delegated?: bigint; closer?: Address | null } // delegate and delegated go together
-    | { kind: 'account'; account: Address; atLeast: bigint; owner?: Address; space?: number; keys: number[]; stake?: Meta }; // keys: where your address stays
+    | { kind: 'account'; account: Address; atLeast: bigint; owner?: Address; space?: number; keys: number[]; stake?: Partial<Meta> }; // keys: where your address stays
 
 /** A stake account's authorities and lockup, held as they were reviewed: who stakes, who withdraws, until when, and
  *  who alone can lift it before then. */
@@ -56,54 +56,74 @@ export function holds(yours: Changes, wallet: Address, keyed: Change[] = [], tra
                 },
             ];
         }
-        const stake = apart.has('stake') ? null : metaOf(after.program, after.data);
-        return [{ kind: 'account', account: address, atLeast: least(before?.lamports ?? 0n, after.lamports), ...kept('owner', { owner: after.program }), ...kept('space', { space: after.space }), keys: apart.has('keys') ? [] : offsetsOf(key, after), ...(stake && { stake }) }];
+        const meta = metaOf(after.program, after.data);
+        const stake = meta && (Object.fromEntries(Object.entries(meta).filter(([field]) => !apart.has(field as Field))) as Partial<Meta>);
+        const keys = offsetsOf(key, after).filter((o) => !apart.has(`key:${o}`));
+        return [{ kind: 'account', account: address, atLeast: least(before?.lamports ?? 0n, after.lamports), ...kept('owner', { owner: after.program }), ...kept('space', { space: after.space }), keys, ...(stake && Object.keys(stake).length > 0 && { stake }) }];
     });
 }
 
 /** What other transactions signed with this one may make its guards let pass beyond its own review, only from what
- *  they move between your own accounts (what they send away is in their reviews, and so in what the user sees):
- *  lamports, and units of any token. What a token account's rent may take, at most, is not counted. */
+ *  they move between your own accounts (what they send away is in their reviews, and so in what the user sees): for
+ *  each of them and each asset, what it moves out of your accounts here past what its holdings lose; in lamports, and
+ *  units of any token. What a token account's rent may take, at most, is not counted. */
 export function roomBeside(yours: Changes, wallet: Address, beside: Beside[] = []): { lamports: bigint; units: bigint } {
     const key = getAddressEncoder().encode(wallet);
-    let [lamports, units] = [0n, 0n];
+    const moved = new Map<string, { at: number; asset: string; amount: bigint }>();
     for (const { address, after } of yours.accounts) {
         if (!after) continue;
-        const { inside } = besideOf(address, after, wallet, key, beside);
-        if (address === wallet || !after.token) lamports += inside;
-        else units += inside;
+        for (const m of besideOf(address, after, wallet, key, beside).moved) {
+            const k = `${m.at}\u0000${m.asset}`;
+            moved.set(k, { ...m, amount: (moved.get(k)?.amount ?? 0n) + m.amount });
+        }
+    }
+    let [lamports, units] = [0n, 0n];
+    for (const { at, asset, amount } of moved.values()) {
+        const b = beside[at];
+        const [had, has] = holdings(b.yours).get(asset) ?? [0n, 0n];
+        const lost = had - (asset === 'SOL' ? has - b.yours.fee : has);
+        const room = amount - (lost > 0n ? lost : 0n);
+        if (room <= 0n) continue;
+        if (asset === 'SOL') lamports += room;
+        else units += room;
     }
     return { lamports: lamports > ROOM_LEFT ? lamports : 0n, units };
 }
 const ROOM_LEFT = 10_000_000n; // lamports: a token account's rent at most, as several transactions open or close them
 
-type Field = 'owner' | 'space' | 'delegate' | 'closer' | 'keys' | 'stake' | 'all';
+// A field a hold asserts: its owner, size and a token account's authorities, your address at an offset (`key:<n>`), a
+// stake's terms one by one; 'all' when the account is not the same kind any more.
+type Field = 'owner' | 'space' | 'delegate' | 'closer' | 'all' | keyof Meta | `key:${number}`;
 
-// What the others do to an account this one holds as `after`: what they may take out of its amount (`taken`), and of
-// that what stays among your own accounts (`inside`: their own holdings lose less), and the fields they change.
-function besideOf(address: Address, after: NonNullable<State>, wallet: Address, key: ReadonlyUint8Array, beside: Beside[]): { taken: bigint; inside: bigint; apart: Set<Field> } {
+// What the others do to an account this one holds as `after`: what they may take out of its amount (`taken`), what
+// each of them moves out of it (`moved`, by its place among them), and the fields they change. One that closes it takes
+// all of it, and leaves it, made again, with no delegate nor close authority.
+function besideOf(address: Address, after: NonNullable<State>, wallet: Address, key: ReadonlyUint8Array, beside: Beside[]): { taken: bigint; moved: { at: number; asset: string; amount: bigint }[]; apart: Set<Field> } {
     const apart = new Set<Field>();
-    let [taken, inside] = [0n, 0n];
+    const moved: { at: number; asset: string; amount: bigint }[] = [];
+    let taken = 0n;
     const amount = (s: NonNullable<State>) => (address !== wallet && s.token ? s.token.amount : s.lamports);
-    for (const b of beside) {
+    const assetOf = (s: NonNullable<State>) => (address !== wallet && s.token && !s.token.native ? s.token.mint : 'SOL');
+    for (const [at, b] of beside.entries()) {
         const c = b.changes.accounts.find((x) => x.address === address);
-        if (!c || !c.after) continue; // untouched, or closed by it: landing first, it leaves nothing for this one
+        if (!c || (!c.before && !c.after)) continue;
+        const spare = address === wallet ? (b.spare ?? 0n) : 0n;
+        if (!c.after) {
+            const all = amount(c.before!);
+            taken += all + spare;
+            moved.push({ at, asset: assetOf(c.before!), amount: all });
+            apart.add('delegate').add('closer');
+            continue;
+        }
         // Made by it: what this one would find, if that one lands first, is what it made, as far as it is the same.
         for (const f of differs(c.before ?? after, c.after, after, key)) apart.add(f);
         if (!c.before) continue;
         const by = trades(b.yours) ? SLACK.trade : SLACK.drift;
         const [was, left] = [amount(c.before), amount(c.after)];
-        const out = left < was ? was - max(0n, left - ((was - left) * by + 9_999n) / 10_000n) : 0n;
-        const spare = address === wallet ? (b.spare ?? 0n) : 0n;
-        taken += out + spare;
-        // Of what it takes out here, what it keeps among your accounts: more than its holdings lose in all.
-        const asset = address !== wallet && c.before.token && !c.before.token.native ? c.before.token.mint : 'SOL';
-        const [had, has] = holdings(b.yours).get(asset) ?? [0n, 0n];
-        const lost = had - (asset === 'SOL' ? has - b.yours.fee : has);
-        const moved = left < was ? was - left : 0n;
-        inside += moved > lost ? moved - (lost > 0n ? lost : 0n) : 0n;
+        if (left < was) moved.push({ at, asset: assetOf(c.before), amount: was - left });
+        taken += (left < was ? was - max(0n, left - ((was - left) * by + 9_999n) / 10_000n) : 0n) + spare;
     }
-    return { taken, inside, apart };
+    return { taken, moved, apart };
 }
 
 // The fields of an account one transaction changes, from `a` to `b`, that a hold made of `held` asserts: its owner and
@@ -122,8 +142,11 @@ function differs(a: NonNullable<State>, b: NonNullable<State>, held: NonNullable
     if (a.program !== b.program) out.push('owner');
     if (a.space !== b.space) out.push('space');
     const at = (s: NonNullable<State>, from: number, to: number) => s.data.slice(from, to).join(',');
-    if (offsetsOf(key, held).some((o) => at(a, o, o + 32) !== at(b, o, o + 32))) out.push('keys');
-    if (held.program === STAKE_PROGRAM && at(a, 12, 124) !== at(b, 12, 124)) out.push('stake');
+    for (const o of offsetsOf(key, held)) if (at(a, o, o + 32) !== at(b, o, o + 32)) out.push(`key:${o}`);
+    if (held.program === STAKE_PROGRAM) {
+        const terms: [keyof Meta, number, number][] = [['staker', 12, 44], ['withdrawer', 44, 76], ['time', 76, 84], ['epoch', 84, 92], ['custodian', 92, 124]];
+        for (const [field, from, to] of terms) if (at(a, from, to) !== at(b, from, to)) out.push(field);
+    }
     return out;
 }
 
@@ -171,9 +194,15 @@ export function assertions(h: Hold, wallet: Address): Uint8Array[] {
     if (h.kind === 'account' && h.stake) {
         const m = h.stake;
         const i64 = (v: bigint) => [...getI64Encoder().encode(v)];
-        const held = [[12, PUBKEY, ...key(m.staker)], [44, PUBKEY, ...key(m.withdrawer)], [76, I64, ...i64(m.time)], [84, U64, ...u64(m.epoch)], [92, PUBKEY, ...key(m.custodian)]];
+        const held: number[][] = [];
+        if (m.staker) held.push([12, PUBKEY, ...key(m.staker)]);
+        if (m.withdrawer) held.push([44, PUBKEY, ...key(m.withdrawer)]);
+        if (m.time !== undefined) held.push([76, I64, ...i64(m.time)]);
+        if (m.epoch !== undefined) held.push([84, U64, ...u64(m.epoch)]);
+        if (m.custodian) held.push([92, PUBKEY, ...key(m.custodian)]);
         const others = h.keys.filter((offset) => ![12, 44, 92].includes(offset)).map((offset) => [offset, PUBKEY, ...key(wallet)]);
         const all = [...held, ...others];
+        if (all.length === 0) return [found];
         return [found, Uint8Array.from([DATA_MULTI, SILENT, ...leb128(all.length), ...all.flatMap(([offset, ...value]) => [...leb128(offset), ...value, EQUAL])])];
     }
     if (h.kind === 'wallet' || h.keys.length === 0) return [found];

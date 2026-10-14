@@ -196,7 +196,7 @@ const LEEWAY: Finding = { level: 'warn', code: 'guards-leeway', text: 'Its guard
 // Whether a hold made beside others asserts less than `alone`, the one made without them: none at all, or a field less.
 function weaker(alone: Hold, beside: Hold | undefined): boolean {
     if (!beside) return true;
-    const fields = (h: Hold) => Object.keys(h).filter((k) => !['atLeast', 'keys'].includes(k)).length;
+    const fields = (h: Hold) => Object.keys(h).filter((k) => !['atLeast', 'keys', 'stake'].includes(k)).length + (h.kind === 'account' && h.stake ? Object.keys(h.stake).length : 0);
     const keys = (h: Hold) => (h.kind === 'account' ? h.keys.length : 0);
     return fields(beside) < fields(alone) || keys(beside) < keys(alone);
 }

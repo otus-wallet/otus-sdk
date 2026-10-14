@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
+import { getAddressEncoder } from '@solana/kit';
+
+import { STAKE_PROGRAM } from '../src/programs/addresses.ts';
 
 import { assertions, holds, roomBeside, type Beside, type Hold } from '../src/prepare/guard.ts';
 import type { Change, Changes, State, Token } from '../src/review/changes.ts';
@@ -46,10 +49,12 @@ test('a field another changes is not held, the rest still is: what it is then de
     // Its delegate let go, its amount, owner and close authority held.
     assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(lends)])), { kind: 'token', account: USER_TOKEN, atLeast: least(holds(a, PAYER), USER_TOKEN), owner: PAYER, closer: null });
     assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(owned)])), { kind: 'token', account: USER_TOKEN, atLeast: least(holds(a, PAYER), USER_TOKEN), delegate: null, delegated: 0n, closer: null });
-    // Closed by another, or made by it as this one finds it: held as alone.
-    const closes = tx(5_000n, change(USER_TOKEN, tokens(1000n), null));
+    // Made by another as this one finds it: held as alone.
     const opens = tx(5_000n, change(USER_TOKEN, null, tokens(0n)));
-    for (const other of [closes, opens]) assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(other)])), token(holds(a, PAYER)));
+    assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(opens)])), token(holds(a, PAYER)));
+    // Closed by another: all of it may be gone, and made again it has no delegate nor close authority.
+    const closes = tx(5_000n, change(USER_TOKEN, tokens(1000n), null));
+    assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(closes)])), { kind: 'token', account: USER_TOKEN, atLeast: 0n, owner: PAYER });
     // Of another mint, or kind: not held at all.
     const remade = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(1000n, { mint: key(44) })));
     assert.equal(token(holds(a, PAYER, [], undefined, [beside(remade)])), undefined);
@@ -87,4 +92,47 @@ test('several beside: what each takes adds up; a floor never goes below nothing'
     assert.equal(least(holds(a, PAYER), USER_TOKEN)! - least(both, USER_TOKEN)!, 303n + 404n);
     const all = tx(0n, change(USER_TOKEN, tokens(1000n), tokens(0n)));
     assert.equal(least(holds(a, PAYER, [], undefined, [beside(all)]), USER_TOKEN), 0n);
+});
+
+test('a stake account another changes one term of keeps the others held, and your address where it stays', () => {
+    const STAKE = key(47);
+    const stakeData = (staker: Uint8Array, withdrawer: Uint8Array) => {
+        const d = new Uint8Array(200);
+        d[0] = 2; // delegated
+        d.set(staker, 12);
+        d.set(withdrawer, 44);
+        return d;
+    };
+    const me = Uint8Array.from(getAddressEncoder().encode(PAYER));
+    const other = Uint8Array.from(getAddressEncoder().encode(key(48)));
+    const stake = (staker: Uint8Array, lamports: bigint): State => ({ lamports, program: STAKE_PROGRAM, space: 200, data: stakeData(staker, me), token: null });
+    const a = tx(5_000n, change(STAKE, stake(me, 3n * SOL), stake(me, 3n * SOL)));
+    const alone = holds(a, PAYER).find((h) => h.account === STAKE)!;
+    assert.ok(alone.kind === 'account' && alone.stake && alone.keys.includes(44));
+    // Another gives the stake authority away: the withdrawer, the lockup and your address at 44 still held.
+    const gives = tx(5_000n, change(STAKE, stake(me, 3n * SOL), stake(other, 3n * SOL)));
+    const held = holds(a, PAYER, [], undefined, [beside(gives)]).find((h) => h.account === STAKE)!;
+    assert.ok(held.kind === 'account');
+    assert.deepEqual(Object.keys(held.kind === 'account' ? held.stake ?? {} : {}).sort(), ['custodian', 'epoch', 'time', 'withdrawer']);
+    assert.deepEqual(held.kind === 'account' && held.keys, [44]);
+    assert.equal(assertions(held, PAYER).length, 2);
+});
+
+test('room is what each of the others moves out of your accounts past what it loses, asset by asset', () => {
+    const [WRAPPED, STAKED] = [key(49), key(50)];
+    const native = (amount: bigint): State => ({ lamports: 2_039_280n + amount, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: key(46), owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: true } });
+    const staked = (lamports: bigint): State => ({ lamports, program: STAKE_PROGRAM, space: 200, data: new Uint8Array(200), token: null });
+    // A holds the wallet and the stake account; B wraps 4 SOL (stays yours) and withdraws 4 SOL of the stake to someone else.
+    const a = tx(5_000n, change(PAYER, wallet(10n * SOL), wallet(10n * SOL - 5_000n)), change(STAKED, staked(5n * SOL), staked(5n * SOL)));
+    const b = tx(5_000n, change(PAYER, wallet(10n * SOL), wallet(6n * SOL - 5_000n)), change(WRAPPED, native(0n), native(4n * SOL)), change(STAKED, staked(5n * SOL), staked(SOL)));
+    const room = roomBeside(a, PAYER, [beside(b)]);
+    assert.equal(room.lamports, 4n * SOL); // 8 SOL out of A's accounts, 4 SOL lost: 4 SOL stays among yours
+});
+
+test('one that closes and another that opens the same account again land in either order', () => {
+    // B moves 1,000 out and closes it; A makes it again (idempotent) and puts 50 in.
+    const a = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(1050n)));
+    const closes = tx(5_000n, change(USER_TOKEN, tokens(1000n), null));
+    const h = holds(a, PAYER, [], undefined, [beside(closes)]).find((x) => x.account === USER_TOKEN)!;
+    assert.ok(h.atLeast <= 50n, String(h.atLeast)); // made again with only A's 50, it still passes
 });
