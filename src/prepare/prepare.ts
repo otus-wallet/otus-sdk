@@ -13,6 +13,7 @@ import { budgetIndex, dataLimit, defaultUnits, fee, lamportsFor, MAX_ROOM, prior
 import { decode, durable, encode, type Message } from '../review/decode.ts';
 import type { Review } from '../review/review.ts';
 import { LIGHTHOUSE } from '../programs/addresses.ts';
+import { CORE_PROGRAMS } from '../programs/core.ts';
 import { PROGRAM_NAMES } from '../programs/known.ts';
 import { assertions, holds, type Hold } from './guard.ts';
 
@@ -57,8 +58,10 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade);
     // As the site sent it, without guards: why, for the review's Guards line; and what else was found on the way.
     const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null });
+    // Without the guards it should have had: a warning too, when what it does to accounts of yours can come out otherwise.
+    const unheld = (reason: string): Prepared => asIs(reason, exposed(r) ? [UNGUARDED] : []);
     // Changed, the transaction would need every signature again: one another account made, or will make over it as it is.
-    if (r.signers.length > 1) return asIs(r.signed.some((a) => a !== wallet) ? "Otus can't add guards because the transaction is already signed by another account" : "Otus can't add guards because another account must sign the transaction too");
+    if (r.signers.length > 1) return unheld(r.signed.some((a) => a !== wallet) ? "Otus can't add guards because the transaction is already signed by another account" : "Otus can't add guards because another account must sign the transaction too");
     if (r.simulation.error !== null) return asIs(SIMULATION_FAILED);
     const loaded = r.accounts.filter((a) => a.table).map((a) => a.address);
     if ([LIGHTHOUSE, COMPUTE_BUDGET_PROGRAM_ADDRESS].some((p) => loaded.includes(p))) return asIs("Otus can't add guards because its lookup tables load the programs they need", [TABLED]);
@@ -82,7 +85,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     // priority fee leaves the wallet without, units the guards could have used up), it goes as the site sent it;
     // otherwise it acts other than reviewed. `limit`: the units it had.
     const failed = async (error: NonNullable<Simulation['error']>, limit: number) =>
-        ours(error, { used: r.simulation.unitsConsumed, limit, added }) ? asIs("Otus can't add guards because the transaction has no room left for them") : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
+        ours(error, { used: r.simulation.unitsConsumed, limit, added }) ? unheld("Otus can't add guards because the transaction has no room left for them") : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
     const sitePrice = r.message.version === 1 ? r.message.config.priorityFeeLamports : unitPrice(r.message);
     // The price asked of the network while the limit is measured, which needs none.
     const pricingAsked = sitePrice == null ? pricing(r, chain) : Promise.resolve(null);
@@ -105,7 +108,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         if (siteLimit === null || (roomed && added > 0)) {
             if (roomed) room = MAX_ROOM;
             const probe = await wired(unpriced(signable(MAX_COMPUTE_UNIT_LIMIT, false).message), r.signers);
-            if (probe === null) return asIs("Otus can't add guards because the transaction has no room left for them");
+            if (probe === null) return unheld("Otus can't add guards because the transaction has no room left for them");
             const measured = await chain.simulate(probe.bytes, [], r.slot);
             if (measured.error !== null) return failed(measured.error, MAX_COMPUTE_UNIT_LIMIT);
             // An RPC that does not say what it used: the runtime's default for the site's instructions, and the guards'
@@ -128,14 +131,14 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         let tried = await attempt(limit, true);
         if (tried?.check.error && spent(tried.check.error) && limit < MAX_COMPUTE_UNIT_LIMIT) tried = await attempt((limit = MAX_COMPUTE_UNIT_LIMIT), true);
         if (tried?.check.error && rentShort(tried.check.error) && tried.price > 0n) tried = await attempt(limit, false);
-        if (tried === null) return asIs("Otus can't add guards because the transaction has no room left for them");
+        if (tried === null) return unheld("Otus can't add guards because the transaction has no room left for them");
         const { message, held, price, bytes, hash, check } = tried;
         if (check.error !== null) return failed(check.error, limit);
         const total = check.fee ?? fee(message);
         return { bytes, hash, fee: total, holds: held, unguarded: held.length > 0 ? null : (bare ?? NOTHING_TO_HOLD), findings: [...feeFindings(r, wallet, total), ...differs(r, message, check)], units: limit, priced: price > 0n && market ? market.from : null, room: room !== siteRoom ? room : null, priority: price > 0n && market ? priorityFee(message) : null };
     } catch (cause) {
         console.error('Otus: preparing', cause);
-        return asIs("Otus couldn't add guards because the network didn't answer");
+        return unheld("Otus couldn't add guards because the network didn't answer");
     }
 }
 
@@ -160,6 +163,14 @@ function feeFindings(r: Review, wallet: Address, total: bigint): Finding[] {
     if (total > HUGE_FEE && reviewed <= HUGE_FEE) return [{ level: 'danger', code: 'high-fee', text: 'A huge network fee', note: 'It goes to whoever makes the block' }];
     if (total > HIGH_FEE && reviewed <= HIGH_FEE) return [{ level: 'warn', code: 'high-fee', text: 'High network fee' }];
     return [];
+}
+
+// Unguarded, what a program other than Solana's own does to accounts of yours (a swap, a protocol, one Otus doesn't
+// know) depends on the chain as it lands: a pool moved meanwhile, a program that acts otherwise then.
+const UNGUARDED: Finding = { level: 'warn', code: 'unguarded', text: 'Not guarded', note: 'What it does to your accounts can change before it lands' };
+function exposed(r: Review): boolean {
+    const yours = new Set(r.assessment.yours.accounts.map((c) => c.address));
+    return r.message.instructions.some((ix) => !CORE_PROGRAMS.has(r.accounts[ix.programAddressIndex].address) && ix.accountIndices.some((j) => r.accounts[j].writable && yours.has(r.accounts[j].address)));
 }
 
 // No transaction needs Lighthouse or Compute Budget among the accounts it loads from a table: there they only keep

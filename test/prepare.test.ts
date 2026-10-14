@@ -235,6 +235,29 @@ test('says why it leaves a transaction as the site sent it, for the review’s G
     }
 });
 
+test('a transaction it can’t guard that writes accounts of yours through a program not Solana’s own is a warning', async () => {
+    const tokens = account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1000n }));
+    const before = [account(PAYER, SYSTEM, 5_000_000n), tokens];
+    const cosigner = { address: key(60), role: AccountRole.READONLY_SIGNER };
+    // A swap through a program, with another signer: what lands may not be what was shown.
+    const swap = { ...touching(USER_TOKEN), accounts: [...touching(USER_TOKEN).accounts!, cosigner] };
+    const shown = async (ix: Instruction, rest: Partial<Chain> = {}) => {
+        const chain = fakeChain(before, before, {}, rest);
+        const p = await prepare(await review(transaction([ix]), context, chain), PAYER, chain);
+        return [p.unguarded !== null, p.findings.map((f) => `${f.level}:${f.code}`)];
+    };
+    assert.deepEqual(await shown(swap), [true, ['warn:unguarded']]);
+    // The network silent while it is prepared, the same.
+    assert.deepEqual(await shown(touching(USER_TOKEN), { fees: async () => Promise.reject(new Error('429')) }), [true, ['warn:unguarded']]);
+    // Only Solana's own programs, with another signer: what they do is in their instructions, no warning.
+    const paid = { ...pay, accounts: [...pay.accounts!, cosigner] };
+    assert.deepEqual(await shown(paid), [true, []]);
+    // A program given nothing of yours: no warning. Given your wallet, which pays the fee and so can be written, it can
+    // spend its SOL with your signature: a warning.
+    assert.deepEqual(await shown({ programAddress: EVIL_PROGRAM, accounts: [cosigner, { address: key(61), role: AccountRole.WRITABLE }] }), [true, []]);
+    assert.deepEqual(await shown({ programAddress: EVIL_PROGRAM, accounts: [{ address: PAYER, role: AccountRole.READONLY_SIGNER }, cosigner] }), [true, ['warn:unguarded']]);
+});
+
 test('warns when the fee as prepared is high, though the site set it below the line', async () => {
     const tx = transaction([getSetComputeUnitLimitInstruction({ units: 5_000 }), getSetComputeUnitPriceInstruction({ microLamports: 980_000_000n }), pay]);
     const chain = fakeChain([account(PAYER, SYSTEM, 50_000_000n)], [account(PAYER, SYSTEM, 50_000_000n - 1_000_000n - 4_905_000n)], { fee: 4_905_000n, unitsConsumed: 1_000n });
