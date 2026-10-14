@@ -173,3 +173,34 @@ test('a wrapped SOL payment in words beside an unread program is said: not criti
     const touch: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }] };
     assert.deepEqual(await drained([pay, touch], [account(PAYER, SYSTEM, SOL), wsol(wrapped, PAYER, 2n * SOL), wsol(theirs, THIEF, 0n)], [account(PAYER, SYSTEM, SOL - 5_000n), wsol(wrapped, PAYER, SOL), wsol(theirs, THIEF, SOL)]), []);
 });
+
+test('a drain split across many wallets is no fee: critical, as one to a single wallet is', async () => {
+    const many = Array.from({ length: 21 }, (_, i) => key(80 + i));
+    const before = [account(PAYER, SYSTEM, 21n * SOL + 5_000n), ...many.map((w) => account(w, SYSTEM, SOL))];
+    const after = [account(PAYER, SYSTEM, 0n), ...many.map((w) => account(w, SYSTEM, 2n * SOL))];
+    assert.deepEqual(await drained([unread(...many)], before, after), ['danger']);
+    // A twentieth or less of it in all, to several: a fee, maybe.
+    const fee = [account(PAYER, SYSTEM, 20n * SOL - SOL / 2n - 5_000n), ...many.slice(0, 2).map((w) => account(w, SYSTEM, SOL + SOL / 4n))];
+    const pool = key(101);
+    const paid = [...fee, account(pool, EVIL, 20n * SOL - SOL / 2n, new Uint8Array(8))];
+    const r = await review(transaction([unread(...many.slice(0, 2), pool)]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain([account(PAYER, SYSTEM, 40n * SOL), ...many.slice(0, 2).map((w) => account(w, SYSTEM, SOL)), account(pool, EVIL, 0n, new Uint8Array(8))], paid));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level), ['warn']);
+});
+
+test('a token account there already takes no rent: making it again says nothing of SOL put in it', async () => {
+    const made = getCreateAssociatedTokenIdempotentInstruction({ payer: createNoopSigner(PAYER), ata: THIEF_TOKEN, owner: THIEF, mint: MINT });
+    const before = [account(PAYER, SYSTEM, 5n * SOL), held(THIEF_TOKEN, THIEF, 0n)];
+    const after = [account(PAYER, SYSTEM, 5n * SOL - 10_000_000n - 5_000n), held(THIEF_TOKEN, THIEF, 0n, { lamports: RENT + 10_000_000n })];
+    assert.deepEqual(await drained([made, unread(THIEF_TOKEN)], before, after), ['danger']);
+});
+
+test('wrapped SOL paid in words from an account made here is said too: not critical', async () => {
+    const [wrapped, theirs] = [key(102), key(103)];
+    const wsol = (a: Address, owner: Address, amount: bigint) => held(a, owner, amount, { mint: NATIVE, lamports: RENT + amount, native: RENT });
+    const pay = getTransferInstruction({ source: wrapped, destination: theirs, authority: createNoopSigner(PAYER), amount: SOL });
+    const touch: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }] };
+    // The wrapped SOL account is new: made, filled and paid from here.
+    const before = [account(PAYER, SYSTEM, 3n * SOL), wsol(theirs, THIEF, 0n)];
+    const after = [account(PAYER, SYSTEM, 2n * SOL - RENT - 5_000n), wsol(wrapped, PAYER, 0n), wsol(theirs, THIEF, SOL)];
+    assert.deepEqual(await drained([pay, touch], before, after), []);
+});

@@ -552,7 +552,8 @@ function sentInWords(explained: Explained[], changes: Changes): Send[] {
             else if (e.name === 'Split') pair('SOL', 'stake', 'splitStake', arg('args'));
         } else if (TOKEN_PROGRAMS.includes(e.program)) {
             if (e.name === 'Transfer' || e.name === 'TransferChecked') {
-                const native = changes.accounts.find((c) => c.address === at('source'))?.before?.token?.native === true;
+                const source = changes.accounts.find((c) => c.address === at('source'));
+                const native = (source?.before ?? source?.after)?.token?.native === true; // one made here too
                 pair(native ? 'SOL' : 'token', 'source', 'destination', arg('amount'));
             }
             else if (e.name === 'CloseAccount') {
@@ -561,7 +562,8 @@ function sentInWords(explained: Explained[], changes: Changes): Send[] {
             }
         } else if (e.program === ASSOCIATED_TOKEN_PROGRAM_ADDRESS && (e.name === 'CreateAssociatedToken' || e.name === 'CreateAssociatedTokenIdempotent')) {
             const ata = at('ata');
-            if (!ata || made.has(ata)) continue;
+            // Only one made here: one there already ("nothing changes", its words say) takes no rent.
+            if (!ata || made.has(ata) || (before.get(ata) ?? 0n) > 0n) continue;
             made.add(ata);
             const rent = (after.get(ata) ?? 0n) - (before.get(ata) ?? 0n);
             pair('SOL', 'payer', 'ata', rent < 0n ? 0n : rent > RENT_MOST ? RENT_MOST : rent);
@@ -654,8 +656,12 @@ function leaving(programs: ProgramUse[], explained: Explained[], changes: Change
     const subject = hidden[0].o.holder;
     if (nft || flows.some((f) => f.change > 0n)) return strange ? [{ level: 'warn', code: 'check-balances', text: 'Check the balances', subject, note: `A trade through ${by}, which Otus cannot read`, programs: blind.filter((p) => p.name === null).map((p) => p.program) }] : [];
     const swept = new Set<string>(outflows(yours).map(([, mint]) => mint ?? 'SOL'));
-    const small = hidden.every(({ f, o }) => o.amount * 20n <= -f.change);
-    const critical = hidden.some(({ f, o }) => (o.wallet ? o.amount * 20n > -f.change : swept.has(f.asset)));
+    // A fee is a small share of an asset in all, not to each: split across many wallets, a drain is no fee.
+    const toWallets = new Map<Flow, bigint>();
+    for (const { f, o } of hidden) if (o.wallet) toWallets.set(f, (toWallets.get(f) ?? 0n) + o.amount);
+    const share = (f: Flow) => hidden.filter((h) => h.f === f).reduce((sum, h) => sum + h.o.amount, 0n);
+    const small = hidden.every(({ f }) => share(f) * 20n <= -f.change);
+    const critical = [...toWallets].some(([f, amount]) => amount * 20n > -f.change) || hidden.some(({ f, o }) => !o.wallet && swept.has(f.asset));
     const assets = new Set(hidden.map(({ f }) => f.asset)).size;
     const text = small ? 'A small part of your assets goes to someone else' : assets === 1 ? 'An asset of yours goes to someone else' : `${assets} of your assets go to someone else`;
     return [{ level: critical ? 'danger' : 'warn', code: 'sends-to-wallet', text, subject, note: `Through ${by}, which Otus cannot read${small ? ': a fee, maybe' : ''}`, programs: (strange ? blind.filter((p) => p.name === null) : blind).map((p) => p.program) }];
