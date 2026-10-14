@@ -52,9 +52,12 @@ test('a field another changes is not held, the rest still is: what it is then de
     // Made by another as this one finds it: held as alone.
     const opens = tx(5_000n, change(USER_TOKEN, null, tokens(0n)));
     assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(opens)])), token(holds(a, PAYER)));
-    // Closed by another: all of it may be gone, and made again it has no delegate nor close authority.
+    // Closed by another: all of it may be gone; made again it has no delegate nor close authority, which a hold of
+    // none still asserts (no one may be let in), one of some lets go.
     const closes = tx(5_000n, change(USER_TOKEN, tokens(1000n), null));
-    assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(closes)])), { kind: 'token', account: USER_TOKEN, atLeast: 0n, owner: PAYER });
+    assert.deepEqual(token(holds(a, PAYER, [], undefined, [beside(closes)])), { kind: 'token', account: USER_TOKEN, atLeast: 0n, owner: PAYER, delegate: null, delegated: 0n, closer: null });
+    const lentOut = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(900n, { delegate: key(41), delegated: 5n })));
+    assert.deepEqual(token(holds(lentOut, PAYER, [], undefined, [beside(closes)])), { kind: 'token', account: USER_TOKEN, atLeast: 0n, owner: PAYER, closer: null });
     // Of another mint, or kind: not held at all.
     const remade = tx(5_000n, change(USER_TOKEN, tokens(1000n), tokens(1000n, { mint: key(44) })));
     assert.equal(token(holds(a, PAYER, [], undefined, [beside(remade)])), undefined);
@@ -135,4 +138,11 @@ test('one that closes and another that opens the same account again land in eith
     const closes = tx(5_000n, change(USER_TOKEN, tokens(1000n), null));
     const h = holds(a, PAYER, [], undefined, [beside(closes)]).find((x) => x.account === USER_TOKEN)!;
     assert.ok(h.atLeast <= 50n, String(h.atLeast)); // made again with only A's 50, it still passes
+});
+
+test('your address at a stake term’s place is asserted on its own when that term is not held', () => {
+    const STAKE = key(51);
+    const hold: Hold = { kind: 'account', account: STAKE, atLeast: 1n, owner: STAKE_PROGRAM, space: 200, keys: [12], stake: { withdrawer: PAYER } };
+    const [, data] = assertions(hold, PAYER);
+    assert.equal(data[2], 2); // two data assertions: the withdrawer at 44, your address at 12
 });

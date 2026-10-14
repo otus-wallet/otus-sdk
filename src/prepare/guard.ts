@@ -97,7 +97,7 @@ type Field = 'owner' | 'space' | 'delegate' | 'closer' | 'all' | keyof Meta | `k
 
 // What the others do to an account this one holds as `after`: what they may take out of its amount (`taken`), what
 // each of them moves out of it (`moved`, by its place among them), and the fields they change. One that closes it takes
-// all of it, and leaves it, made again, with no delegate nor close authority.
+// all of it, and leaves it, made again, with no delegate nor close authority: one this hold expects is let go.
 function besideOf(address: Address, after: NonNullable<State>, wallet: Address, key: ReadonlyUint8Array, beside: Beside[]): { taken: bigint; moved: { at: number; asset: string; amount: bigint }[]; apart: Set<Field> } {
     const apart = new Set<Field>();
     const moved: { at: number; asset: string; amount: bigint }[] = [];
@@ -112,7 +112,9 @@ function besideOf(address: Address, after: NonNullable<State>, wallet: Address, 
             const all = amount(c.before!);
             taken += all + spare;
             moved.push({ at, asset: assetOf(c.before!), amount: all });
-            apart.add('delegate').add('closer');
+            // Made again, it has neither: a hold of none still passes, one of some does not.
+            if (after.token?.delegate || after.token?.delegated) apart.add('delegate');
+            if (after.token?.closer) apart.add('closer');
             continue;
         }
         // Made by it: what this one would find, if that one lands first, is what it made, as far as it is the same.
@@ -200,7 +202,9 @@ export function assertions(h: Hold, wallet: Address): Uint8Array[] {
         if (m.time !== undefined) held.push([76, I64, ...i64(m.time)]);
         if (m.epoch !== undefined) held.push([84, U64, ...u64(m.epoch)]);
         if (m.custodian) held.push([92, PUBKEY, ...key(m.custodian)]);
-        const others = h.keys.filter((offset) => ![12, 44, 92].includes(offset)).map((offset) => [offset, PUBKEY, ...key(wallet)]);
+        // Your address at a term's place is asserted by that term, when it is held; else on its own.
+        const termed = [m.staker && 12, m.withdrawer && 44, m.custodian && 92].filter((o): o is number => typeof o === 'number');
+        const others = h.keys.filter((offset) => !termed.includes(offset)).map((offset) => [offset, PUBKEY, ...key(wallet)]);
         const all = [...held, ...others];
         if (all.length === 0) return [found];
         return [found, Uint8Array.from([DATA_MULTI, SILENT, ...leb128(all.length), ...all.flatMap(([offset, ...value]) => [...leb128(offset), ...value, EQUAL])])];
