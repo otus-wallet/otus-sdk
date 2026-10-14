@@ -124,7 +124,7 @@ test('a token account of yours: a bigger allowance is a warning, a fresh one at 
     assert.deepEqual(await raised(2n ** 64n - 1n), ['danger:delegate']); // without end
 
     const ata = key(80);
-    const created = tokens({}, ata);
+    const created = account(ata, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n })); // made empty
     const funded = transaction([getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata, owner: PAYER, mint: MINT })]);
     const zeroed = transaction([getInitializeAccount3Instruction({ account: ata, mint: MINT, owner: PAYER })]);
     const r1 = await review(funded, context(), fakeChain([wallet(5_000_000n), account(ata, SYSTEM, 1_000n)], [wallet(2_960_000n), created]));
