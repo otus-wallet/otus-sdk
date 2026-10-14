@@ -529,9 +529,9 @@ const holds = (state: State, key: ReadonlyUint8Array) => state !== null && state
 // What instructions Otus reads send, in words the user sees, to each account and from each: SOL by the System Program,
 // tokens by the Token Programs, the SOL of an account they close, and the rent a token account is made with (at most
 // what one can take). Keyed "SOL:<address>" and "token:<address>".
-function sentInWords(explained: Explained[], changes: Changes): { to: Map<string, bigint>; from: Map<string, bigint> } {
-    const [to, from] = [new Map<string, bigint>(), new Map<string, bigint>()];
-    const add = (m: Map<string, bigint>, key: string, amount: bigint) => m.set(key, (m.get(key) ?? 0n) + amount);
+function sentInWords(explained: Explained[], changes: Changes): { to: Map<string, bigint>; sends: Send[] } {
+    const to = new Map<string, bigint>();
+    const sends: Send[] = [];
     const before = new Map(changes.accounts.map((c) => [c.address, c.before?.lamports ?? 0n]));
     const after = new Map(changes.accounts.map((c) => [c.address, c.after?.lamports ?? 0n]));
     for (const e of explained) {
@@ -541,10 +541,10 @@ function sentInWords(explained: Explained[], changes: Changes): { to: Map<string
             return /^\d+$/.test(v) ? BigInt(v) : 0n;
         };
         const at = (role: string) => e.accounts.find((a) => a.role === role)?.address;
-        const pair = (kind: string, source: string, destination: string, amount: bigint) => {
+        const pair = (kind: Send['kind'], source: string, destination: string, amount: bigint) => {
             const [a, b] = [at(source), at(destination)];
-            if (b) add(to, `${kind}:${b}`, amount);
-            if (a) add(from, `${kind}:${a}`, amount);
+            if (b) to.set(`${kind}:${b}`, (to.get(`${kind}:${b}`) ?? 0n) + amount);
+            sends.push({ kind, from: a, to: b, amount });
         };
         if (e.program === SYSTEM_PROGRAM_ADDRESS) {
             if (e.name === 'TransferSol' || e.name === 'TransferSolWithSeed') pair('SOL', 'source', 'destination', arg('amount'));
@@ -566,8 +566,9 @@ function sentInWords(explained: Explained[], changes: Changes): { to: Map<string
             pair('SOL', 'payer', 'ata', rent < 0n ? 0n : rent > RENT_MOST ? RENT_MOST : rent);
         }
     }
-    return { to, from };
+    return { to, sends };
 }
+type Send = { kind: 'SOL' | 'token'; from: Address | undefined; to: Address | undefined; amount: bigint };
 
 const name = (program: Address) => PROGRAM_NAMES.get(program) ?? program;
 const UPGRADEABLE_LOADER = address('BPFLoaderUpgradeab1e11111111111111111111111');
@@ -613,12 +614,15 @@ function roleAt(s: NonNullable<State>, offset: number): string | null {
 function leaving(programs: ProgramUse[], explained: Explained[], changes: Changes, flows: Flow[], yours: Changes, nft: boolean): Finding[] {
     const blind = programs.filter((p) => (p.signature || p.writable) && explained.some((e) => e.program === p.program && e.source === 'unknown'));
     const strange = blind.some((p) => p.name === null);
-    const { to: seen, from } = sentInWords(explained, changes);
-    // What of an asset leaves your accounts through instructions Otus reads: said in words.
+    const { to: seen, sends } = sentInWords(explained, changes);
+    // What of an asset leaves your accounts for someone else's through instructions Otus reads: said in words. What
+    // goes from one account of yours to another never counts: it leaves you nothing less.
+    const mine = new Map(yours.accounts.map((c) => [c.address, (c.before ?? c.after)?.token?.mint ?? null]));
     const said = (f: Flow) =>
-        yours.accounts.reduce((sum, c) => {
-            if (f.asset === 'SOL') return sum + (from.get(`SOL:${c.address}`) ?? 0n);
-            return (c.before ?? c.after)?.token?.mint === f.asset ? sum + (from.get(`token:${c.address}`) ?? 0n) : sum;
+        sends.reduce((sum, s) => {
+            if (!s.from || !mine.has(s.from) || (s.to && mine.has(s.to))) return sum;
+            const right = f.asset === 'SOL' ? s.kind === 'SOL' : s.kind === 'token' && mine.get(s.from) === f.asset;
+            return right ? sum + s.amount : sum;
         }, 0n);
     // Of what others get, what can be yours unsaid: no more than what leaves you past what is said, as what they get may
     // come from someone else (a vault's own rent for an account it opens, inside a program's call).
