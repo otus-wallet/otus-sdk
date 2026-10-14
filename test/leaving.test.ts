@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { getCreateAccountWithSeedInstruction, getTransferSolInstruction } from '@solana-program/system';
-import { getCreateAssociatedTokenIdempotentInstruction, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
+import { getCloseAccountInstruction, getCreateAssociatedTokenIdempotentInstruction, getTransferInstruction, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { AccountRole, address, createNoopSigner, getProgramDerivedAddress, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import { review } from '../src/review/review.ts';
@@ -124,4 +124,52 @@ test('what you send yourself in words does not cover yours leaving unsaid', asyn
     const after = [account(PAYER, SYSTEM, 4n * SOL - 5_000n), account(THIEF, SYSTEM, 2n * SOL)];
     const r = await review(transaction([self, drain]), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain(before, after));
     assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level), ['danger']);
+});
+
+// Words that would cover an unread drain if what they send counted whatever became of it.
+const RENT = 2_039_280n;
+const NATIVE = address('So11111111111111111111111111111111111111112');
+const held = (a: Address, owner: Address, amount: bigint, o: { lamports?: bigint; closer?: Address; delegate?: Address; delegated?: bigint; mint?: Address; native?: bigint } = {}) =>
+    account(a, TOKEN_PROGRAM_ADDRESS, o.lamports ?? RENT, tokenAccountData({ mint: o.mint ?? MINT, owner, amount, ...(o.closer && { closer: o.closer }), ...(o.delegate && { delegate: o.delegate, delegated: o.delegated ?? 0n }), ...(o.native !== undefined && { native: o.native }) }));
+const unread = (...accounts: Address[]): Instruction => ({ programAddress: EVIL, accounts: [{ address: PAYER, role: WS }, ...accounts.map((address) => ({ address, role: W }))] });
+const drained = async (ixs: Instruction[], before: MaybeEncodedAccount[], after: MaybeEncodedAccount[]) =>
+    (await review(transaction(ixs), { wallet: PAYER, signedBefore: 0, host: 'app.example.com' }, fakeChain(before, after))).assessment.findings.filter((f) => f.code === 'sends-to-wallet').map((f) => f.level);
+
+test('what words send that comes back, or is passed on, never covers an unread drain', async () => {
+    const me = createNoopSigner(PAYER);
+    const [other, theirs, made, wrapped, theirsWrapped, closedTo] = [key(60), key(61), key(62), key(63), key(64), key(65)];
+    // 1 SOL to someone who sends it back in words.
+    const back = [getTransferSolInstruction({ source: me, destination: other, amount: SOL }), getTransferSolInstruction({ source: createNoopSigner(other), destination: PAYER, amount: SOL }), unread(THIEF)];
+    assert.deepEqual(await drained(back, [account(PAYER, SYSTEM, 5n * SOL), account(other, SYSTEM, SOL)], [account(PAYER, SYSTEM, 4n * SOL - 5_000n), account(other, SYSTEM, SOL), account(THIEF, SYSTEM, SOL)]), ['danger']);
+    // 3 SOL into the thief's token account that you may close, closed back to you in words.
+    const closed = [getTransferSolInstruction({ source: me, destination: theirs, amount: 3n * SOL }), getCloseAccountInstruction({ account: theirs, destination: PAYER, owner: me }), unread(THIEF)];
+    assert.deepEqual(await drained(closed, [account(PAYER, SYSTEM, 5n * SOL), held(theirs, THIEF, 0n, { closer: PAYER })], [account(PAYER, SYSTEM, 2n * SOL - 5_000n), account(THIEF, SYSTEM, 3n * SOL + RENT)]), ['danger']);
+    // Tokens to the thief's account you are delegate of, and back as its delegate.
+    const lent = [getTransferInstruction({ source: USER_TOKEN, destination: theirs, authority: me, amount: 1000n }), getTransferInstruction({ source: theirs, destination: USER_TOKEN, authority: me, amount: 1000n }), unread(USER_TOKEN, THIEF_TOKEN)];
+    assert.deepEqual(
+        await drained(lent, [account(PAYER, SYSTEM, 5n * SOL), held(USER_TOKEN, PAYER, 1000n), held(theirs, THIEF, 0n, { delegate: PAYER, delegated: 1000n }), held(THIEF_TOKEN, THIEF, 0n)], [account(PAYER, SYSTEM, 5n * SOL - 5_000n), held(USER_TOKEN, PAYER, 0n), held(theirs, THIEF, 0n), held(THIEF_TOKEN, THIEF, 1000n)]),
+        ['danger'],
+    );
+    // An account made with 2 SOL of yours for the unread program, which passes them on.
+    const seeded = [getCreateAccountWithSeedInstruction({ payer: me, newAccount: made, baseAccount: me, base: PAYER, seed: 'x', amount: 2n * SOL, space: 0, programAddress: EVIL }), unread(made, THIEF)];
+    assert.deepEqual(await drained(seeded, [account(PAYER, SYSTEM, 5n * SOL)], [account(PAYER, SYSTEM, 3n * SOL - 5_000n), account(THIEF, SYSTEM, 2n * SOL)]), ['danger']);
+    // Your wrapped SOL drained, then the empty account closed in words: its SOL from before is not what it sends.
+    const wsol = (a: Address, owner: Address, amount: bigint) => held(a, owner, amount, { mint: NATIVE, lamports: RENT + amount, native: RENT });
+    const stale = [unread(wrapped, theirsWrapped), getCloseAccountInstruction({ account: wrapped, destination: closedTo, owner: me })];
+    assert.deepEqual(await drained(stale, [account(PAYER, SYSTEM, SOL), wsol(wrapped, PAYER, 10n * SOL), wsol(theirsWrapped, THIEF, 0n), account(closedTo, SYSTEM, SOL)], [account(PAYER, SYSTEM, SOL - 5_000n), wsol(theirsWrapped, THIEF, 10n * SOL), account(closedTo, SYSTEM, SOL + RENT)]), ['danger']);
+    // The thief sending itself SOL in words.
+    const selfSent = [getTransferSolInstruction({ source: createNoopSigner(THIEF), destination: THIEF, amount: SOL }), unread(THIEF)];
+    assert.deepEqual(await drained(selfSent, [account(PAYER, SYSTEM, 5n * SOL), account(THIEF, SYSTEM, 2n * SOL)], [account(PAYER, SYSTEM, 4n * SOL - 5_000n), account(THIEF, SYSTEM, 3n * SOL)]), ['danger']);
+    // The same token account made fifty times: its rent counts once.
+    const make = getCreateAssociatedTokenIdempotentInstruction({ payer: me, ata: THIEF_TOKEN, owner: THIEF, mint: MINT });
+    const many = [...Array.from({ length: 50 }, () => make), unread(THIEF_TOKEN)];
+    assert.deepEqual(await drained(many, [account(PAYER, SYSTEM, 5n * SOL), held(THIEF_TOKEN, THIEF, 0n)], [account(PAYER, SYSTEM, 5n * SOL - SOL / 2n - 5_000n), held(THIEF_TOKEN, THIEF, 0n, { lamports: RENT + SOL / 2n })]), ['danger']);
+});
+
+test('a wrapped SOL payment in words beside an unread program is said: not critical', async () => {
+    const [wrapped, theirs] = [key(66), key(67)];
+    const wsol = (a: Address, owner: Address, amount: bigint) => held(a, owner, amount, { mint: NATIVE, lamports: RENT + amount, native: RENT });
+    const pay = getTransferInstruction({ source: wrapped, destination: theirs, authority: createNoopSigner(PAYER), amount: SOL });
+    const touch: Instruction = { programAddress: EVIL, accounts: [{ address: PAYER, role: WS }] };
+    assert.deepEqual(await drained([pay, touch], [account(PAYER, SYSTEM, SOL), wsol(wrapped, PAYER, 2n * SOL), wsol(theirs, THIEF, 0n)], [account(PAYER, SYSTEM, SOL - 5_000n), wsol(wrapped, PAYER, SOL), wsol(theirs, THIEF, SOL)]), []);
 });
