@@ -183,6 +183,12 @@ test('the details tone a right handed to a program’s address yellow, to a key 
     assert.equal(tone(ix(TOKEN, 'SetAuthority', { owned: mine, owner: me2 }, { newAuthority: ATTACKER, authorityType: '3' })), 'warn');
     assert.equal(tone(ix(TOKEN, 'SetAuthority', { owned: mine, owner: me2 }, { newAuthority: ATTACKER, authorityType: '3' }), address('So11111111111111111111111111111111111111112')), 'danger');
     assert.equal(tone(ix(LOADER, 'SetAuthority', { bufferOrProgramDataAccount: mine, currentAuthority: me2, newAuthority: pda })), 'warn');
+    // To another of your wallets: yellow, as the finding says, when the caller says which are yours.
+    const ours = (e: Explained) => story(e, { ...names(null), ours: (a) => a === ATTACKER }).effects[0]!.tone;
+    assert.equal(ours(ix(STAKE, 'Authorize', { stake: mine, authority: me2 }, { arg0: ATTACKER, arg1: '1' })), 'warn');
+    assert.equal(ours(ix(TOKEN, 'SetAuthority', { owned: mine, owner: me2 }, { newAuthority: ATTACKER, authorityType: '2' })), 'warn');
+    assert.equal(ours(ix(LOADER, 'SetAuthority', { bufferOrProgramDataAccount: mine, currentAuthority: me2, newAuthority: ATTACKER })), 'warn');
+    assert.equal(tone(ix(LOADER, 'SetAuthority', { bufferOrProgramDataAccount: mine, currentAuthority: me2, newAuthority: ATTACKER })), 'danger');
 });
 
 test('an account made yours on the way and handed on is shown as theirs: what goes into it goes to them', async () => {

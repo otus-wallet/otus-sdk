@@ -31,6 +31,7 @@ export type Names = {
     changes(address: Address): string[]; // what the simulation changed in an account of yours, in words
     icon?(mint: Address): string | null; // a verified token's logo
     holds?(tokenAccount: Address): bigint | null; // the units a token account held before the transaction
+    ours?(address: Address): boolean; // another wallet of yours, one a key you hold signs for: what goes to it stays yours
 };
 
 const NO_LIMIT = 2n ** 64n - 1n; // an allowance that can never run out
@@ -40,19 +41,20 @@ const DEFAULT_ADDRESS = '11111111111111111111111111111111'; // an unset address 
 const AUTHORITY: Record<string, string> = { 0: 'The right to mint', 1: 'The right to freeze', 2: 'The ownership', 3: 'The right to close' };
 
 // An authority of yours given away: to someone's key, the ownership or a mint's rights, red; the right to close, which
-// takes only rent (but wrapped SOL's, all its SOL), yellow. To a program's address, no key's, yellow: to check. Given
-// up to no one, yellow, as no key gains it; the right to close to no one goes back to the owner, plain. To yourself,
-// or of nothing of yours, plain.
-function setAuthorityTone(to: string, type: string, hurt: Tone, wallet: Address, mint: Address | null): Tone {
-    if (to === wallet || hurt === 'plain') return 'plain';
+// takes only rent (but wrapped SOL's, all its SOL), yellow. To a program's address, no key's, or to another of your
+// wallets, yellow: to check. Given up to no one, yellow, as no key gains it; the right to close to no one goes back to
+// the owner, plain. To yourself, or of nothing of yours, plain.
+function setAuthorityTone(to: string, type: string, hurt: Tone, n: Names, mint: Address | null): Tone {
+    if (to === n.wallet || hurt === 'plain') return 'plain';
     if (to === 'none') return type === '3' ? 'plain' : 'warn';
-    if (isOffCurveAddress(to as Address)) return 'warn';
+    if (isOffCurveAddress(to as Address) || n.ours?.(to as Address)) return 'warn';
     if (type === '3' && mint !== WSOL && mint !== WSOL_2022) return 'warn';
     return 'danger';
 }
 
-// A right of yours handed to a program's address, no key's: yellow, to check; to a key, as `tone` says.
-const toProgram = (to: Address | undefined, tone: Tone): Tone => (tone === 'danger' && to && isOffCurveAddress(to) ? 'warn' : tone);
+// A right of yours handed to a program's address, no key's, or to another of your wallets: yellow, to check; to a key,
+// as `tone` says.
+const toProgram = (to: Address | undefined, tone: Tone, n: Names): Tone => (tone === 'danger' && to && (isOffCurveAddress(to) || n.ours?.(to)) ? 'warn' : tone);
 
 /** One explained instruction → its story. `risky`: its program may be harmful, so what it does to you shows in red.
  *  `first`: it leads a transaction about to be signed, where a nonce's advance makes the whole transaction durable;
@@ -129,7 +131,7 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
                 // Yours as its account is, or as you hold the right now (a mint's authority: the mint is no account of yours).
                 const hurt = hurts(acc('owned')) === 'plain' ? hurts(acc('owner')) : hurts(acc('owned'));
                 const whom = to !== 'none' ? who(to as Address) : arg('authorityType') === '3' ? 'its owner' : 'nobody';
-                return { args: `${right.replace(/^The /, '')} → ${whom}`, effects: [line(`${right} of ${who(acc('owned'))} goes to ${whom}`, setAuthorityTone(to, arg('authorityType'), hurt, n.wallet, mint))] };
+                return { args: `${right.replace(/^The /, '')} → ${whom}`, effects: [line(`${right} of ${who(acc('owned'))} goes to ${whom}`, setAuthorityTone(to, arg('authorityType'), hurt, n, mint))] };
             }
             case 'CloseAccount': {
                 const [account, to] = [acc('account'), acc('destination')];
@@ -175,7 +177,7 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
             case 'AuthorizeChecked': {
                 const to = acc('newAuthority') ?? (arg('arg0') as Address);
                 const right = (arg('arg1') || arg('stakeAuthorize')) === '1' ? 'The right to withdraw' : 'The right to stake';
-                return { args: `${right.replace(/^The /, '')} → ${who(to)}`, effects: [line(`${right} ${who(stake)} goes to ${who(to)}`, to !== n.wallet && right === 'The right to withdraw' ? (hurts(stake) === 'plain' ? 'warn' : toProgram(to, 'danger')) : hurts(stake))] };
+                return { args: `${right.replace(/^The /, '')} → ${who(to)}`, effects: [line(`${right} ${who(stake)} goes to ${who(to)}`, to !== n.wallet && right === 'The right to withdraw' ? (hurts(stake) === 'plain' ? 'warn' : toProgram(to, 'danger', n)) : hurts(stake))] };
             }
             case 'Split':
                 return { args: `${sol(big('args'))} SOL → ${who(acc('splitStake'))}`, effects: [line(`${sol(big('args'))} SOL of ${who(stake)} moves to ${who(acc('splitStake'))}`)] };
@@ -201,7 +203,7 @@ export function story(e: Explained, n: Names, risky = false, first = false): Sto
                 const [target, from, to] = [acc('bufferOrProgramDataAccount'), acc('currentAuthority'), acc('newAuthority')];
                 const tone = from && n.mine(from) && to !== n.wallet ? 'danger' : 'warn';
                 if (!to) return { args: 'no one', effects: [line(`${Who(target)} has no authority now: it can never be changed again`, 'warn')] }; // no key gains it
-                return { args: `→ ${who(to)}`, effects: [line(`${Who(to)} is now the authority of ${who(target)}`, toProgram(to, tone))] };
+                return { args: `→ ${who(to)}`, effects: [line(`${Who(to)} is now the authority of ${who(target)}`, toProgram(to, tone, n))] };
             }
             case 'Close': {
                 const effects = [line(`Closes ${who(acc('bufferOrProgramDataAccount'))}; its SOL goes to ${who(acc('destinationAccount'))}`)];
