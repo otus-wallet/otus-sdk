@@ -68,7 +68,7 @@ test('an authority given away, or set to no one as the loader takes it (its new 
     const none = getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: me });
     assert.equal(none.accounts!.length, 3); // its client's stand-in for the one left out
     for (const ix of [none, landed(none)]) {
-        assert.deepEqual(told(ix), { args: 'no one', effects: [{ text: 'Its data has no authority now: it can never be changed again', tone: 'danger' }] });
+        assert.deepEqual(told(ix), { args: 'no one', effects: [{ text: 'Its data has no authority now: it can never be changed again', tone: 'warn' }] }); // no key gains it
     }
     assert.equal(landed(none).accounts!.length, 2);
 });
@@ -106,5 +106,5 @@ test("Activity's line: what the loader did, by its own words", () => {
     const final = explained(landed(getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: me })));
     const [up, immutable] = rows([{ ...base, signature: 'u', instructions: [upgrade] }, { ...base, signature: 'f', instructions: [final] }], naming);
     assert.deepEqual([up.icon, text(up.title), text(up.sub)], ['refresh', 'Upgraded a program', 'The program ← the buffer']);
-    assert.deepEqual([text(immutable.title), immutable.tone, immutable.subject], ['Removed an authority', 'danger', { program: LOADER_V3_PROGRAM_ADDRESS, name: 'SetAuthority' }]);
+    assert.deepEqual([text(immutable.title), immutable.tone, immutable.subject], ['Removed an authority', 'warn', { program: LOADER_V3_PROGRAM_ADDRESS, name: 'SetAuthority' }]);
 });

@@ -101,7 +101,7 @@ test('an allowance as good as without end is all of it, even on an empty account
 const me = getAddressDecoder().decode(Uint8Array.from({ length: 32 }, (_, i) => i + 1));
 const touch = (target: Address, program: Address): Instruction => ({ programAddress: program, accounts: [{ address: target, role: W }, { address: me, role: WS }] });
 
-test('an authority of yours given up to no one is critical: its tag cleared, your key left in the bytes', async () => {
+test('an authority of yours given up to no one is said, as it can’t be undone: its tag cleared, your key left in the bytes', async () => {
     const M = key(60);
     const mint = (tag: number) => {
         const d = new Uint8Array(82);
@@ -111,7 +111,7 @@ test('an authority of yours given up to no one is critical: its tag cleared, you
         return d;
     };
     const ctx = { wallet: me };
-    assert.deepEqual(await said([touch(M, TOKEN)], [account(me, SYSTEM, SOL), account(M, TOKEN, 1_461_600n, mint(1))], [account(me, SYSTEM, SOL - 5000n), account(M, TOKEN, 1_461_600n, mint(0))], ctx), ['danger:authority-change']);
+    assert.deepEqual(await said([touch(M, TOKEN)], [account(me, SYSTEM, SOL), account(M, TOKEN, 1_461_600n, mint(1))], [account(me, SYSTEM, SOL - 5000n), account(M, TOKEN, 1_461_600n, mint(0))], ctx), ['warn:authority-change']);
     assert.deepEqual(await said([touch(M, TOKEN)], [account(me, SYSTEM, SOL), account(M, TOKEN, 1_461_600n, mint(1))], [account(me, SYSTEM, SOL - 5000n), account(M, TOKEN, 1_461_600n, mint(1))], ctx), []);
     const P = key(61);
     const data = (some: number) => {
@@ -121,7 +121,7 @@ test('an authority of yours given up to no one is critical: its tag cleared, you
         d.set(getAddressEncoder().encode(me), 13);
         return d;
     };
-    assert.deepEqual(await said([touch(P, LOADER)], [account(me, SYSTEM, SOL), account(P, LOADER, SOL, data(1))], [account(me, SYSTEM, SOL - 5000n), account(P, LOADER, SOL, data(0))], ctx), ['danger:authority-change']);
+    assert.deepEqual(await said([touch(P, LOADER)], [account(me, SYSTEM, SOL), account(P, LOADER, SOL, data(1))], [account(me, SYSTEM, SOL - 5000n), account(P, LOADER, SOL, data(0))], ctx), ['warn:authority-change']);
     // Truncated, it is not read as one.
     assert.deepEqual(await said([touch(P, LOADER)], [account(me, SYSTEM, SOL), account(P, LOADER, SOL, data(1).slice(0, 20))], [account(me, SYSTEM, SOL - 5000n), account(P, LOADER, SOL, data(0).slice(0, 20))], ctx), []);
 });
@@ -183,4 +183,124 @@ test('the details tone a right handed to a program’s address yellow, to a key 
     assert.equal(tone(ix(TOKEN, 'SetAuthority', { owned: mine, owner: me2 }, { newAuthority: ATTACKER, authorityType: '3' })), 'warn');
     assert.equal(tone(ix(TOKEN, 'SetAuthority', { owned: mine, owner: me2 }, { newAuthority: ATTACKER, authorityType: '3' }), address('So11111111111111111111111111111111111111112')), 'danger');
     assert.equal(tone(ix(LOADER, 'SetAuthority', { bufferOrProgramDataAccount: mine, currentAuthority: me2, newAuthority: pda })), 'warn');
+});
+
+test('an account made yours on the way and handed on is shown as theirs: what goes into it goes to them', async () => {
+    const enc = getAddressEncoder();
+    const u64 = (n: bigint) => [...getU64Encoder().encode(n)];
+    // Stake: your 100 SOL into an account set up with you withdrawing, a lamport out by you, then its withdrawer to a key.
+    const S = key(43);
+    const CLOCK = address('SysvarC1ock11111111111111111111111111111111');
+    const HISTORY = address('SysvarStakeHistory1111111111111111111111111');
+    const withdraw: Instruction = { programAddress: STAKE, accounts: [{ address: S, role: W }, { address: PAYER, role: W }, { address: CLOCK, role: R }, { address: HISTORY, role: R }, { address: PAYER, role: RS }], data: new Uint8Array([4, 0, 0, 0, ...u64(1n)]) };
+    const authorize: Instruction = { programAddress: STAKE, accounts: [{ address: S, role: W }, { address: CLOCK, role: R }, { address: PAYER, role: RS }], data: new Uint8Array([1, 0, 0, 0, ...enc.encode(ATTACKER), 1, 0, 0, 0]) };
+    const r = await review(transaction([send(PAYER, S, 100n * SOL), withdraw, authorize]), context, fakeChain([account(PAYER, SYSTEM, 101n * SOL), account(S, STAKE, RENT, staked(ATTACKER, { kind: 0 }))], [account(PAYER, SYSTEM, SOL + 1n - 5000n), account(S, STAKE, RENT + 100n * SOL - 1n, staked(ATTACKER))]));
+    assert.ok(!r.assessment.mine.has(S));
+    assert.ok(r.assessment.findings.some((f) => f.level === 'danger' && f.code === 'stake-withdrawer' && f.subject === S));
+    assert.ok(r.assessment.keyed.some((c) => c.address === S)); // still guarded
+    // Tokens: 1000 of yours into a token account made yours, 0 out by you, then its owner to a key: sent, as to them.
+    const [MY, T] = [key(45), key(46)];
+    const transfer = (from: Address, to: Address, amount: bigint): Instruction => ({ programAddress: TOKEN, accounts: [{ address: from, role: W }, { address: to, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([3, ...u64(amount)]) });
+    const hand: Instruction = { programAddress: TOKEN, accounts: [{ address: T, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([6, 2, 1, ...enc.encode(ATTACKER)]) };
+    const before = [account(PAYER, SYSTEM, SOL), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1000n })), account(T, TOKEN, 2_039_280n, new Uint8Array(165))];
+    const after = [account(PAYER, SYSTEM, SOL - 5000n), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n })), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 1000n }))];
+    const t = await review(transaction([transfer(MY, T, 1000n), transfer(T, MY, 0n), hand]), context, fakeChain(before, after));
+    assert.ok(!t.assessment.mine.has(T));
+    assert.equal(t.assessment.flows.find((f) => f.asset === MINT)?.change, -1000n);
+    // One that loses stays yours, whoever the RPC says holds it: what leaves it may be yours.
+    const lost = await review(transaction([transfer(T, MY, 1000n)]), context, fakeChain([account(PAYER, SYSTEM, SOL), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n })), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 1000n }))], [account(PAYER, SYSTEM, SOL - 5000n), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 0n })), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 0n }))]));
+    assert.ok(lost.assessment.mine.has(T));
+});
+
+test('SOL coming to you beside it hides none of what the words say you send into someone else’s stake', async () => {
+    const [S, VAULT, CLAIMS] = [key(43), key(50), key(51)];
+    const claim: Instruction = { programAddress: CLAIMS, accounts: [{ address: VAULT, role: W }, { address: PAYER, role: WS }], data: new Uint8Array(8) };
+    const before = [account(PAYER, SYSTEM, SOL), account(VAULT, CLAIMS, 500n * SOL, new Uint8Array(8)), account(S, STAKE, RENT, staked(ATTACKER))];
+    const after = [account(PAYER, SYSTEM, 101n * SOL - 5000n), account(VAULT, CLAIMS, 300n * SOL, new Uint8Array(8)), account(S, STAKE, RENT + 100n * SOL, staked(ATTACKER))];
+    assert.ok((await said([claim, send(PAYER, S, 100n * SOL)], before, after)).includes('danger:stake-withdrawer'));
+});
+
+test('a mint’s extension field is read where its extension is: a metadata edit leaves your group authority yours', async () => {
+    const M = key(62);
+    const enc = getAddressEncoder();
+    const str = (t: string) => {
+        const b = new TextEncoder().encode(t);
+        return [...getU32Encoder().encode(b.length), ...b];
+    };
+    const mint = (uri: string, group = me) => {
+        const meta = [...enc.encode(me), ...enc.encode(M), ...str('Name'), ...str('SYM'), ...str(uri), ...getU32Encoder().encode(0)];
+        const fields = [...enc.encode(group), ...enc.encode(M), ...getU64Encoder().encode(1n), ...getU64Encoder().encode(10n)];
+        const tlv = [...getU16Encoder().encode(19), ...getU16Encoder().encode(meta.length), ...meta, ...getU16Encoder().encode(21), ...getU16Encoder().encode(fields.length), ...fields];
+        const d = new Uint8Array(166 + tlv.length);
+        d[45] = 1;
+        d[165] = 1;
+        d.set(tlv, 166);
+        return d;
+    };
+    const edited = (after: Uint8Array) => said([touch(M, T22)], [account(me, SYSTEM, SOL), account(M, T22, 5n * SOL, mint('https://a'))], [account(me, SYSTEM, SOL - 5000n), account(M, T22, 5n * SOL, after)], { wallet: me });
+    assert.deepEqual(await edited(mint('https://a-much-longer-uri.example/metadata.json')), []);
+    assert.deepEqual(await edited(mint('https://a-much-longer-uri.example/metadata.json', ATTACKER)), ['danger:authority-change']);
+    // Extensions that don't read (a length past the end): unknown, as gone.
+    const broken = mint('https://a-much-longer-uri.example/metadata.json');
+    broken[168] = 0xff;
+    broken[169] = 0xff;
+    assert.deepEqual(await edited(broken), ['danger:authority-change', 'danger:authority-change']);
+});
+
+test('an upgrade authority to a program’s address is said, though the program grows', async () => {
+    const P = key(61);
+    const [vault] = await getProgramDerivedAddress({ programAddress: key(92), seeds: ['vault'] });
+    const data = (authority: Address, size: number) => {
+        const d = new Uint8Array(size);
+        d.set(getU32Encoder().encode(3));
+        d[12] = 1;
+        d.set(getAddressEncoder().encode(authority), 13);
+        return d;
+    };
+    assert.deepEqual(await said([touch(P, LOADER)], [account(me, SYSTEM, SOL), account(P, LOADER, SOL, data(me, 1000))], [account(me, SYSTEM, SOL - 5000n), account(P, LOADER, 2n * SOL, data(vault, 2000))], { wallet: me }), ['warn:authority-change']);
+});
+
+test('an allowance of nine tenths of an account or more, to someone’s key, is all but all of it', async () => {
+    const TA = key(45);
+    const approve = (amount: bigint): Instruction => ({ programAddress: TOKEN, accounts: [{ address: TA, role: W }, { address: ATTACKER, role: R }, { address: PAYER, role: RS }], data: new Uint8Array([4, ...getU64Encoder().encode(amount)]) });
+    const allowed = (amount: bigint) =>
+        said([approve(amount)], [account(PAYER, SYSTEM, SOL), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n }))], [account(PAYER, SYSTEM, SOL - 5000n), account(TA, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1_000_000n, delegate: ATTACKER, delegated: amount }))]);
+    assert.deepEqual(await allowed(999_999n), ['danger:delegate']);
+    assert.deepEqual(await allowed(900_000n), ['danger:delegate']);
+    assert.deepEqual(await allowed(899_999n), ['warn:delegate']);
+});
+
+test('a lockup a named program’s key could lift names it; a vote account’s oldest layout keeps no withdrawer at 36', async () => {
+    const S = key(43);
+    const JUPITER = address('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'); // on the curve: a key may hold it
+    const set: Instruction = { programAddress: STAKE, accounts: [{ address: S, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([6, 0, 0, 0]) };
+    const r = await review(transaction([set]), context, fakeChain([account(PAYER, SYSTEM, SOL), account(S, STAKE, 10n * SOL, staked(PAYER))], [account(PAYER, SYSTEM, SOL - 5000n), account(S, STAKE, 10n * SOL, staked(PAYER, { time: 4_000_000_000n, custodian: JUPITER }))]));
+    assert.equal(r.assessment.findings.find((f) => f.code === 'stake-lockup')?.note, `${JUPITER} can lift it: until then you can't withdraw`);
+    const V = key(64);
+    const VOTE = address('Vote111111111111111111111111111111111111111');
+    const vote = (version: number, at36: Address) => {
+        const d = new Uint8Array(3762);
+        d.set(getU32Encoder().encode(version));
+        d.set(getAddressEncoder().encode(at36), 36);
+        return d;
+    };
+    const withdrawer = (version: number) => said([touch(V, VOTE)], [account(me, SYSTEM, SOL), account(V, VOTE, SOL, vote(version, me))], [account(me, SYSTEM, SOL - 5000n), account(V, VOTE, SOL, vote(version, ATTACKER))], { wallet: me });
+    assert.deepEqual(await withdrawer(2), ['danger:authority-change']);
+    assert.deepEqual(await withdrawer(0), ['warn:authority-change']); // its voter: told only as your address leaving
+});
+
+test('the details: a right given up to no one yellow, the close of an account back to its owner plain, a mint’s authority yours', () => {
+    const [mine, me2] = [key(70), address('4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi')];
+    const names = (mint: Address | null): Names => ({ wallet: me2, who: (a) => a, mine: (a) => a === me2 || a === mine, existed: () => true, mintOf: () => mint, token: () => ({ symbol: 'X', decimals: 0, verified: false }), program: (a) => a, priorityFee: null, payer: me2, changes: () => [] });
+    const ix = (name: string, accounts: Record<string, Address>, args: Record<string, string>): Explained =>
+        ({ program: TOKEN, programName: null, source: 'plugin', data: new Uint8Array(), name, accounts: Object.entries(accounts).map(([role, address]) => ({ role, address })), args: Object.entries(args).map(([name, value]) => ({ name, value })) }) as unknown as Explained;
+    const effect = (e: Explained, mint: Address | null = null) => story(e, names(mint)).effects[0]!;
+    const WSOL = address('So11111111111111111111111111111111111111112');
+    const WSOL_2022 = address('9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP');
+    assert.deepEqual(effect(ix('SetAuthority', { owned: mine, owner: me2 }, { newAuthority: 'none', authorityType: '3' }), WSOL), { text: `The right to close of ${mine} goes to its owner`, tone: 'plain' });
+    assert.equal(effect(ix('SetAuthority', { owned: mine, owner: me2 }, { newAuthority: ATTACKER, authorityType: '3' }), WSOL_2022).tone, 'danger');
+    // A mint is no account of yours; its authority, held by your wallet, is.
+    const MINT2 = key(71);
+    assert.equal(effect(ix('SetAuthority', { owned: MINT2, owner: me2 }, { newAuthority: ATTACKER, authorityType: '0' })).tone, 'danger');
+    assert.equal(effect(ix('SetAuthority', { owned: MINT2, owner: me2 }, { newAuthority: 'none', authorityType: '0' })).tone, 'warn');
 });

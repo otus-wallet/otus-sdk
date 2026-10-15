@@ -100,7 +100,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     const mine = yourAccounts(s, changes, explained, wallet, clock);
     const yours: Changes = { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: changes.accounts.filter((c) => mine.has(c.address)) };
     // Your address inside an account does not make it yours: anyone can write it into theirs.
-    const keyed = changes.accounts.filter((c) => !mine.has(c.address) && (holds(c.before, key) || holds(c.after, key)));
+    // Nor one handed on in the transaction: theirs when it ends, held all the same.
+    const handed = new Set(handedOn(s, changes, explained, wallet, clock));
+    const keyed = changes.accounts.filter((c) => !mine.has(c.address) && (holds(c.before, key) || holds(c.after, key) || handed.has(c.address)));
     const programs = programUses(s, explained, mine, context);
     const flows = flowsOf(changes, yours, mine);
     const findings: Finding[] = [];
@@ -147,8 +149,10 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (to?.delegate && (to.delegate !== from?.delegate || to.delegated > (from?.delegated ?? 0n))) {
             // Someone allowed all the account holds, or without end, takes all of it whenever it likes. A program's own
             // address, as a marketplace's, only as its program lets it: said, to check.
-            const all = to.delegated >= ENDLESS || (to.amount > 0n && to.delegated >= to.amount);
-            if (all && !ours.has(to.delegate) && !isOffCurveAddress(to.delegate)) add('danger', 'delegate', 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
+            // Nearly all of it (nine tenths, the bar for almost all your SOL) is as much a loss.
+            const all = to.delegated >= ENDLESS || (to.amount > 0n && to.delegated * 10n >= to.amount * 9n);
+            const most = to.delegated < ENDLESS && to.delegated < to.amount;
+            if (all && !ours.has(to.delegate) && !isOffCurveAddress(to.delegate)) add('danger', 'delegate', most ? 'Someone could take almost all the tokens in an account of yours' : 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
             else if (all && !ours.has(to.delegate)) add('warn', 'delegate', `A token account of yours is open to ${program(address)}`, address, `${to.delegate}, an address no key holds, could move all of it`);
             else add('warn', 'delegate', 'A token account of yours gets a delegate, or a bigger allowance', address, `${to.delegate} could move its tokens`);
         }
@@ -174,20 +178,22 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         // Your stake, made or getting your SOL, that someone else manages: they can unstake it or move it to another
         // validator, not take it.
         if (is !== null && is.withdrawer === wallet && is.staker !== wallet && fed) add('warn', 'stake-staker', 'Someone else manages this stake', address, `${is.staker} can unstake it or change its validator`);
-        // An authority of yours given up to no one: its tag cleared, your key left behind in the bytes.
-        if (before && after && !from) for (const role of givenUp(before, after, key)) add('danger', 'authority-change', `You would give up your ${role}: no one will hold it`, address);
+        // An authority of yours given up to no one: its tag cleared, your key left behind in the bytes. No key gains it: said, to check, as it can't be undone.
+        if (before && after && !from) for (const role of givenUp(before, after, key)) add('warn', 'authority-change', `You give up your ${role}: no one will ever hold it`, address, "It can't be undone");
         // Your address inside any other account, as its authority or owner, stays where it was.
         if (before && after && !from) {
-            for (const offset of offsetsOf(key, before).filter((o) => !offsetsOf(key, after).includes(o))) {
+            for (const offset of offsetsOf(key, before)) {
+                // Where that field is now: the same place, but in a Token-2022 mint's extension, which moves as one
+                // before it grows; read by the extensions' own layout. Not found: unknown, as gone to anyone.
+                const at = fieldAfter(before, after, offset);
+                const now = at !== null && after.data.length >= at + 32 ? after.data.slice(at, at + 32) : null;
+                if (now && now.every((b, i) => b === key[i])) continue; // still yours
                 const role = roleAt(before, offset);
-                const now = after.data.length >= offset + 32 ? after.data.slice(offset, offset + 32) : null;
-                // Who has it now: read where yours was only when the account kept its size (a Token-2022 mint's
-                // extensions move as one grows); else unknown, as gone to anyone.
-                const holder = now && now.some((b) => b !== 0) && after.space === before.space ? getAddressDecoder().decode(now) : null;
+                const holder = now && now.some((b) => b !== 0) ? getAddressDecoder().decode(now) : null;
                 if (role && holder) given.add(holder);
                 // To another of your wallets Otus signs for: said, not critical. To an address no key holds, a program's
                 // (a protocol taking a stake deposited, a DAO taking a mint): said, to check. To anyone's key: lost,
-                // critical. A Token-2022 mint's extension moved by another changing reads as its authority gone (rare).
+                // critical.
                 if (role && holder && toOurs(holder)) add('warn', 'authority-change', `Your ${role} goes to another of your wallets`, address, `Now ${holder}`);
                 else if (role && holder && isOffCurveAddress(holder)) add('warn', 'authority-change', `Your ${role} goes to ${program(address)}`, address, `To ${holder}, an address no key holds: check it is the one you meant`);
                 else if (role) add('danger', 'authority-change', `You would lose your ${role}`, address);
@@ -200,35 +206,45 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // Your SOL into a stake account another key withdraws: theirs to take out, whatever the site calls it. Only SOL that
     // could have come from you, not more than you send. A program's own address withdrawing, as a stake pool's reserve,
     // takes it only as its program lets it: when only programs Otus names put it there.
-    for (const flow of flows.filter((f) => f.asset === 'SOL' && f.change < 0n)) {
-        for (const o of flow.others) {
-            const state = changes.accounts.find((c) => c.address === o.address)?.after ?? null;
-            const is = stake(state, clock);
-            if (is) given.add(is.withdrawer);
-            // What of it can be yours: no more than you send. Rent's worth is no one's to take.
-            const part = o.amount < -flow.change ? o.amount : -flow.change;
-            if (part <= RENT_BACK) continue;
-            // Set up by no one yet (a stake or nonce account never initialized): whoever sets it up first takes it.
-            if (unset(state)) {
-                add('danger', 'stake-withdrawer', 'Your SOL goes into an account no one has set up', o.address, 'Whoever sets it up first can take the SOL out');
-                continue;
-            }
-            const nonce = nonceAuthority(state);
-            if (nonce && nonce !== wallet) {
-                if (ours.has(nonce)) continue;
-                if (isOffCurveAddress(nonce)) add('warn', 'stake-withdrawer', `Your SOL goes into a nonce account that ${program(o.address)} withdraws`, o.address, `${nonce}, an address no key holds: check what you get back`);
-                else add('danger', 'stake-withdrawer', 'Someone else can withdraw this nonce account', o.address, `${nonce} can take the SOL out`);
-                continue;
-            }
-            // Another of your wallets withdrawing it is yours to control, unless someone else's lockup holds it. A
-            // program's address withdrawing it (a pool's reserve, say): said, to check. Someone's key: theirs, critical.
-            if (!is || is.withdrawer === wallet) continue;
-            const lockedBy = is.locked && !ours.has(is.custodian) ? is.custodian : null;
-            if (toOurs(is.withdrawer) && !lockedBy) add('warn', 'stake-withdrawer', 'Another of your wallets can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
-            else if (toOurs(is.withdrawer)) add(!nobody(lockedBy!) && isOffCurveAddress(lockedBy!) ? 'warn' : 'danger', 'stake-lockup', 'Your SOL goes into stake someone else keeps locked', o.address, nobody(lockedBy!) ? "No one can lift its lockup: until it ends, it can't be withdrawn" : `${lockedBy} holds its lockup: until it ends, it can't be withdrawn`);
-            else if (isOffCurveAddress(is.withdrawer)) add('warn', 'stake-withdrawer', `Your SOL goes into stake that ${program(o.address)} withdraws`, o.address, `${is.withdrawer}, an address no key holds: check what you get back`);
-            else add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
+    // The SOL that leaves accounts of yours, whatever comes back to others of them: SOL paid to you beside it hides none.
+    const sent = yours.accounts.reduce((sum, c) => {
+        const lost = (c.before?.lamports ?? 0n) - (c.after?.lamports ?? 0n);
+        return lost > 0n ? sum + lost : sum;
+    }, 0n);
+    const gaining = changes.accounts.filter((c) => !mine.has(c.address) && (c.after?.lamports ?? 0n) > (c.before?.lamports ?? 0n));
+    // And what the instructions say your accounts send each account, though more comes back to them.
+    const said = sentInWords(explained, changes).filter((w) => w.kind === 'SOL' && w.from !== undefined && mine.has(w.from));
+    for (const c of gaining) {
+        const o = { address: c.address, amount: (c.after?.lamports ?? 0n) - (c.before?.lamports ?? 0n) };
+        const state = c.after;
+        const is = stake(state, clock);
+        if (is) given.add(is.withdrawer);
+        // What of it can be yours: no more than you send, or than the words say you send it. Rent's worth is no
+        // one's to take.
+        const told = said.filter((w) => w.to === o.address).reduce((sum, w) => sum + w.amount, 0n);
+        const most = sent > told ? sent : told;
+        const part = o.amount < most ? o.amount : most;
+        if (part <= RENT_BACK) continue;
+        // Set up by no one yet (a stake or nonce account never initialized): whoever sets it up first takes it.
+        if (unset(state)) {
+            add('danger', 'stake-withdrawer', 'Your SOL goes into an account no one has set up', o.address, 'Whoever sets it up first can take the SOL out');
+            continue;
         }
+        const nonce = nonceAuthority(state);
+        if (nonce && nonce !== wallet) {
+            if (ours.has(nonce)) continue;
+            if (isOffCurveAddress(nonce)) add('warn', 'stake-withdrawer', `Your SOL goes into a nonce account that ${program(o.address)} withdraws`, o.address, `${nonce}, an address no key holds: check what you get back`);
+            else add('danger', 'stake-withdrawer', 'Someone else can withdraw this nonce account', o.address, `${nonce} can take the SOL out`);
+            continue;
+        }
+        // Another of your wallets withdrawing it is yours to control, unless someone else's lockup holds it. A
+        // program's address withdrawing it (a pool's reserve, say): said, to check. Someone's key: theirs, critical.
+        if (!is || is.withdrawer === wallet) continue;
+        const lockedBy = is.locked && !ours.has(is.custodian) ? is.custodian : null;
+        if (toOurs(is.withdrawer) && !lockedBy) add('warn', 'stake-withdrawer', 'Another of your wallets can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
+        else if (toOurs(is.withdrawer)) add(!nobody(lockedBy!) && isOffCurveAddress(lockedBy!) ? 'warn' : 'danger', 'stake-lockup', 'Your SOL goes into stake someone else keeps locked', o.address, nobody(lockedBy!) ? "No one can lift its lockup: until it ends, it can't be withdrawn" : `${lockedBy} holds its lockup: until it ends, it can't be withdrawn`);
+        else if (isOffCurveAddress(is.withdrawer)) add('warn', 'stake-withdrawer', `Your SOL goes into stake that ${program(o.address)} withdraws`, o.address, `${is.withdrawer}, an address no key holds: check what you get back`);
+        else add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
     }
     // Stake of yours under this lockup that was under it already: split or merged among your stakes, none of them coming
     // under it anew (one locked now that wasn't), all of them together no more than before but for the rent reserves of
@@ -443,7 +459,25 @@ function yourAccounts(s: Simulated, changes: Changes, explained: Explained[], wa
     const before = s.accounts.filter((a) => owned(read(a.state))).map((a) => a.address);
     const after = changes.accounts.filter((c) => owned(c.after)).map((c) => c.address);
     const lent = new Set(allowed(s, explained, wallet));
-    return new Set([wallet, ...before, ...after, ...authorized(explained, wallet).flatMap(([, a]) => (lent.has(a) ? [] : [a]))]);
+    const handed = new Set(handedOn(s, changes, explained, wallet, clock));
+    return new Set([wallet, ...before, ...after, ...authorized(explained, wallet).flatMap(([, a]) => (lent.has(a) || handed.has(a) ? [] : [a]))]);
+}
+
+// Accounts your wallet acts on as their authority that end the transaction held by someone else, not held by you before,
+// and that gain: made yours on the way and handed on, or lent to you for the moment. What goes into them goes to whoever
+// holds them when it ends, and is shown so. One that loses stays yours: what leaves it may be yours, under an RPC that
+// says one of yours is someone else's. Guarded either way.
+function handedOn(s: Simulated, changes: Changes, explained: Explained[], wallet: Address, clock: Clock): Address[] {
+    return authorized(explained, wallet).flatMap(([, a]) => {
+        const c = changes.accounts.find((x) => x.address === a);
+        const now = c?.after ? holderOf(c.after, clock) : null;
+        const was = s.accounts.find((x) => x.address === a)?.state;
+        const then = was ? read(was) : null;
+        if (!c || now === null || now === wallet || (then && holderOf(then, clock) === wallet)) return [];
+        // What it holds: a token account's tokens, any other account's SOL.
+        const held = (state: State) => (c.before?.token || c.after?.token ? (state?.token?.amount ?? 0n) : (state?.lamports ?? 0n));
+        return held(c.after) >= held(c.before) ? [a] : [];
+    });
 }
 
 // The token accounts of someone else your wallet takes tokens or SOL out of, as the RPC says it may: as their delegate,
@@ -592,9 +626,41 @@ const ENDLESS = 2n ** 63n; // an allowance this large is as good as without end
 const INCINERATOR = address('1nc1nerator11111111111111111111111111111111');
 const VOTE_PROGRAM = address('Vote111111111111111111111111111111111111111');
 
-// An address no one can sign for, nor any program for it: the System Program, the incinerator, a program's or sysvar's
-// own address. A lockup it keeps no one can lift.
-const nobody = (a: Address) => a === SYSTEM_PROGRAM_ADDRESS || a === INCINERATOR || SYSVARS.has(a) || PROGRAM_NAMES.has(a) || CORE_PROGRAMS.has(a);
+// An address no one can sign for, nor any program for it: the System Program, the incinerator, a sysvar, a native
+// program's own address (off the curve; most others' were made from a key someone may still hold). A lockup it keeps
+// no one can lift.
+const nobody = (a: Address) => a === SYSTEM_PROGRAM_ADDRESS || a === INCINERATOR || SYSVARS.has(a) || ((PROGRAM_NAMES.has(a) || CORE_PROGRAMS.has(a)) && isOffCurveAddress(a));
+
+// A Token-2022 mint's extensions, by their layout: from byte 166, each a type (u16), a length (u16) and that many bytes,
+// to the end or to a type 0 (unused space). Null when they don't fit it.
+function extensions(data: ReadonlyUint8Array): { type: number; start: number; end: number }[] | null {
+    const found = [];
+    for (let i = 166; i + 4 <= data.length; ) {
+        const [type, length] = [data[i] | (data[i + 1] << 8), data[i + 2] | (data[i + 3] << 8)];
+        if (type === 0) break;
+        if (i + 4 + length > data.length) return null;
+        found.push({ type, start: i + 4, end: i + 4 + length });
+        i += 4 + length;
+    }
+    return found;
+}
+
+// Where a field of an account is after the transaction: where it was, but in a Token-2022 mint's extension, at the same
+// place in that extension wherever it moved. Null when the extension is gone, or the extensions don't read.
+function fieldAfter(before: NonNullable<State>, after: NonNullable<State>, offset: number): number | null {
+    if (!isMint(before) || offset < 166) return offset;
+    const was = extensions(before.data)?.find((e) => offset >= e.start && offset + 32 <= e.end);
+    const is = was && isMint(after) ? extensions(after.data)?.filter((e) => e.type === was.type) : null;
+    if (!was || !is || is.length !== 1) return null;
+    const at = is[0].start + (offset - was.start);
+    return at + 32 <= is[0].end ? at : null;
+}
+
+// Who holds an account Otus reads: a token account's owner, a stake account's withdrawer, a nonce account's authority.
+function holderOf(state: NonNullable<State>, clock: Clock): Address | null {
+    if (state.token) return state.token.owner;
+    return nonceAuthority(state) ?? stake(state, clock)?.withdrawer ?? null;
+}
 
 // A stake account (kind 0) or nonce account (state 0) never set up: anyone may set it up as theirs.
 function unset(state: State): boolean {
@@ -717,7 +783,8 @@ function roleAt(s: NonNullable<State>, offset: number): string | null {
     if (s.program === SYSTEM_PROGRAM_ADDRESS && s.space === 80 && offset === 8) return 'nonce authority';
     if (s.program === STAKE_PROGRAM) return ({ 12: 'stake authority', 44: 'withdraw authority', 92: 'stake lockup custodian' } as Record<number, string>)[offset] ?? null;
     if (s.program === UPGRADEABLE_LOADER && offset === 13) return 'program upgrade authority';
-    if (s.program === VOTE_PROGRAM && offset === 36) return 'vote account withdraw authority';
+    // A vote account: its withdrawer at 36 in versions 1 to 3 (the oldest keeps its voter there).
+    if (s.program === VOTE_PROGRAM && offset === 36 && s.data.length >= 68 && [1, 2, 3].includes(getU32Decoder().decode(s.data, 0))) return 'vote account withdraw authority';
     return null;
 }
 
