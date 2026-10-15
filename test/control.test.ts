@@ -502,3 +502,16 @@ test('SOL moved between your own accounts hides no payout to someone else', asyn
     const r = await review(transaction([pay, send(PAYER, W2, 60n * SOL)]), context, fakeChain(before, after));
     assert.deepEqual(r.assessment.payouts.map((p) => [p.holder, p.amounts.map((a) => a.amount)]), [[ATTACKER, [50n * SOL]]]);
 });
+
+test('what goes to accounts a key holds is shown going to that key, though an account of yours sits at its address', async () => {
+    const [MY, E] = [key(45), key(46)];
+    const held = (at: Address, owner: Address, amount: bigint) => account(at, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner, amount }));
+    const transfer: Instruction = { programAddress: TOKEN, accounts: [{ address: MY, role: W }, { address: E, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([3, ...getU64Encoder().encode(400n)]) };
+    // A token account of yours opened at the address of the attacker's key, beside your tokens sent to an account that key owns.
+    const open: Instruction = { programAddress: key(90), accounts: [{ address: ATTACKER, role: WS }, { address: PAYER, role: WS }] };
+    const before = [account(PAYER, SYSTEM, SOL), held(MY, PAYER, 1000n), held(E, ATTACKER, 0n)];
+    const after = [account(PAYER, SYSTEM, SOL - 5000n - 2_039_280n), held(MY, PAYER, 600n), held(E, ATTACKER, 400n), held(ATTACKER, PAYER, 0n)];
+    const r = await review(transaction([open, transfer]), context, fakeChain(before, after));
+    assert.ok(r.assessment.mine.has(ATTACKER));
+    assert.deepEqual(r.assessment.flows.find((f) => f.asset === MINT)?.others.map((o) => [o.address, o.holder, o.amount, o.wallet]), [[E, ATTACKER, 400n, true]]);
+});
