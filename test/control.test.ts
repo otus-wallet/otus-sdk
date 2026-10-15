@@ -421,7 +421,7 @@ test('who controls, when it ends, each part of yours that leaves you: an address
     ));
     assert.deepEqual(r.assessment.leaves.get(PAYER), { sol: EVIL });
     assert.deepEqual(r.assessment.leaves.get(S), { sol: null });
-    assert.deepEqual(r.assessment.leaves.get(T), { sol: key(47), tokens: ATTACKER });
+    assert.deepEqual(r.assessment.leaves.get(T), { sol: ATTACKER, tokens: ATTACKER }); // its owner can take its SOL as well as its closer
 });
 
 test('an account is named yours by what it is for: someone’s token account you can close is not; one your wallet empties and closes is', async () => {
@@ -443,4 +443,36 @@ test('a part of yours that leaves goes, in the flows, to whoever controls it the
     const r = await review(transaction([send(PAYER, key(2), SOL)]), context, fakeChain([account(PAYER, SYSTEM, 10n * SOL)], [account(PAYER, EVIL, 9n * SOL - 5000n), account(key(2), SYSTEM, SOL)]));
     const holders = r.assessment.flows.find((f) => f.asset === 'SOL')?.others.map((o) => o.holder);
     assert.ok(holders?.includes(EVIL), String(holders));
+});
+
+test('SOL in someone else’s wrapped SOL account you can close is not yours: its owner can take it out', async () => {
+    const W2 = key(48);
+    const wsol = address('So11111111111111111111111111111111111111112');
+    const theirs = (lamports: bigint) => account(W2, TOKEN, lamports, tokenAccountData({ mint: wsol, owner: ATTACKER, amount: lamports - 2_039_280n, native: 2_039_280n, closer: PAYER }));
+    const r = await review(transaction([send(PAYER, W2, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 101n * SOL), theirs(2_039_280n)], [account(PAYER, SYSTEM, SOL - 5000n), theirs(2_039_280n + 100n * SOL)]));
+    assert.ok(!r.assessment.mine.has(W2));
+    assert.deepEqual(r.assessment.flows.map((f) => [f.asset, f.change, f.others.map((o) => o.holder)]), [['SOL', -100n * SOL, [ATTACKER]]]);
+});
+
+test('a stake handed to a pool for SOL back at once pays no program beyond it; a locked stake is its custodian’s', async () => {
+    const POOL = key(91);
+    const [pda] = await getProgramDerivedAddress({ programAddress: POOL, seeds: ['withdraw'] });
+    const [S, RESERVE, PSTAKE] = [key(43), key(44), key(45)];
+    const unstake: Instruction = { programAddress: POOL, accounts: [{ address: PAYER, role: WS }, { address: S, role: W }, { address: RESERVE, role: W }, { address: PSTAKE, role: W }] };
+    const before = [account(PAYER, SYSTEM, SOL), account(S, STAKE, 10n * SOL, staked(PAYER)), account(RESERVE, SYSTEM, 100n * SOL), account(PSTAKE, STAKE, 1000n * SOL, staked(pda))];
+    const r = await review(transaction([unstake]), context, fakeChain(before, [account(PAYER, SYSTEM, SOL + 9_900_000_000n - 5000n), account(S, STAKE, 10n * SOL, staked(pda)), account(RESERVE, SYSTEM, 100n * SOL - 9_900_000_000n), before[3]]));
+    assert.deepEqual(r.assessment.payouts, []);
+    // Your stake put under a lockup someone else keeps: its SOL theirs to hold until it ends.
+    const set: Instruction = { programAddress: STAKE, accounts: [{ address: S, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([6, 0, 0, 0]) };
+    const locked = await review(transaction([set]), context, fakeChain([account(PAYER, SYSTEM, SOL), account(S, STAKE, 10n * SOL, staked(PAYER))], [account(PAYER, SYSTEM, SOL - 5000n), account(S, STAKE, 10n * SOL, staked(PAYER, { time: 4_000_000_000n, custodian: ATTACKER }))]));
+    assert.deepEqual(locked.assessment.leaves.get(S), { sol: ATTACKER });
+});
+
+test('an account your wallet empties, the RPC naming someone else its owner, is named yours; one that also gains is not', async () => {
+    const T = key(46);
+    const MY = key(45);
+    const transfer = (from: Address, to: Address, amount: bigint): Instruction => ({ programAddress: TOKEN, accounts: [{ address: from, role: W }, { address: to, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([3, ...getU64Encoder().encode(amount)]) });
+    const held = (owner: Address, amount: bigint, at = T) => account(at, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner, amount }));
+    const r = await review(transaction([transfer(T, MY, 1000n)]), context, fakeChain([account(PAYER, SYSTEM, SOL), held(ATTACKER, 1000n), held(PAYER, 0n, MY)], [account(PAYER, SYSTEM, SOL - 5000n), held(ATTACKER, 0n), held(PAYER, 1000n, MY)]));
+    assert.ok(r.assessment.mine.has(T));
 });

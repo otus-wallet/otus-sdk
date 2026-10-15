@@ -108,7 +108,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // Your address inside an account does not make it yours: anyone can write it into theirs.
     const keyed = changes.accounts.filter((c) => !touched.has(c.address) && (holds(c.before, key) || holds(c.after, key)));
     const programs = programUses(s, explained, new Set([...mine, ...touched]), context);
-    const flows = flowsOf(theirs, yours, mine, leaves);
+    const flows = flowsOf(theirs, yours, mine, leaves, wallet);
     const findings: Finding[] = [];
     const add = (level: Level, code: string, text: string, subject?: Address, note?: string) =>
         findings.push({ level, code, text, ...(note !== undefined && { note }), ...(subject !== undefined && { subject }) });
@@ -486,7 +486,7 @@ function endsOf(s: Simulated, changes: Changes, explained: Explained[], wallet: 
     const lent = new Set(allowed(s, explained, wallet));
     const moved = new Set(authorized(explained, wallet).flatMap(([, a]) => (lent.has(a) ? [] : [a])));
     const of = (address: Address, state: State) => {
-        const held = controls(address, state, clock);
+        const held = controls(address, state, clock, wallet);
         return { sol: held.sol === wallet, tokens: held.tokens === wallet };
     };
     const yours: Change[] = [];
@@ -495,7 +495,12 @@ function endsOf(s: Simulated, changes: Changes, explained: Explained[], wallet: 
     const ends = new Map<Address, { sol: boolean; tokens: boolean }>([[wallet, { sol: true, tokens: false }]]);
     const leaves = new Map<Address, Leaving>();
     // Who holds a part at the end: who controls it, else the program the account now belongs to; no one when not set up.
-    const holding = (who: Address | null, after: NonNullable<State>) => who ?? (unset(after) ? null : after.program);
+    const holding = (who: Address | null, after: NonNullable<State>) => {
+        if (who) return who;
+        if (unset(after)) return null;
+        const k = stake(after, clock);
+        return k?.locked ? k.custodian : after.program; // a stake under someone else's lockup: theirs until it ends
+    };
     for (const c of changes.accounts) {
         const [start, end] = [of(c.address, c.before), of(c.address, c.after)];
         const auth = moved.has(c.address);
@@ -516,11 +521,13 @@ function endsOf(s: Simulated, changes: Changes, explained: Explained[], wallet: 
         touched.add(c.address);
         yours.push({ address: c.address, before: at(c.before, sb, ub), after: at(c.after, sa, ua) });
         // Named yours by what it is for, at either end: a token account by its tokens, any other by its SOL; and one
-        // your wallet takes value out of that the transaction closes (a swap's wrapped SOL, say).
+        // your wallet takes value out of that loses some, or that the transaction closes (a swap's wrapped SOL, say).
         const main = (at: { sol: boolean; tokens: boolean }, state: State) => (state?.token ? at.tokens : at.sol);
-        if (main(start, c.before) || main(end, c.after) || (auth && !c.after)) mine.add(c.address);
+        // One that also gains is not: what goes into it goes to whoever holds it then.
+        const gains = a - sa > b - sb || ta - ua > tb - ub;
+        if (main(start, c.before) || main(end, c.after) || (auth && !gains && (!c.after || sb > 0n || ub > 0n))) mine.add(c.address);
         if (c.after && mine.has(c.address) && (!end.sol || (c.after.token && !end.tokens))) {
-            const held = controls(c.address, c.after, clock);
+            const held = controls(c.address, c.after, clock, wallet);
             leaves.set(c.address, {
                 ...(!end.sol && { sol: holding(held.sol, c.after) }),
                 ...(c.after.token && !end.tokens && { tokens: holding(held.tokens, c.after) }),
@@ -540,15 +547,19 @@ function endsOf(s: Simulated, changes: Changes, explained: Explained[], wallet: 
     return { mine, ends, leaves, yours: { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: yours }, theirs: { fee: changes.fee, accounts: theirs }, touched };
 }
 
-// Who controls an account's SOL and its tokens: a plain wallet, itself; a token account's tokens, its owner, and its SOL,
-// whoever can close it; any other account's SOL, whoever can withdraw it (`withdrawer`). Null: no one of ours to name.
-function controls(address: Address, state: State, clock: Clock): { sol: Address | null; tokens: Address | null } {
+// Who controls an account's SOL and its tokens: a plain wallet, itself; a token account's tokens, its owner, and its SOL
+// (`solOf`); any other account's SOL, whoever can withdraw it (`withdrawer`). Null: no one of ours to name.
+function controls(address: Address, state: State, clock: Clock, wallet: Address): { sol: Address | null; tokens: Address | null } {
     if (!state) return { sol: null, tokens: null };
     const t = state.token;
-    if (t) return { sol: t.closer ?? t.owner, tokens: t.native ? (t.closer ?? t.owner) : t.owner };
+    if (t) return { sol: solOf(t, wallet), tokens: t.native ? solOf(t, wallet) : t.owner };
     if (plain(state)) return { sol: address, tokens: null };
     return { sol: withdrawer(state, clock), tokens: null };
 }
+
+// Who can take a token account's SOL (and a wrapped SOL account's tokens): its owner, by a transfer or its excess
+// lamports, and its close authority, by closing it. Yours only when both are you; else the one who isn't.
+export const solOf = (t: { owner: Address; closer: Address | null }, wallet: Address): Address => (t.closer && t.closer !== t.owner && t.owner === wallet ? t.closer : t.owner);
 
 // The token accounts of someone else your wallet takes tokens or SOL out of, as the RPC says it may: as their delegate,
 // or (`closing`) closing one as its close authority, which moves only its rent. Theirs, used with their leave.
@@ -978,11 +989,20 @@ function payoutsOf(s: Simulated, theirs: Changes, yours: Changes, flows: Flow[],
         }
     }
     const net = holdings(yours);
+    const gross = new Map<string, bigint>();
+    for (const c of yours.accounts) {
+        const lost = (asset: string, b: bigint, a: bigint) => b > a && gross.set(asset, (gross.get(asset) ?? 0n) + b - a);
+        lost('SOL', c.before?.lamports ?? 0n, c.after?.lamports ?? 0n);
+        for (const mint of new Set([c.before?.token, c.after?.token].flatMap((t) => (t && !t.native ? [t.mint] : [])))) lost(mint, units(c.before, mint), units(c.after, mint));
+    }
+    gross.set('SOL', (gross.get('SOL') ?? 0n) > yours.fee ? (gross.get('SOL') ?? 0n) - yours.fee : 0n);
     const by = new Map<Address, Payout>();
     const sum = (list: { amount: bigint }[]) => list.reduce((n, g) => n + g.amount, 0n);
     for (const [asset, list] of gains) {
         const [before, after] = net.get(asset) ?? [0n, 0n];
-        const [paid, got] = [before > after ? before - after : 0n, after > before ? after - before : 0n];
+        // What you paid: all that left parts of yours (the fee apart), though something else of yours came back.
+        const paid = gross.get(asset) ?? 0n;
+        const got = after > before ? after - before : 0n;
         const [wallets, programs] = [list.filter((g) => g.wallet), list.filter((g) => !g.wallet && !giving.has(g.holder))];
         const released = sum((out.get(asset) ?? []).filter((o) => !getting.has(o.holder) || (paidAny && !back)));
         // What you paid goes to wallets first, as payments do, then to programs' accounts, as deposits do.
@@ -1030,7 +1050,7 @@ function outflows(yours: Changes): [string, Address | undefined][] {
 }
 
 // Each asset of yours that moves, and on the other side the accounts whose same asset moved the other way.
-function flowsOf(theirs: Changes, yours: Changes, mine: Set<Address>, leaves: Map<Address, Leaving>): Flow[] {
+function flowsOf(theirs: Changes, yours: Changes, mine: Set<Address>, leaves: Map<Address, Leaving>, wallet: Address): Flow[] {
     const others = theirs.accounts;
     const amount = (s: State, asset: string) => (asset === 'SOL' ? (s?.lamports ?? 0n) : units(s, asset));
     return [...holdings(yours)].flatMap(([asset, [before, after]]): Flow[] => {
@@ -1044,7 +1064,7 @@ function flowsOf(theirs: Changes, yours: Changes, mine: Set<Address>, leaves: Ma
             const token = state?.token;
             // A part of an account of yours that leaves you: whoever controls it then (the program a wallet is handed to).
             const left = leaves.get(c.address)?.[asset === 'SOL' ? 'sol' : 'tokens'];
-            const holder = left ?? (token && (asset === 'SOL' ? (token.closer ?? token.owner) : token.owner)) ?? staker ?? c.address;
+            const holder = left ?? (token && (asset === 'SOL' ? solOf(token, wallet) : token.owner)) ?? staker ?? c.address;
             if (mine.has(holder)) return []; // stake of yours under someone's lockup: not someone else
             return [{ address: c.address, holder, amount: delta < 0n ? -delta : delta, wallet: state?.token || staker ? !isOffCurveAddress(holder) : plain(state) }];
         });
