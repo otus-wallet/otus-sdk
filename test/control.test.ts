@@ -476,3 +476,29 @@ test('an account your wallet empties, the RPC naming someone else its owner, is 
     const r = await review(transaction([transfer(T, MY, 1000n)]), context, fakeChain([account(PAYER, SYSTEM, SOL), held(ATTACKER, 1000n), held(PAYER, 0n, MY)], [account(PAYER, SYSTEM, SOL - 5000n), held(ATTACKER, 0n), held(PAYER, 1000n, MY)]));
     assert.ok(r.assessment.mine.has(T));
 });
+
+test('a close authority handed to a key over a token account of yours holding SOL beyond rent is critical, in the same transaction too', async () => {
+    const T = key(46);
+    const held = (extra: bigint, closer?: Address) => account(T, TOKEN, 2_039_280n + extra, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n, ...(closer && { closer }) }));
+    const hand: Instruction = { programAddress: TOKEN, accounts: [{ address: T, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([6, 3, 1, ...getAddressEncoder().encode(ATTACKER)]) };
+    // Set beside 100 SOL sent in.
+    const sent = await said([hand, send(PAYER, T, 100n * SOL)], [account(PAYER, SYSTEM, 1000n * SOL), held(0n)], [account(PAYER, SYSTEM, 900n * SOL - 5000n), held(100n * SOL, ATTACKER)]);
+    assert.deepEqual(sent.filter((p) => p.endsWith('close-authority')), ['danger:close-authority']);
+    // Over SOL already there.
+    const there = await said([hand], [account(PAYER, SYSTEM, SOL), held(100n * SOL)], [account(PAYER, SYSTEM, SOL - 5000n), held(100n * SOL, ATTACKER)]);
+    assert.deepEqual(there.filter((p) => p.endsWith('close-authority')), ['danger:close-authority']);
+    // Over its rent alone: only that, a warning.
+    const rent = await said([hand], [account(PAYER, SYSTEM, SOL), held(0n)], [account(PAYER, SYSTEM, SOL - 5000n), held(0n, ATTACKER)]);
+    assert.deepEqual(rent.filter((p) => p.endsWith('close-authority')), ['warn:close-authority']);
+});
+
+test('SOL moved between your own accounts hides no payout to someone else', async () => {
+    const [VAULT, W2, CLAIMS] = [key(50), key(48), key(51)];
+    const wsol = address('So11111111111111111111111111111111111111112');
+    const wrapped = (lamports: bigint) => account(W2, TOKEN, lamports, tokenAccountData({ mint: wsol, owner: PAYER, amount: lamports - 2_039_280n, native: 2_039_280n }));
+    const pay: Instruction = { programAddress: CLAIMS, accounts: [{ address: VAULT, role: W }, { address: ATTACKER, role: W }, { address: PAYER, role: WS }], data: new Uint8Array(8) };
+    const before = [account(PAYER, SYSTEM, 100n * SOL), account(VAULT, CLAIMS, 500n * SOL, new Uint8Array(8)), account(ATTACKER, SYSTEM, SOL), wrapped(2_039_280n)];
+    const after = [account(PAYER, SYSTEM, 40n * SOL - 5000n), account(VAULT, CLAIMS, 450n * SOL, new Uint8Array(8)), account(ATTACKER, SYSTEM, 51n * SOL), wrapped(2_039_280n + 60n * SOL)];
+    const r = await review(transaction([pay, send(PAYER, W2, 60n * SOL)]), context, fakeChain(before, after));
+    assert.deepEqual(r.assessment.payouts.map((p) => [p.holder, p.amounts.map((a) => a.amount)]), [[ATTACKER, [50n * SOL]]]);
+});

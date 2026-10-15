@@ -161,8 +161,12 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             else add('warn', 'delegate', 'A token account of yours gets a delegate, or a bigger allowance', address, `${to.delegate} could move its tokens`);
         }
         if (to?.closer && to.closer !== from?.closer) {
-            // Closing a wrapped SOL account sends all its SOL where the closer says; any other, only its rent.
-            if (to.native && !ours.has(to.closer) && !isOffCurveAddress(to.closer)) add('danger', 'close-authority', 'Someone could take the SOL in your wrapped SOL account', address, `${to.closer} could close it and take its SOL at any time`);
+            // Closing a token account sends all its SOL where the closer says: a wrapped SOL account's, or SOL beyond
+            // any rent in another; else only its rent.
+            const sol = to.native || (after?.lamports ?? 0n) > RENT_MOST;
+            if (sol && !to.native && !ours.has(to.closer) && !isOffCurveAddress(to.closer)) add('danger', 'close-authority', 'Someone else can take the SOL in your token account', address, `${to.closer} could close it and take its SOL`);
+            else if (sol && !to.native && !ours.has(to.closer)) add('warn', 'close-authority', `${cap(program(address))} could close your token account and take its SOL`, address, `${to.closer}, an address no key holds`);
+            else if (to.native && !ours.has(to.closer) && !isOffCurveAddress(to.closer)) add('danger', 'close-authority', 'Someone could take the SOL in your wrapped SOL account', address, `${to.closer} could close it and take its SOL at any time`);
             else if (to.native && !ours.has(to.closer)) add('warn', 'close-authority', `${cap(program(address))} could close your wrapped SOL account`, address, `${to.closer}, an address no key holds, could take its SOL`);
             else add('warn', 'close-authority', 'A token account of yours gets a new close authority', address, `${to.closer} could close it`);
         }
@@ -326,7 +330,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
 
     // Value that lands with someone else without leaving your accounts: said exactly, for you to judge. To an address
     // you keep, by its name.
-    const payouts = failed ? [] : payoutsOf(s, theirs, yours, flows, context);
+    const payouts = failed ? [] : payoutsOf(s, theirs, yours, leaves, flows, context);
     for (const p of payouts) {
         const [level, code, text]: [Level, string, string] = p.known ? ['notice', 'pays-known', `Funds go to ${p.known}`] : ['warn', 'pays-others', p.program ? "Funds go to a program's account, not to you" : 'Funds go to someone else, not to you'];
         findings.push({ level, code, text, subject: p.holder, programs: p.programs });
@@ -963,7 +967,7 @@ function namedTo(explained: Explained[]): Address[] {
 // much as custody released: a vault that got nothing back paying out (your position withdrawn elsewhere), or, when you
 // paid and nothing came back, any (what your trade buys, sent elsewhere). Each part on its own: a twentieth or less of
 // what comes to you in the same asset is a fee; SOL this small, rent given back. Shared out to those that got most first.
-function payoutsOf(s: Simulated, theirs: Changes, yours: Changes, flows: Flow[], context: Context): Payout[] {
+function payoutsOf(s: Simulated, theirs: Changes, yours: Changes, leaves: Map<Address, Leaving>, flows: Flow[], context: Context): Payout[] {
     const own = new Set<Address>([context.wallet, ...(context.signers ?? [])]); // one only watched could be anyone's
     const [back, paidAny] = [flows.some((f) => f.change > 0n), flows.some((f) => f.change < 0n)];
     const amount = (state: State, asset: string) => (asset === 'SOL' ? (state?.lamports ?? 0n) : units(state, asset));
@@ -989,19 +993,21 @@ function payoutsOf(s: Simulated, theirs: Changes, yours: Changes, flows: Flow[],
         }
     }
     const net = holdings(yours);
+    // What parts of yours that leave you lose (a stake handed to a pool for SOL back): paid, though SOL comes back.
     const gross = new Map<string, bigint>();
     for (const c of yours.accounts) {
+        const left = leaves.get(c.address);
         const lost = (asset: string, b: bigint, a: bigint) => b > a && gross.set(asset, (gross.get(asset) ?? 0n) + b - a);
-        lost('SOL', c.before?.lamports ?? 0n, c.after?.lamports ?? 0n);
-        for (const mint of new Set([c.before?.token, c.after?.token].flatMap((t) => (t && !t.native ? [t.mint] : [])))) lost(mint, units(c.before, mint), units(c.after, mint));
+        if (left?.sol !== undefined) lost('SOL', c.before?.lamports ?? 0n, c.after?.lamports ?? 0n);
+        if (left?.tokens !== undefined) for (const mint of new Set([c.before?.token, c.after?.token].flatMap((t) => (t && !t.native ? [t.mint] : [])))) lost(mint, units(c.before, mint), units(c.after, mint));
     }
-    gross.set('SOL', (gross.get('SOL') ?? 0n) > yours.fee ? (gross.get('SOL') ?? 0n) - yours.fee : 0n);
     const by = new Map<Address, Payout>();
     const sum = (list: { amount: bigint }[]) => list.reduce((n, g) => n + g.amount, 0n);
     for (const [asset, list] of gains) {
         const [before, after] = net.get(asset) ?? [0n, 0n];
-        // What you paid: all that left parts of yours (the fee apart), though something else of yours came back.
-        const paid = gross.get(asset) ?? 0n;
+        // What you paid: what your holdings lose, or what parts of yours that leave you lose, the more of the two.
+        const fell = before > after ? before - after : 0n;
+        const paid = (gross.get(asset) ?? 0n) > fell ? (gross.get(asset) ?? 0n) : fell;
         const got = after > before ? after - before : 0n;
         const [wallets, programs] = [list.filter((g) => g.wallet), list.filter((g) => !g.wallet && !giving.has(g.holder))];
         const released = sum((out.get(asset) ?? []).filter((o) => !getting.has(o.holder) || (paidAny && !back)));
