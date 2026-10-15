@@ -384,3 +384,28 @@ test('closing an account as its close authority is only rent when it is no wrapp
     assert.ok(r.assessment.mine.has(WA));
     assert.equal(r.assessment.flows.find((f) => f.asset === 'SOL')?.change, -100n * SOL - RES); // the fee apart
 });
+
+test('a stake of yours left set up by no one is no longer yours: SOL sent into it is SOL lost to whoever sets it up', async () => {
+    const S = key(43);
+    const CLOCK = address('SysvarC1ock11111111111111111111111111111111');
+    const HISTORY = address('SysvarStakeHistory1111111111111111111111111');
+    // Withdrawn in full (the Stake program leaves it set up by no one, your key still in its bytes), then 100 SOL in.
+    const withdraw: Instruction = { programAddress: STAKE, accounts: [{ address: S, role: W }, { address: PAYER, role: W }, { address: CLOCK, role: R }, { address: HISTORY, role: R }, { address: PAYER, role: RS }], data: new Uint8Array([4, 0, 0, 0, ...getU64Encoder().encode(2n * SOL)]) };
+    const left = staked(PAYER);
+    left.set(getU32Encoder().encode(0)); // its tag only
+    const r = await review(transaction([withdraw, send(PAYER, S, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 1000n * SOL), account(S, STAKE, 2n * SOL, staked(PAYER))], [account(PAYER, SYSTEM, 902n * SOL - 5000n), account(S, STAKE, 100n * SOL, left)]));
+    assert.ok(!r.assessment.mine.has(S));
+    assert.equal(r.assessment.flows.find((f) => f.asset === 'SOL')?.change, -100n * SOL);
+    assert.ok(r.assessment.findings.some((f) => f.level === 'danger' && f.code === 'stake-withdrawer' && f.subject === S));
+});
+
+test('SOL in a token account is whoever can close it: sent into yours that someone else closes, it leaves you', async () => {
+    const T = key(46);
+    const held = (closer?: Address, extra = 0n) => account(T, TOKEN, 2_039_280n + extra, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n, ...(closer && { closer }) }));
+    const sent = await review(transaction([send(PAYER, T, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 1000n * SOL), held(ATTACKER)], [account(PAYER, SYSTEM, 900n * SOL - 5000n), held(ATTACKER, 100n * SOL)]));
+    assert.equal(sent.assessment.flows.find((f) => f.asset === 'SOL')?.change, -100n * SOL);
+    assert.deepEqual(sent.assessment.flows.find((f) => f.asset === 'SOL')?.others.map((o) => o.holder), [ATTACKER]);
+    // Closed by you alone: your SOL stays yours.
+    const kept = await review(transaction([send(PAYER, T, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 1000n * SOL), held()], [account(PAYER, SYSTEM, 900n * SOL - 5000n), held(undefined, 100n * SOL)]));
+    assert.equal(kept.assessment.flows.find((f) => f.asset === 'SOL'), undefined);
+});

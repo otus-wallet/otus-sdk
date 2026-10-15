@@ -75,7 +75,8 @@ test('a site you signed for before gets a notice for a program none of those tra
 test('a drainer is danger, and your changes say why', async () => {
     const r = await review(DRAIN, context(), fakeChain(DRAIN_BEFORE, DRAIN_AFTER));
     assert.equal(r.assessment.verdict, 'danger');
-    assert.deepEqual(problems(r), ['danger:wallet-change', 'danger:token-owner-change', 'warn:delegate', 'warn:large-outflow', 'warn:unknown-program']);
+    // As it ends: your wallet a program's and your tokens someone else's, all of each gone, and to a wallet unsaid.
+    assert.deepEqual(problems(r), ['danger:wallet-change', 'danger:token-owner-change', 'warn:delegate', 'warn:large-outflow', 'warn:large-outflow', 'warn:unknown-program', 'warn:sends-to-wallet']);
     assert.deepEqual(new Set(r.assessment.yours.accounts.map((c) => c.address)), new Set([PAYER, USER_TOKEN]));
 });
 
@@ -85,7 +86,7 @@ test('your wallet turned into a nonce account, or handed to a program before it 
         getInitializeNonceAccountInstruction({ nonceAccount: PAYER, nonceAuthority: ATTACKER }),
     ]);
     const r = await review(nonce, context(), fakeChain([wallet(5_000_000n)], [wallet(4_995_000n, new Uint8Array(80))]));
-    assert.deepEqual(problems(r), ['danger:wallet-change']);
+    assert.deepEqual(problems(r), ['danger:wallet-change', 'warn:large-outflow']); // its SOL no longer yours
 
     // A relayer pays; the wallet has no account until this transaction funds it, already assigned to another program.
     const fresh = key(60);
@@ -160,7 +161,7 @@ test('someone’s key allowed all of a token account of yours, or the close of y
     // Your wrapped SOL account's close authority given away: whoever closes it takes its 50 SOL.
     const wrapped = (closer?: Address) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 50_002_039_280n, tokenAccountData({ mint: address('So11111111111111111111111111111111111111112'), owner: PAYER, amount: 50_000_000_000n, native: 2_039_280n, closer }));
     const closer = { programAddress: TOKEN_PROGRAM_ADDRESS, accounts: [{ address: USER_TOKEN, role: AccountRole.WRITABLE }, { address: PAYER, role: AccountRole.READONLY_SIGNER }], data: new Uint8Array([6, 3, 1, ...getAddressEncoder().encode(thief)]) };
-    assert.deepEqual(problems(await review(transaction([closer]), context(), fakeChain([wallet(5_000_000n), wrapped()], [wallet(4_995_000n), wrapped(thief)]))), ['danger:close-authority']);
+    assert.deepEqual(problems(await review(transaction([closer]), context(), fakeChain([wallet(5_000_000n), wrapped()], [wallet(4_995_000n), wrapped(thief)]))), ['danger:close-authority', 'warn:large-outflow']); // its SOL theirs to take
 
     // A fee of 0.06 SOL on a transfer of 0.001: critical, and with it nearly all of this wallet's SOL goes.
     const fee = await review(transfer(), context(), fakeChain([wallet(66_000_000n)], [wallet(66_000_000n - 1_000_000n - 60_000_000n), account(RECIPIENT, SYSTEM, 1_000_000n)], { fee: 60_000_000n }));
