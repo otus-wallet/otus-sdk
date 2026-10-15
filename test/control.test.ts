@@ -404,6 +404,7 @@ test('SOL in a token account is whoever can close it: sent into yours that someo
     const sent = await review(transaction([send(PAYER, T, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 1000n * SOL), held(ATTACKER)], [account(PAYER, SYSTEM, 900n * SOL - 5000n), held(ATTACKER, 100n * SOL)]));
     assert.equal(sent.assessment.flows.find((f) => f.asset === 'SOL')?.change, -100n * SOL);
     assert.deepEqual(sent.assessment.flows.find((f) => f.asset === 'SOL')?.others.map((o) => o.holder), [ATTACKER]);
+    assert.ok(sent.assessment.findings.some((f) => f.level === 'danger' && f.code === 'close-authority' && f.subject === T));
     // Closed by you alone: your SOL stays yours.
     const kept = await review(transaction([send(PAYER, T, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 1000n * SOL), held()], [account(PAYER, SYSTEM, 900n * SOL - 5000n), held(undefined, 100n * SOL)]));
     assert.equal(kept.assessment.flows.find((f) => f.asset === 'SOL'), undefined);
@@ -421,4 +422,25 @@ test('who controls, when it ends, each part of yours that leaves you: an address
     assert.deepEqual(r.assessment.leaves.get(PAYER), { sol: EVIL });
     assert.deepEqual(r.assessment.leaves.get(S), { sol: null });
     assert.deepEqual(r.assessment.leaves.get(T), { sol: key(47), tokens: ATTACKER });
+});
+
+test('an account is named yours by what it is for: someone’s token account you can close is not; one your wallet empties and closes is', async () => {
+    const [T, W2] = [key(46), key(48)];
+    // Their tokens, you its close authority: only its rent could ever be yours.
+    const theirs = account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 900n, closer: PAYER }));
+    const moved: Instruction = { programAddress: key(90), accounts: [{ address: T, role: W }, { address: PAYER, role: WS }] };
+    const r = await review(transaction([moved]), context, fakeChain([account(PAYER, SYSTEM, SOL), theirs], [account(PAYER, SYSTEM, SOL - 5000n), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 0n, closer: PAYER }))]));
+    assert.ok(!r.assessment.mine.has(T));
+    // A token account your wallet closes, made in the same transaction (there neither before nor after): yours all along.
+    const close: Instruction = { programAddress: TOKEN, accounts: [{ address: W2, role: W }, { address: PAYER, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([9]) };
+    const c = await review(transaction([close]), context, fakeChain([account(PAYER, SYSTEM, SOL)], [account(PAYER, SYSTEM, SOL - 5000n)]));
+    assert.deepEqual(c.changes.accounts.filter((x) => x.address === W2).map((x) => [x.before, x.after]), [[null, null]]);
+    assert.ok(c.assessment.mine.has(W2));
+});
+
+test('a part of yours that leaves goes, in the flows, to whoever controls it then: a wallet handed to a program, to that program', async () => {
+    const EVIL = key(22);
+    const r = await review(transaction([send(PAYER, key(2), SOL)]), context, fakeChain([account(PAYER, SYSTEM, 10n * SOL)], [account(PAYER, EVIL, 9n * SOL - 5000n), account(key(2), SYSTEM, SOL)]));
+    const holders = r.assessment.flows.find((f) => f.asset === 'SOL')?.others.map((o) => o.holder);
+    assert.ok(holders?.includes(EVIL), String(holders));
 });
