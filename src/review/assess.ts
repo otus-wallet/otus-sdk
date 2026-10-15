@@ -103,9 +103,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // theirs. The worse of the two, and it is guarded as yours.
     const handing = new Set(handedOn(s, changes, explained, wallet, clock));
     const handed = changes.accounts.filter((c) => handing.has(c.address));
-    const lost = handed.map((c): Change => ({ address: c.address, before: c.before, after: lesser(c) }));
-    const yours: Changes = { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: [...changes.accounts.filter((c) => mine.has(c.address)), ...lost] };
-    const gained = { fee: changes.fee, accounts: changes.accounts.map((c) => (handed.includes(c) ? { address: c.address, before: lesser(c), after: c.after } : c)) };
+    const parts = new Map(handed.map((c) => [c, parted(c)]));
+    const yours: Changes = { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: [...changes.accounts.filter((c) => mine.has(c.address)), ...[...parts.values()].map((p) => p.lost)] };
+    const gained = { fee: changes.fee, accounts: changes.accounts.map((c) => parts.get(c)?.rest ?? c) };
     // Your address inside an account does not make it yours: anyone can write it into theirs.
     const keyed = changes.accounts.filter((c) => !mine.has(c.address) && !handed.includes(c) && (holds(c.before, key) || holds(c.after, key)));
     const programs = programUses(s, explained, mine, context);
@@ -171,7 +171,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         // account made for you beforehand. You can't withdraw until it ends, or they lift it.
         const [was, is] = [stake(before, clock), stake(after, clock)];
         if (is) for (const a of [is.staker, is.withdrawer, is.custodian]) if (a !== was?.staker && a !== was?.withdrawer && a !== was?.custodian) given.add(a);
-        const kept = is !== null && is.locked && is.custodian !== wallet && is.withdrawer === wallet; // as it ends
+        const kept = is !== null && is.locked && !ours.has(is.custodian) && ours.has(is.withdrawer); // as it ends
         const fed = (after?.lamports ?? 0n) > (before?.lamports ?? 0n);
         if (kept && (is.lockup !== was?.lockup || fed) && !lockedBefore(is.lockup)) {
             const text = is.lockup === was?.lockup ? 'Your SOL goes into stake someone else keeps locked' : nobody(is.custodian) ? 'Your stake gets a lockup no one can lift' : 'Your stake gets a lockup someone else holds';
@@ -488,13 +488,19 @@ function handedOn(s: Simulated, changes: Changes, explained: Explained[], wallet
     });
 }
 
-// An account as it ends, holding no more than it began with: its SOL and its tokens each the lesser of the two.
-function lesser(c: Change): State {
-    if (!c.after) return c.after;
-    const least = (a: bigint, b: bigint) => (a < b ? a : b);
-    const lamports = least(c.before?.lamports ?? 0n, c.after.lamports);
-    const token = c.after.token && { ...c.after.token, amount: least(c.before?.token?.amount ?? 0n, c.after.token.amount) };
-    return { ...c.after, lamports, token };
+// An account handed on, each asset apart: what it loses, which may be yours (from what it holds to nothing, so that no
+// more than the loss counts as yours anywhere), and the rest, whoever holds it. Tokens of another mint than it began
+// with are none of what it began with: all of those count as lost.
+function parted(c: Change): { lost: Change; rest: Change } {
+    const [before, after] = [c.before, c.after];
+    const lamports = before && after && before.lamports > after.lamports ? before.lamports - after.lamports : 0n;
+    const kept = before?.token && after?.token && before.token.mint === after.token.mint ? after.token.amount : 0n;
+    const tokens = before?.token && before.token.amount > kept ? before.token.amount - kept : 0n;
+    const holding = (state: State, sol: bigint, units: bigint): State => state && { ...state, lamports: sol, token: state.token && { ...state.token, amount: units } };
+    return {
+        lost: { address: c.address, before: holding(before, lamports, tokens), after: holding(after, 0n, 0n) },
+        rest: { address: c.address, before: holding(before, (before?.lamports ?? 0n) - lamports, (before?.token?.amount ?? 0n) - tokens), after },
+    };
 }
 
 // The token accounts of someone else your wallet takes tokens or SOL out of, as the RPC says it may: as their delegate,
@@ -504,7 +510,8 @@ function allowed(s: Simulated, explained: Explained[], wallet: Address, closing 
         const state = s.accounts.find((x) => x.address === a)?.state;
         const token = state ? read(state)?.token : null;
         if (!token || token.owner === wallet) return [];
-        if (name === 'CloseAccount') return closing && token.closer === wallet ? [a] : [];
+        // A close moves only rent: not wrapped SOL, and no more SOL in it than rent.
+        if (name === 'CloseAccount') return closing && token.closer === wallet && !token.native && (state ? read(state)?.lamports ?? 0n : 0n) <= RENT_MOST ? [a] : [];
         return token.delegate === wallet ? [a] : [];
     });
 }

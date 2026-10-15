@@ -349,3 +349,38 @@ test('a Token-2022 extension’s authority set to no one (zeros) is given up, sa
     const r = await review(transaction([touch(M, T22)]), { ...context, wallet: me }, fakeChain([account(me, SYSTEM, SOL), account(M, T22, 5n * SOL, mint(new Uint8Array(enc.encode(me))))], [account(me, SYSTEM, SOL - 5000n), account(M, T22, 5n * SOL, mint(new Uint8Array(32)))]));
     assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'authority-change').map((f) => `${f.level}:${f.note}`), ["warn:It can't be undone"]);
 });
+
+test('an account handed on counts only by what it loses: its balance never pads yours, nor gives you another mint', async () => {
+    const [M, T, B] = [key(30), key(32), key(31)];
+    const mint = Object.assign(new Uint8Array(82), { 45: 1 });
+    const burn = (amount: bigint, of = M): Instruction => ({ programAddress: T22, accounts: [{ address: T, role: W }, { address: of, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([15, ...getU64Encoder().encode(amount), 0]) });
+    // All 100 of your SOL out, beside a burn of 0 from the attacker's account holding 12 SOL: still almost all of yours.
+    const held = account(T, T22, 12n * SOL, tokenAccountData({ mint: M, owner: ATTACKER, amount: 5n }));
+    const drained = await said([burn(0n), send(PAYER, ATTACKER, 100n * SOL - 1_005_000n)], [account(PAYER, SYSTEM, 100n * SOL), account(ATTACKER, SYSTEM, SOL), account(M, T22, 1_461_600n, mint), held], [account(PAYER, SYSTEM, 1_000_000n), account(ATTACKER, SYSTEM, 101n * SOL - 1_005_000n), account(M, T22, 1_461_600n, mint), held]);
+    assert.ok(drained.includes('warn:large-outflow'));
+    // Made again with another mint: what it began with is lost, the other mint's tokens are not yours.
+    const r = await review(transaction([burn(1000n)]), context, fakeChain([account(PAYER, SYSTEM, 10n * SOL), account(M, T22, 1_461_600n, mint), account(T, T22, 2_039_280n, tokenAccountData({ mint: M, owner: ATTACKER, amount: 1000n }))], [account(PAYER, SYSTEM, 10n * SOL - 5000n), account(M, T22, 1_461_600n, mint), account(T, T22, 2_039_280n, tokenAccountData({ mint: B, owner: ATTACKER, amount: 1000n }))]));
+    assert.deepEqual(r.assessment.flows.map((f) => `${f.asset}:${f.change}`), [`${M}:-1000`]);
+});
+
+test('a lockup someone else keeps on stake another of your wallets will withdraw is checked as yours', async () => {
+    const S = key(43);
+    const MINE = ATTACKER; // here, another wallet of yours Otus signs for
+    const THEIRS = address('HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk');
+    const lockup = { time: 4_102_444_800n, custodian: THEIRS };
+    const set: Instruction = { programAddress: STAKE, accounts: [{ address: S, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([6, 0, 0, 0]) };
+    const found = await said([set, send(PAYER, S, SOL)], [account(PAYER, SYSTEM, 5n * SOL), account(S, STAKE, 10n * SOL, staked(PAYER))], [account(PAYER, SYSTEM, 4n * SOL - 5000n), account(S, STAKE, 11n * SOL, staked(MINE, lockup))], { signers: [PAYER, MINE] });
+    assert.ok(found.includes('danger:stake-lockup'));
+});
+
+test('closing an account as its close authority is only rent when it is no wrapped SOL and holds no more', async () => {
+    const [WA, OTHER] = [key(45), key(50)];
+    const RES = 2_039_280n;
+    const close: Instruction = { programAddress: TOKEN, accounts: [{ address: WA, role: W }, { address: ATTACKER, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([9]) };
+    const wsol = address('So11111111111111111111111111111111111111112');
+    // The RPC naming someone else its owner and you its closer, with 100 wrapped SOL in it: what leaves it counts as yours.
+    const lie = account(WA, TOKEN, RES + 100n * SOL, tokenAccountData({ mint: wsol, owner: OTHER, amount: 100n * SOL, native: RES, closer: PAYER }));
+    const r = await review(transaction([close]), context, fakeChain([account(PAYER, SYSTEM, SOL), account(ATTACKER, SYSTEM, SOL), lie], [account(PAYER, SYSTEM, SOL - 5000n), account(ATTACKER, SYSTEM, 101n * SOL + RES), account(WA, SYSTEM, 0n)]));
+    assert.ok(r.assessment.mine.has(WA));
+    assert.equal(r.assessment.flows.find((f) => f.asset === 'SOL')?.change, -100n * SOL - RES); // the fee apart
+});
