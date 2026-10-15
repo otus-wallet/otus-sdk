@@ -9,16 +9,16 @@ import {
     getUpgradeInstruction,
     LOADER_V3_PROGRAM_ADDRESS,
 } from '@solana-program/loader-v3';
-import { AccountRole, createNoopSigner, type Address, type Instruction } from '@solana/kit';
+import { AccountRole, createNoopSigner, getProgramDerivedAddress, type Address, type Instruction } from '@solana/kit';
 
 import { rows, text } from '../src/activity/words.ts';
 import { CORE_PLUGINS } from '../src/programs/core.ts';
 import { story, type Names } from '../src/review/effects.ts';
 import type { Explained } from '../src/review/explain.ts';
-import { key, PAYER } from './helpers.ts';
+import { ATTACKER, key, PAYER } from './helpers.ts';
 
 // A program, its program data, a buffer of new code, and someone else.
-const [PROGRAM, DATA, BUFFER, OTHER] = [key(90), key(91), key(92), key(93)];
+const [PROGRAM, DATA, BUFFER, OTHER] = [key(90), key(91), key(92), ATTACKER]; // OTHER: someone's key
 const loader = CORE_PLUGINS.find((p) => p.program === LOADER_V3_PROGRAM_ADDRESS)!;
 const named: Record<string, string> = { [PROGRAM]: 'the program', [DATA]: 'its data', [BUFFER]: 'the buffer', [OTHER]: 'someone', [PAYER]: 'you' };
 const names: Names = {
@@ -53,9 +53,12 @@ test("an upgrade: the program's code replaced with the buffer's", () => {
     });
 });
 
-test('an authority given away, or set to no one as the loader takes it (its new authority left out)', () => {
+test('an authority given away, or set to no one as the loader takes it (its new authority left out)', async () => {
     const away = told(getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: me, newAuthority: OTHER }));
     assert.deepEqual(away, { args: '→ someone', effects: [{ text: 'Someone is now the authority of its data', tone: 'danger' }] });
+    // To a program's address, no key's (a DAO's vault): said, to check.
+    const vault = (await getProgramDerivedAddress({ programAddress: PROGRAM, seeds: ['vault'] }))[0];
+    assert.equal(told(getSetAuthorityInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: me, newAuthority: vault })).effects[0]!.tone, 'warn');
     // Checked: the new authority signs too; from someone else to you, it is no loss of yours.
     const back = told(getSetAuthorityCheckedInstruction({ bufferOrProgramDataAccount: DATA, currentAuthority: createNoopSigner(OTHER), newAuthority: me }));
     assert.deepEqual(back.effects, [{ text: 'You is now the authority of its data', tone: 'warn' }]);

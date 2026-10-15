@@ -21,6 +21,7 @@ const getTransferSolInstructionTo = (to: Address): Instruction => ({ programAddr
 function staked(withdrawer: Address, lockup: { time?: bigint; epoch?: bigint; custodian?: Address } = {}, staker = withdrawer): Uint8Array {
     const d = new Uint8Array(200);
     d.set(getU32Encoder().encode(2));
+    d.set(getU64Encoder().encode(2_282_880n), 4); // its rent reserve, as the Stake program sets it
     d.set(getAddressEncoder().encode(staker), 12);
     d.set(getAddressEncoder().encode(withdrawer), 44);
     d.set(getI64Encoder().encode(lockup.time ?? 0n), 76);

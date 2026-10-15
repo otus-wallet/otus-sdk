@@ -83,7 +83,6 @@ export type Assessment = {
 
 export const HIGH_FEE = 5_000_000n; // lamports
 export const HUGE_FEE = 50_000_000n; // lamports: no transaction needs this much
-const U64_MAX = 2n ** 64n - 1n; // an allowance without end
 const ORDER: Record<Level, number> = { danger: 0, warn: 1, notice: 2, ok: 3 };
 const [HOUR, DAY] = [3_600, 86_400];
 const FRESH = 7 * DAY; // a program deployed this recently gets a word
@@ -127,7 +126,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     const toOurs = (a: Address) => ours.has(a) && a !== wallet;
     // Control of something of yours handed to an address no key holds, a program's: said, to check, naming the
     // programs acting on it when Otus knows them all. Handed to someone's key: lost, critical.
-    const program = (account: Address) => (byProtocol(s, account) ? protocolsNaming(s, account) : "a program's address");
+    const program = (account: Address) => (byProtocol(s, account) ? `a program's address, through ${protocolsNaming(s, account)}` : "a program's address");
     for (const { address, before, after } of [...yours.accounts, ...keyed]) {
         const [from, to] = [before?.token ?? null, after?.token ?? null];
         if (address === wallet) {
@@ -148,9 +147,9 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (to?.delegate && (to.delegate !== from?.delegate || to.delegated > (from?.delegated ?? 0n))) {
             // Someone allowed all the account holds, or without end, takes all of it whenever it likes. A program's own
             // address, as a marketplace's, only as its program lets it: said, to check.
-            const all = to.delegated === U64_MAX || (to.amount > 0n && to.delegated >= to.amount);
-            if (all && !toOurs(to.delegate) && !isOffCurveAddress(to.delegate)) add('danger', 'delegate', 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
-            else if (all && !toOurs(to.delegate)) add('warn', 'delegate', `A token account of yours is open to ${program(address)}`, address, `${to.delegate}, an address no key holds, could move all of it`);
+            const all = to.delegated >= ENDLESS || (to.amount > 0n && to.delegated >= to.amount);
+            if (all && !ours.has(to.delegate) && !isOffCurveAddress(to.delegate)) add('danger', 'delegate', 'Someone could take all the tokens in an account of yours', address, `${to.delegate} could move them at any time`);
+            else if (all && !ours.has(to.delegate)) add('warn', 'delegate', `A token account of yours is open to ${program(address)}`, address, `${to.delegate}, an address no key holds, could move all of it`);
             else add('warn', 'delegate', 'A token account of yours gets a delegate, or a bigger allowance', address, `${to.delegate} could move its tokens`);
         }
         if (to?.closer && to.closer !== from?.closer) {
@@ -166,27 +165,31 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         const kept = is !== null && is.locked && is.custodian !== wallet && (was ?? is).withdrawer === wallet;
         const fed = (after?.lamports ?? 0n) > (before?.lamports ?? 0n);
         if (kept && (is.lockup !== was?.lockup || fed) && !lockedBefore(is.lockup)) {
-            const text = is.lockup === was?.lockup ? 'Your SOL goes into stake someone else keeps locked' : 'Your stake gets a lockup someone else holds';
-            const note = is.custodian === SYSTEM_PROGRAM_ADDRESS ? "No one can lift it: you can't withdraw until it ends" : `${is.custodian} can lift it: until then you can't withdraw`;
-            const program = is.custodian !== SYSTEM_PROGRAM_ADDRESS && isOffCurveAddress(is.custodian); // a vesting program's, say
+            const text = is.lockup === was?.lockup ? 'Your SOL goes into stake someone else keeps locked' : nobody(is.custodian) ? 'Your stake gets a lockup no one can lift' : 'Your stake gets a lockup someone else holds';
+            const note = nobody(is.custodian) ? "No one can lift it: you can't withdraw until it ends" : `${is.custodian} can lift it: until then you can't withdraw`;
+            const program = !nobody(is.custodian) && isOffCurveAddress(is.custodian); // a vesting program's, say
             const said = toOurs(is.custodian) ? 'Your stake gets a lockup another of your wallets holds' : program ? `${text}: a program's address can lift it` : text;
             add(toOurs(is.custodian) || program ? 'warn' : 'danger', 'stake-lockup', said, address, note);
         }
         // Your stake, made or getting your SOL, that someone else manages: they can unstake it or move it to another
         // validator, not take it.
         if (is !== null && is.withdrawer === wallet && is.staker !== wallet && fed) add('warn', 'stake-staker', 'Someone else manages this stake', address, `${is.staker} can unstake it or change its validator`);
+        // An authority of yours given up to no one: its tag cleared, your key left behind in the bytes.
+        if (before && after && !from) for (const role of givenUp(before, after, key)) add('danger', 'authority-change', `You would give up your ${role}: no one will hold it`, address);
         // Your address inside any other account, as its authority or owner, stays where it was.
         if (before && after && !from) {
             for (const offset of offsetsOf(key, before).filter((o) => !offsetsOf(key, after).includes(o))) {
                 const role = roleAt(before, offset);
                 const now = after.data.length >= offset + 32 ? after.data.slice(offset, offset + 32) : null;
-                const holder = now && now.some((b) => b !== 0) ? getAddressDecoder().decode(now) : null; // who has it now
+                // Who has it now: read where yours was only when the account kept its size (a Token-2022 mint's
+                // extensions move as one grows); else unknown, as gone to anyone.
+                const holder = now && now.some((b) => b !== 0) && after.space === before.space ? getAddressDecoder().decode(now) : null;
                 if (role && holder) given.add(holder);
                 // To another of your wallets Otus signs for: said, not critical. To an address no key holds, a program's
                 // (a protocol taking a stake deposited, a DAO taking a mint): said, to check. To anyone's key: lost,
                 // critical. A Token-2022 mint's extension moved by another changing reads as its authority gone (rare).
                 if (role && holder && toOurs(holder)) add('warn', 'authority-change', `Your ${role} goes to another of your wallets`, address, `Now ${holder}`);
-                else if (role && holder && isOffCurveAddress(holder)) add('warn', 'authority-change', `Your ${role} goes to ${program(address)}`, address, `To ${holder}, an address no key holds: check what you get back`);
+                else if (role && holder && isOffCurveAddress(holder)) add('warn', 'authority-change', `Your ${role} goes to ${program(address)}`, address, `To ${holder}, an address no key holds: check it is the one you meant`);
                 else if (role) add('danger', 'authority-change', `You would lose your ${role}`, address);
                 else add('warn', 'authority-change', 'Your address would leave an account that held it, maybe as its authority', address);
             }
@@ -199,21 +202,37 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // takes it only as its program lets it: when only programs Otus names put it there.
     for (const flow of flows.filter((f) => f.asset === 'SOL' && f.change < 0n)) {
         for (const o of flow.others) {
-            const is = stake(changes.accounts.find((c) => c.address === o.address)?.after ?? null, clock);
+            const state = changes.accounts.find((c) => c.address === o.address)?.after ?? null;
+            const is = stake(state, clock);
             if (is) given.add(is.withdrawer);
+            // What of it can be yours: no more than you send. Rent's worth is no one's to take.
+            const part = o.amount < -flow.change ? o.amount : -flow.change;
+            if (part <= RENT_BACK) continue;
+            // Set up by no one yet (a stake or nonce account never initialized): whoever sets it up first takes it.
+            if (unset(state)) {
+                add('danger', 'stake-withdrawer', 'Your SOL goes into an account no one has set up', o.address, 'Whoever sets it up first can take the SOL out');
+                continue;
+            }
+            const nonce = nonceAuthority(state);
+            if (nonce && nonce !== wallet) {
+                if (ours.has(nonce)) continue;
+                if (isOffCurveAddress(nonce)) add('warn', 'stake-withdrawer', `Your SOL goes into a nonce account that ${program(o.address)} withdraws`, o.address, `${nonce}, an address no key holds: check what you get back`);
+                else add('danger', 'stake-withdrawer', 'Someone else can withdraw this nonce account', o.address, `${nonce} can take the SOL out`);
+                continue;
+            }
             // Another of your wallets withdrawing it is yours to control, unless someone else's lockup holds it. A
             // program's address withdrawing it (a pool's reserve, say): said, to check. Someone's key: theirs, critical.
-            if (!is || is.withdrawer === wallet || o.amount > -flow.change) continue;
+            if (!is || is.withdrawer === wallet) continue;
             const lockedBy = is.locked && !ours.has(is.custodian) ? is.custodian : null;
             if (toOurs(is.withdrawer) && !lockedBy) add('warn', 'stake-withdrawer', 'Another of your wallets can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
-            else if (toOurs(is.withdrawer)) add(lockedBy !== SYSTEM_PROGRAM_ADDRESS && isOffCurveAddress(lockedBy!) ? 'warn' : 'danger', 'stake-lockup', 'Your SOL goes into stake someone else keeps locked', o.address, `${lockedBy} holds its lockup: until it ends, it can't be withdrawn`);
-            else if (isOffCurveAddress(is.withdrawer)) add('warn', 'stake-withdrawer', `Your SOL goes into stake ${program(o.address)} withdraws`, o.address, `${is.withdrawer}, an address no key holds: check what you get back`);
+            else if (toOurs(is.withdrawer)) add(!nobody(lockedBy!) && isOffCurveAddress(lockedBy!) ? 'warn' : 'danger', 'stake-lockup', 'Your SOL goes into stake someone else keeps locked', o.address, nobody(lockedBy!) ? "No one can lift its lockup: until it ends, it can't be withdrawn" : `${lockedBy} holds its lockup: until it ends, it can't be withdrawn`);
+            else if (isOffCurveAddress(is.withdrawer)) add('warn', 'stake-withdrawer', `Your SOL goes into stake that ${program(o.address)} withdraws`, o.address, `${is.withdrawer}, an address no key holds: check what you get back`);
             else add('danger', 'stake-withdrawer', 'Someone else can withdraw this stake', o.address, `${is.withdrawer} can take the SOL out`);
         }
     }
     // Stake of yours under this lockup that was under it already: split or merged among your stakes, none of them coming
-    // under it anew (one locked now that wasn't), all of them together no more than before but for a rent reserve for
-    // each account made, and none of your free SOL going in beyond those reserves. Then nothing of yours is newly locked.
+    // under it anew (one locked now that wasn't), all of them together no more than before but for the rent reserves of
+    // the accounts made, and none of your free SOL going in beyond those. Then nothing of yours is newly locked.
     function lockedBefore(lockup: string): boolean {
         let [had, has, made] = [0n, 0n, 0n];
         for (const c of changes.accounts) {
@@ -223,10 +242,11 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             if (was && !wasIn && isIn) return false; // an existing stake newly under it
             if (wasIn) had += c.before?.lamports ?? 0n;
             if (isIn) has += c.after?.lamports ?? 0n;
-            if (isIn && !c.before) made += 1n;
+            // A new one's rent reserve, as its meta says (after its kind).
+            if (isIn && !c.before && c.after && c.after.data.length >= 12) made += getU64Decoder().decode(c.after.data, 4);
         }
         const sol = flows.find((f) => f.asset === 'SOL')?.change ?? 0n;
-        return had > 0n && has <= had + made * STAKE_RENT && sol >= -made * STAKE_RENT;
+        return had > 0n && has <= had + made && sol >= -made;
     }
     if (!failed && findings.length === shown) add('ok', 'no-authority-change', 'No owner or authority changes', undefined, 'Owners and authorities stay as they are');
     if (!failed) for (const [what, subject] of outflows(yours)) add('warn', 'large-outflow', `You send almost all ${what}`, subject);
@@ -568,7 +588,36 @@ function byProtocol(s: Simulated, account: Address): boolean {
     const acting = naming.filter((p) => !BYSTANDERS.has(p));
     return acting.length > 0 && acting.every((p) => PROGRAM_NAMES.has(p) && !CORE_PROGRAMS.has(p) && !EXECUTORS.has(p));
 }
-const STAKE_RENT = 2_282_880n; // lamports: a stake account's rent reserve (200 bytes)
+const ENDLESS = 2n ** 63n; // an allowance this large is as good as without end
+const INCINERATOR = address('1nc1nerator11111111111111111111111111111111');
+const VOTE_PROGRAM = address('Vote111111111111111111111111111111111111111');
+
+// An address no one can sign for, nor any program for it: the System Program, the incinerator, a program's or sysvar's
+// own address. A lockup it keeps no one can lift.
+const nobody = (a: Address) => a === SYSTEM_PROGRAM_ADDRESS || a === INCINERATOR || SYSVARS.has(a) || PROGRAM_NAMES.has(a) || CORE_PROGRAMS.has(a);
+
+// A stake account (kind 0) or nonce account (state 0) never set up: anyone may set it up as theirs.
+function unset(state: State): boolean {
+    if (!state || state.token) return false;
+    if (state.program === STAKE_PROGRAM && state.data.length >= 4) return getU32Decoder().decode(state.data, 0) === 0;
+    if (state.program === SYSTEM_PROGRAM_ADDRESS && state.space === 80) return getU32Decoder().decode(state.data, 4) === 0;
+    return false;
+}
+
+// A nonce account's authority, who can withdraw its SOL; null for any other account.
+const nonceAuthority = (state: State): Address | null =>
+    state && !state.token && state.program === SYSTEM_PROGRAM_ADDRESS && state.space === 80 && getU32Decoder().decode(state.data, 4) === 1 ? getAddressDecoder().decode(state.data, 8) : null;
+
+// Authorities of yours an account no longer has, its tag cleared to none while your key stays in the bytes: a mint's
+// (tags at 0 and 46, keys at 4 and 50), a program's upgrade authority (program data: tag at 12, key at 13).
+function givenUp(before: NonNullable<State>, after: NonNullable<State>, key: ReadonlyUint8Array): string[] {
+    const yoursAt = (s: NonNullable<State>, offset: number) => s.data.length >= offset + 32 && key.every((b, i) => s.data[offset + i] === b);
+    const tagged = (s: NonNullable<State>, at: number, size: number) => s.data.length > at && (size === 4 ? getU32Decoder().decode(s.data, at) : s.data[at]) === 1;
+    const roles: [string, number, number, number][] = [];
+    if (isMint(before) && isMint(after)) roles.push(['mint authority', 0, 4, 4], ['freeze authority', 46, 4, 50]);
+    if (before.program === UPGRADEABLE_LOADER && after.program === UPGRADEABLE_LOADER && before.data.length >= 45 && getU32Decoder().decode(before.data, 0) === 3) roles.push(['program upgrade authority', 12, 1, 13]);
+    return roles.filter(([, tag, size, at]) => tagged(before, tag, size) && yoursAt(before, at) && !tagged(after, tag, size)).map(([role]) => role);
+}
 
 // The programs Otus knows that name an account at the top of the transaction, by name: who acts on it.
 const protocolsNaming = (s: Simulated, account: Address) =>
@@ -668,6 +717,7 @@ function roleAt(s: NonNullable<State>, offset: number): string | null {
     if (s.program === SYSTEM_PROGRAM_ADDRESS && s.space === 80 && offset === 8) return 'nonce authority';
     if (s.program === STAKE_PROGRAM) return ({ 12: 'stake authority', 44: 'withdraw authority', 92: 'stake lockup custodian' } as Record<number, string>)[offset] ?? null;
     if (s.program === UPGRADEABLE_LOADER && offset === 13) return 'program upgrade authority';
+    if (s.program === VOTE_PROGRAM && offset === 36) return 'vote account withdraw authority';
     return null;
 }
 
