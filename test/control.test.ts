@@ -197,7 +197,7 @@ test('an account made yours on the way and handed on is shown as theirs: what go
     const r = await review(transaction([send(PAYER, S, 100n * SOL), withdraw, authorize]), context, fakeChain([account(PAYER, SYSTEM, 101n * SOL), account(S, STAKE, RENT, staked(ATTACKER, { kind: 0 }))], [account(PAYER, SYSTEM, SOL + 1n - 5000n), account(S, STAKE, RENT + 100n * SOL - 1n, staked(ATTACKER))]));
     assert.ok(!r.assessment.mine.has(S));
     assert.ok(r.assessment.findings.some((f) => f.level === 'danger' && f.code === 'stake-withdrawer' && f.subject === S));
-    assert.ok(r.assessment.keyed.some((c) => c.address === S)); // still guarded
+    assert.ok(r.assessment.yours.accounts.some((c) => c.address === S)); // what it loses counts as yours, and it is guarded
     // Tokens: 1000 of yours into a token account made yours, 0 out by you, then its owner to a key: sent, as to them.
     const [MY, T] = [key(45), key(46)];
     const transfer = (from: Address, to: Address, amount: bigint): Instruction => ({ programAddress: TOKEN, accounts: [{ address: from, role: W }, { address: to, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([3, ...u64(amount)]) });
@@ -207,9 +207,10 @@ test('an account made yours on the way and handed on is shown as theirs: what go
     const t = await review(transaction([transfer(MY, T, 1000n), transfer(T, MY, 0n), hand]), context, fakeChain(before, after));
     assert.ok(!t.assessment.mine.has(T));
     assert.equal(t.assessment.flows.find((f) => f.asset === MINT)?.change, -1000n);
-    // One that loses stays yours, whoever the RPC says holds it: what leaves it may be yours.
-    const lost = await review(transaction([transfer(T, MY, 1000n)]), context, fakeChain([account(PAYER, SYSTEM, SOL), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n })), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 1000n }))], [account(PAYER, SYSTEM, SOL - 5000n), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 0n })), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 0n }))]));
-    assert.ok(lost.assessment.mine.has(T));
+    // One that loses: what leaves it counts as yours, whoever the RPC says holds it, as it may be.
+    const lost = await review(transaction([transfer(T, MY, 1000n)]), context, fakeChain([account(PAYER, SYSTEM, SOL), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n })), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 1000n }))], [account(PAYER, SYSTEM, SOL - 5000n), account(MY, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1000n })), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 0n }))]));
+    assert.equal(lost.assessment.flows.find((f) => f.asset === MINT), undefined); // 1000 out of it, 1000 into yours
+    assert.ok(lost.assessment.yours.accounts.some((c) => c.address === T));
 });
 
 test('SOL coming to you beside it hides none of what the words say you send into someone else’s stake', async () => {
@@ -303,4 +304,48 @@ test('the details: a right given up to no one yellow, the close of an account ba
     const MINT2 = key(71);
     assert.equal(effect(ix('SetAuthority', { owned: MINT2, owner: me2 }, { newAuthority: ATTACKER, authorityType: '0' })).tone, 'danger');
     assert.equal(effect(ix('SetAuthority', { owned: MINT2, owner: me2 }, { newAuthority: 'none', authorityType: '0' })).tone, 'warn');
+});
+
+test('what you send into an account handed on shows as sent, though your wallet moves a sliver out of it as delegate', async () => {
+    const [M, T] = [key(30), key(32)];
+    // A mint whose permanent delegate is your wallet: you burn 1 of the attacker's tokens in T, and your 100 SOL go in.
+    const burn: Instruction = { programAddress: T22, accounts: [{ address: T, role: W }, { address: M, role: W }, { address: PAYER, role: RS }], data: new Uint8Array([15, ...getU64Encoder().encode(1n), 0]) };
+    const mint = Object.assign(new Uint8Array(82), { 45: 1 });
+    const before = [account(PAYER, SYSTEM, 1000n * SOL), account(M, T22, 1_461_600n, mint), account(T, T22, 2_039_280n, tokenAccountData({ mint: M, owner: ATTACKER, amount: 5n }))];
+    const after = [account(PAYER, SYSTEM, 900n * SOL - 5000n), account(M, T22, 1_461_600n, mint), account(T, T22, 2_039_280n + 100n * SOL, tokenAccountData({ mint: M, owner: ATTACKER, amount: 4n }))];
+    const r = await review(transaction([burn, send(PAYER, T, 100n * SOL)]), context, fakeChain(before, after));
+    assert.ok(!r.assessment.mine.has(T));
+    assert.equal(r.assessment.flows.find((f) => f.asset === 'SOL')?.change, -100n * SOL);
+    assert.deepEqual(r.assessment.flows.find((f) => f.asset === 'SOL')?.others.map((o) => o.address), [T]);
+});
+
+test('your SOL into a stake that ends yours to withdraw, under a lockup someone else keeps, is critical', async () => {
+    const S = key(43);
+    const lockup = { time: 4_102_444_800n, custodian: ATTACKER }; // 2100
+    const authorize: Instruction = { programAddress: STAKE, accounts: [{ address: S, role: W }, { address: address('SysvarC1ock11111111111111111111111111111111'), role: R }, { address: ATTACKER, role: RS }], data: new Uint8Array([1, 0, 0, 0, ...getAddressEncoder().encode(PAYER), 1, 0, 0, 0]) };
+    const before = [account(PAYER, SYSTEM, 1000n * SOL), account(S, STAKE, RENT, staked(ATTACKER, lockup))];
+    const after = [account(PAYER, SYSTEM, 900n * SOL - 5000n), account(S, STAKE, RENT + 100n * SOL, staked(PAYER, lockup))];
+    assert.ok((await said([authorize, send(PAYER, S, 100n * SOL)], before, after)).includes('danger:stake-lockup'));
+    // Handed to you locked, with nothing of yours going in: no loss.
+    assert.deepEqual((await said([authorize], before, [account(PAYER, SYSTEM, 1000n * SOL - 5000n), account(S, STAKE, RENT, staked(PAYER, lockup))])).filter((p) => p.startsWith('danger')), []);
+});
+
+test('a Token-2022 extension’s authority set to no one (zeros) is given up, said as such', async () => {
+    const M = key(62);
+    const enc = getAddressEncoder();
+    const str = (t: string) => {
+        const b = new TextEncoder().encode(t);
+        return [...getU32Encoder().encode(b.length), ...b];
+    };
+    const mint = (authority: Uint8Array) => {
+        const meta = [...authority, ...enc.encode(M), ...str('Name'), ...str('SYM'), ...str('https://a'), ...getU32Encoder().encode(0)];
+        const tlv = [...getU16Encoder().encode(19), ...getU16Encoder().encode(meta.length), ...meta];
+        const d = new Uint8Array(166 + tlv.length);
+        d[45] = 1;
+        d[165] = 1;
+        d.set(tlv, 166);
+        return d;
+    };
+    const r = await review(transaction([touch(M, T22)]), { ...context, wallet: me }, fakeChain([account(me, SYSTEM, SOL), account(M, T22, 5n * SOL, mint(new Uint8Array(enc.encode(me))))], [account(me, SYSTEM, SOL - 5000n), account(M, T22, 5n * SOL, mint(new Uint8Array(32)))]));
+    assert.deepEqual(r.assessment.findings.filter((f) => f.code === 'authority-change').map((f) => `${f.level}:${f.note}`), ["warn:It can't be undone"]);
 });

@@ -47,11 +47,11 @@ test('a balance the RPC reads lower than it is, with the drain left out, is told
     assert.ok(codes(told).includes('warn:large-outflow'));
 });
 
-test('an account the RPC says is someone else’s is yours when your wallet moves its tokens: shown, and guarded', async () => {
+test('an account the RPC says is someone else’s counts as yours for what leaves it when your wallet moves its tokens: shown, and guarded', async () => {
     const [vault] = await getProgramDerivedAddress({ programAddress: EVIL_PROGRAM, seeds: ['vault'] });
     // The RPC names a program's address as its owner, and shows the transfer: the tokens are yours to lose all the same.
     const r = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, vault, 1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, vault, 0n), usdc(THEIRS, ATTACKER, 1_000_000n * USDC), mint]);
-    assert.ok(r.assessment.mine.has(USER_TOKEN));
+    assert.ok(r.assessment.yours.accounts.some((c) => c.address === USER_TOKEN)); // what leaves it counts as yours
     assert.deepEqual(r.assessment.flows.find((f) => f.asset === MINT)?.change, -1_000_000n * USDC);
     assert.equal(r.assessment.verdict, 'warn'); // you send almost all of one of your tokens
     // Its guard holds the owner the RPC gave: a program's address, where the chain has yours, so it would not land.
@@ -110,9 +110,10 @@ test('tokens your wallet moves out of someone else’s account as its delegate: 
     const r = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), lent(1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), lent(0n), usdc(THEIRS, ATTACKER, 1_000_000n * USDC), mint]);
     assert.ok(!r.assessment.mine.has(USER_TOKEN));
     assert.deepEqual(codes(r), ['warn:spends-allowance', 'warn:pays-others']);
-    // The RPC saying it is someone's, and not the wallet's to move at all: then only its owner could, and it is yours.
+    // The RPC saying it is someone's, and not the wallet's to move at all: then only its owner could, and what leaves it
+    // counts as yours.
     const theirs = await reviewed([drain(1_000_000n * USDC)], [wallet(5_000_000n), usdc(USER_TOKEN, ATTACKER, 1_000_000n * USDC), usdc(THEIRS, ATTACKER, 0n), mint], [wallet(5_000_000n - FEE), usdc(USER_TOKEN, ATTACKER, 0n), usdc(THEIRS, ATTACKER, 1_000_000n * USDC), mint]);
-    assert.ok(theirs.assessment.mine.has(USER_TOKEN));
+    assert.ok(theirs.assessment.yours.accounts.some((c) => c.address === USER_TOKEN));
 });
 
 test('what an instruction leaves an account as must show: closed, its allowance, its new owner; and it must have been there', async () => {

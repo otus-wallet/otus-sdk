@@ -98,13 +98,18 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // shorter, this reads one below the true epoch, so a lockup counts a little longer, never shorter).
     const clock: Clock = { now: context.now ?? null, epoch: s.slot / SLOTS_PER_EPOCH };
     const mine = yourAccounts(s, changes, explained, wallet, clock);
-    const yours: Changes = { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: changes.accounts.filter((c) => mine.has(c.address)) };
+    // An account handed on in the transaction is theirs when it ends, and yet what leaves it may be yours, under an RPC
+    // that says one of yours is someone else's: each asset apart, what it loses counts as yours, what it gains as
+    // theirs. The worse of the two, and it is guarded as yours.
+    const handing = new Set(handedOn(s, changes, explained, wallet, clock));
+    const handed = changes.accounts.filter((c) => handing.has(c.address));
+    const lost = handed.map((c): Change => ({ address: c.address, before: c.before, after: lesser(c) }));
+    const yours: Changes = { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: [...changes.accounts.filter((c) => mine.has(c.address)), ...lost] };
+    const gained = { fee: changes.fee, accounts: changes.accounts.map((c) => (handed.includes(c) ? { address: c.address, before: lesser(c), after: c.after } : c)) };
     // Your address inside an account does not make it yours: anyone can write it into theirs.
-    // Nor one handed on in the transaction: theirs when it ends, held all the same.
-    const handed = new Set(handedOn(s, changes, explained, wallet, clock));
-    const keyed = changes.accounts.filter((c) => !mine.has(c.address) && (holds(c.before, key) || holds(c.after, key) || handed.has(c.address)));
+    const keyed = changes.accounts.filter((c) => !mine.has(c.address) && !handed.includes(c) && (holds(c.before, key) || holds(c.after, key)));
     const programs = programUses(s, explained, mine, context);
-    const flows = flowsOf(changes, yours, mine);
+    const flows = flowsOf(gained, yours, mine);
     const findings: Finding[] = [];
     const add = (level: Level, code: string, text: string, subject?: Address, note?: string) =>
         findings.push({ level, code, text, ...(note !== undefined && { note }), ...(subject !== undefined && { subject }) });
@@ -166,7 +171,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         // account made for you beforehand. You can't withdraw until it ends, or they lift it.
         const [was, is] = [stake(before, clock), stake(after, clock)];
         if (is) for (const a of [is.staker, is.withdrawer, is.custodian]) if (a !== was?.staker && a !== was?.withdrawer && a !== was?.custodian) given.add(a);
-        const kept = is !== null && is.locked && is.custodian !== wallet && (was ?? is).withdrawer === wallet;
+        const kept = is !== null && is.locked && is.custodian !== wallet && is.withdrawer === wallet; // as it ends
         const fed = (after?.lamports ?? 0n) > (before?.lamports ?? 0n);
         if (kept && (is.lockup !== was?.lockup || fed) && !lockedBefore(is.lockup)) {
             const text = is.lockup === was?.lockup ? 'Your SOL goes into stake someone else keeps locked' : nobody(is.custodian) ? 'Your stake gets a lockup no one can lift' : 'Your stake gets a lockup someone else holds';
@@ -189,6 +194,11 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
                 const now = at !== null && after.data.length >= at + 32 ? after.data.slice(at, at + 32) : null;
                 if (now && now.every((b, i) => b === key[i])) continue; // still yours
                 const role = roleAt(before, offset);
+                // A Token-2022 mint extension's authority set to no one (all zeros there): given up, as givenUp says.
+                if (role && at !== null && offset >= 166 && isMint(before) && now?.every((b) => b === 0)) {
+                    add('warn', 'authority-change', `You give up your ${role}: no one will ever hold it`, address, "It can't be undone");
+                    continue;
+                }
                 const holder = now && now.some((b) => b !== 0) ? getAddressDecoder().decode(now) : null;
                 if (role && holder) given.add(holder);
                 // To another of your wallets Otus signs for: said, not critical. To an address no key holds, a program's
@@ -463,21 +473,28 @@ function yourAccounts(s: Simulated, changes: Changes, explained: Explained[], wa
     return new Set([wallet, ...before, ...after, ...authorized(explained, wallet).flatMap(([, a]) => (lent.has(a) || handed.has(a) ? [] : [a]))]);
 }
 
-// Accounts your wallet acts on as their authority that end the transaction held by someone else, not held by you before,
-// and that gain: made yours on the way and handed on, or lent to you for the moment. What goes into them goes to whoever
-// holds them when it ends, and is shown so. One that loses stays yours: what leaves it may be yours, under an RPC that
-// says one of yours is someone else's. Guarded either way.
+// Accounts your wallet acts on as their authority that end the transaction held by someone else, not held by you before:
+// made yours on the way and handed on, or lent to you for the moment. What goes into them goes to whoever holds them
+// when it ends.
 function handedOn(s: Simulated, changes: Changes, explained: Explained[], wallet: Address, clock: Clock): Address[] {
+    const lent = new Set(allowed(s, explained, wallet)); // someone else's, moved with their leave: theirs throughout
     return authorized(explained, wallet).flatMap(([, a]) => {
+        if (lent.has(a)) return [];
         const c = changes.accounts.find((x) => x.address === a);
         const now = c?.after ? holderOf(c.after, clock) : null;
         const was = s.accounts.find((x) => x.address === a)?.state;
         const then = was ? read(was) : null;
-        if (!c || now === null || now === wallet || (then && holderOf(then, clock) === wallet)) return [];
-        // What it holds: a token account's tokens, any other account's SOL.
-        const held = (state: State) => (c.before?.token || c.after?.token ? (state?.token?.amount ?? 0n) : (state?.lamports ?? 0n));
-        return held(c.after) >= held(c.before) ? [a] : [];
+        return c && now !== null && now !== wallet && !(then && holderOf(then, clock) === wallet) ? [a] : [];
     });
+}
+
+// An account as it ends, holding no more than it began with: its SOL and its tokens each the lesser of the two.
+function lesser(c: Change): State {
+    if (!c.after) return c.after;
+    const least = (a: bigint, b: bigint) => (a < b ? a : b);
+    const lamports = least(c.before?.lamports ?? 0n, c.after.lamports);
+    const token = c.after.token && { ...c.after.token, amount: least(c.before?.token?.amount ?? 0n, c.after.token.amount) };
+    return { ...c.after, lamports, token };
 }
 
 // The token accounts of someone else your wallet takes tokens or SOL out of, as the RPC says it may: as their delegate,
@@ -625,11 +642,11 @@ function byProtocol(s: Simulated, account: Address): boolean {
 const ENDLESS = 2n ** 63n; // an allowance this large is as good as without end
 const INCINERATOR = address('1nc1nerator11111111111111111111111111111111');
 const VOTE_PROGRAM = address('Vote111111111111111111111111111111111111111');
+const BUILTINS: ReadonlySet<Address> = new Set([SYSTEM_PROGRAM_ADDRESS, STAKE_PROGRAM, VOTE_PROGRAM, LOADER_V3_PROGRAM_ADDRESS, COMPUTE_BUDGET_PROGRAM_ADDRESS]);
 
-// An address no one can sign for, nor any program for it: the System Program, the incinerator, a sysvar, a native
-// program's own address (off the curve; most others' were made from a key someone may still hold). A lockup it keeps
-// no one can lift.
-const nobody = (a: Address) => a === SYSTEM_PROGRAM_ADDRESS || a === INCINERATOR || SYSVARS.has(a) || ((PROGRAM_NAMES.has(a) || CORE_PROGRAMS.has(a)) && isOffCurveAddress(a));
+// An address no one can sign for: the incinerator, a sysvar, a builtin program's address, which is a name, not made from
+// a key (most other programs' were, and someone may still hold it). A lockup it keeps no one can lift.
+const nobody = (a: Address) => a === INCINERATOR || SYSVARS.has(a) || BUILTINS.has(a);
 
 // A Token-2022 mint's extensions, by their layout: from byte 166, each a type (u16), a length (u16) and that many bytes,
 // to the end or to a type 0 (unused space). Null when they don't fit it.
