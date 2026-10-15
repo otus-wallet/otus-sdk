@@ -1071,7 +1071,7 @@ function flowsOf(theirs: Changes, yours: Changes, leaves: Map<Address, Leaving>,
             // A part of an account of yours that leaves you: whoever controls it then (the program a wallet is handed to).
             const left = leaves.get(c.address)?.[asset === 'SOL' ? 'sol' : 'tokens'];
             const holder = left ?? (token && (asset === 'SOL' ? solOf(token, wallet) : token.owner)) ?? staker ?? c.address;
-            if (holder === wallet) return []; // stake of yours under someone's lockup: not someone else
+            if (holder === wallet) return []; // your wallet is not someone else (a stake of yours under someone's lockup, say)
             return [{ address: c.address, holder, amount: delta < 0n ? -delta : delta, wallet: state?.token || staker ? !isOffCurveAddress(holder) : plain(state) }];
         });
         return [{ asset: asset as Flow['asset'], change, others: side.toSorted((a, b) => (b.amount > a.amount ? 1 : b.amount < a.amount ? -1 : 0)) }];
