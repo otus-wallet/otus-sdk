@@ -72,14 +72,20 @@ export type Kind = 'you' | 'your-tokens' | 'yours' | 'programs' | 'mints' | 'tok
 export type Assessment = {
     verdict: Verdict; // the worst finding, notices aside
     findings: Finding[]; // worst first
-    mine: Set<Address>; // the accounts that are yours: the wallet, token accounts it owns, accounts only it can withdraw from
-    yours: Changes; // your fee (0 when another account pays) and the accounts of yours it can write: what guards hold
+    mine: Set<Address>; // the accounts yours at either end: the wallet, token accounts it owns, accounts only it can withdraw from
+    yours: Changes; // your fee (0 when another account pays), and each account it writes with any part yours, as the part yours at each end: what guards hold
+    leaves: Map<Address, Leaving>; // accounts of yours (`mine`) with a part not yours when it ends: who controls that part then
     keyed: Change[]; // other accounts it can write with your address in them: not yours, but guarded so your place stays
     programs: ProgramUse[];
     flows: Flow[];
     payouts: Payout[];
     kinds: Map<Address, Kind>;
 };
+
+/** Who controls, when the transaction ends, a part of an account of yours not yours then: its SOL, its tokens. An
+ *  address (a wallet, a program's address, or the program that now owns the account), or null: no one has set it up,
+ *  and anyone may. */
+export type Leaving = { sol?: Address | null; tokens?: Address | null };
 
 export const HIGH_FEE = 5_000_000n; // lamports
 export const HUGE_FEE = 50_000_000n; // lamports: no transaction needs this much
@@ -98,7 +104,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     // shorter, this reads one below the true epoch, so a lockup counts a little longer, never shorter).
     const clock: Clock = { now: context.now ?? null, epoch: s.slot / SLOTS_PER_EPOCH };
     // What is yours at each end, each account and asset apart: what you control when it starts and when it ends.
-    const { mine, yours, theirs, touched } = endsOf(s, changes, explained, wallet, clock);
+    const { mine, ends, yours, theirs, touched, leaves } = endsOf(s, changes, explained, wallet, clock);
     // Your address inside an account does not make it yours: anyone can write it into theirs.
     const keyed = changes.accounts.filter((c) => !touched.has(c.address) && (holds(c.before, key) || holds(c.after, key)));
     const programs = programUses(s, explained, new Set([...mine, ...touched]), context);
@@ -307,7 +313,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     }
     if (programs.length > 0 && programs.every((p) => p.name !== null)) add('ok', 'all-known', 'Known programs', undefined, programs.map((p) => p.name).join(', '));
 
-    if (!failed) findings.push(...leaving(programs, explained, changes, flows, yours, mine, nftBack(s, changes, key)));
+    if (!failed) findings.push(...leaving(programs, explained, changes, flows, yours, ends, nftBack(s, changes, key)));
 
     // Value that lands with someone else without leaving your accounts: said exactly, for you to judge. To an address
     // you keep, by its name.
@@ -342,7 +348,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (fresh.length) findings.push({ level: 'notice', code: 'new-program', text: fresh.length === 1 ? 'New program for this site' : 'New programs for this site', note: fresh.map(name).join(', '), programs: fresh });
     }
 
-    return { ...ranked(findings), mine, yours, keyed, programs, flows, payouts, kinds };
+    return { ...ranked(findings), mine, yours, leaves, keyed, programs, flows, payouts, kinds };
 }
 
 /**
@@ -461,8 +467,9 @@ export function ago(seconds: number): string {
 // - a stake account's SOL, whoever can withdraw it, unless someone else's lockup holds it; a nonce account's, its
 //   authority's; one not set up is no one's, anyone may take it.
 // `yours`: each account with any part yours, as the part that is yours at each end. `theirs`: every account as the rest.
-// `mine`: the accounts yours when the transaction ends (or, closed, when it began), and the others read and yours.
-// `touched`: every account with any part yours at either end.
+// `mine`: the accounts yours at either end, by name ("your USDC account", what happened to it), and those read and
+// yours. `ends`: those yours when the transaction ends (or, closed, when it began). `touched`: every account with any
+// part yours at either end, or taken value out of by your wallet.
 // An account your wallet takes value out of as its authority, as only its owner could (not lent to it), counts as yours
 // however the RPC says it is held: what it loses is yours, the worse reading; what it gains, whoever holds it at the end.
 function endsOf(s: Simulated, changes: Changes, explained: Explained[], wallet: Address, clock: Clock) {
@@ -474,7 +481,10 @@ function endsOf(s: Simulated, changes: Changes, explained: Explained[], wallet: 
     };
     const yours: Change[] = [];
     const theirs: Change[] = [];
-    const [mine, touched] = [new Set<Address>([wallet]), new Set<Address>()];
+    const [mine, ends, touched] = [new Set<Address>([wallet]), new Set<Address>([wallet]), new Set<Address>()];
+    const leaves = new Map<Address, Leaving>();
+    // Who holds a part at the end: who controls it, else the program the account now belongs to; no one when not set up.
+    const holding = (who: Address | null, after: NonNullable<State>) => who ?? (unset(after) ? null : after.program);
     for (const c of changes.accounts) {
         const [start, end] = [of(c.address, c.before), of(c.address, c.after)];
         const auth = moved.has(c.address);
@@ -494,12 +504,20 @@ function endsOf(s: Simulated, changes: Changes, explained: Explained[], wallet: 
         if (!(start.sol || start.tokens || end.sol || end.tokens || auth) && c.address !== wallet) continue; // your wallet always
         touched.add(c.address);
         yours.push({ address: c.address, before: at(c.before, sb, ub), after: at(c.after, sa, ua) });
-        if (c.after ? end.sol || end.tokens : start.sol || start.tokens) mine.add(c.address);
+        if (start.sol || start.tokens || end.sol || end.tokens) mine.add(c.address);
+        if (c.after && mine.has(c.address) && (!end.sol || (c.after.token && !end.tokens))) {
+            const held = controls(c.address, c.after, clock);
+            leaves.set(c.address, {
+                ...(!end.sol && { sol: holding(held.sol, c.after) }),
+                ...(c.after.token && !end.tokens && { tokens: holding(held.tokens, c.after) }),
+            });
+        }
+        if (c.after ? end.sol || end.tokens : start.sol || start.tokens) ends.add(c.address);
     }
     // The accounts the transaction reads and doesn't write: as they are.
     const written = new Set(changes.accounts.map((c) => c.address));
-    for (const a of s.accounts) if (!written.has(a.address) && (({ sol, tokens }) => sol || tokens)(of(a.address, read(a.state)))) mine.add(a.address);
-    return { mine, yours: { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: yours }, theirs: { fee: changes.fee, accounts: theirs }, touched };
+    for (const a of s.accounts) if (!written.has(a.address) && (({ sol, tokens }) => sol || tokens)(of(a.address, read(a.state)))) [mine, ends].forEach((set) => set.add(a.address));
+    return { mine, ends, leaves, yours: { fee: s.signers[0] === wallet ? changes.fee : 0n, accounts: yours }, theirs: { fee: changes.fee, accounts: theirs }, touched };
 }
 
 // Who controls an account's SOL and its tokens: a plain wallet, itself; a token account's tokens, its owner, and its SOL,

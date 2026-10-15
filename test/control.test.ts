@@ -394,7 +394,6 @@ test('a stake of yours left set up by no one is no longer yours: SOL sent into i
     const left = staked(PAYER);
     left.set(getU32Encoder().encode(0)); // its tag only
     const r = await review(transaction([withdraw, send(PAYER, S, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 1000n * SOL), account(S, STAKE, 2n * SOL, staked(PAYER))], [account(PAYER, SYSTEM, 902n * SOL - 5000n), account(S, STAKE, 100n * SOL, left)]));
-    assert.ok(!r.assessment.mine.has(S));
     assert.equal(r.assessment.flows.find((f) => f.asset === 'SOL')?.change, -100n * SOL);
     assert.ok(r.assessment.findings.some((f) => f.level === 'danger' && f.code === 'stake-withdrawer' && f.subject === S));
 });
@@ -408,4 +407,18 @@ test('SOL in a token account is whoever can close it: sent into yours that someo
     // Closed by you alone: your SOL stays yours.
     const kept = await review(transaction([send(PAYER, T, 100n * SOL)]), context, fakeChain([account(PAYER, SYSTEM, 1000n * SOL), held()], [account(PAYER, SYSTEM, 900n * SOL - 5000n), held(undefined, 100n * SOL)]));
     assert.equal(kept.assessment.flows.find((f) => f.asset === 'SOL'), undefined);
+});
+
+test('who controls, when it ends, each part of yours that leaves you: an address, the program it now belongs to, or no one', async () => {
+    const [S, T, EVIL] = [key(43), key(46), key(22)];
+    const left = staked(PAYER);
+    left.set(getU32Encoder().encode(0));
+    const handOver: Instruction = { programAddress: TOKEN, accounts: [{ address: T, role: W }, { address: PAYER, role: RS }] };
+    const r = await review(transaction([send(PAYER, S, SOL), handOver]), context, fakeChain(
+        [account(PAYER, SYSTEM, 10n * SOL), account(S, STAKE, 2n * SOL, staked(PAYER)), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 5n }))],
+        [account(PAYER, EVIL, 9n * SOL - 5000n), account(S, STAKE, 3n * SOL, left), account(T, TOKEN, 2_039_280n, tokenAccountData({ mint: MINT, owner: ATTACKER, amount: 5n, closer: key(47) }))],
+    ));
+    assert.deepEqual(r.assessment.leaves.get(PAYER), { sol: EVIL });
+    assert.deepEqual(r.assessment.leaves.get(S), { sol: null });
+    assert.deepEqual(r.assessment.leaves.get(T), { sol: key(47), tokens: ATTACKER });
 });
