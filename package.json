@@ -1,6 +1,6 @@
 {
   "name": "@otus-wallet/sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Otus Wallet's transaction review for Solana: decode, simulate, explain and assess a transaction, and guard it with Lighthouse, on @solana/kit",
   "license": "Apache-2.0",
   "repository": {
