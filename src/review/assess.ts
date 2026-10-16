@@ -77,6 +77,7 @@ export type Assessment = {
     mine: Set<Address>; // the accounts yours at either end: the wallet, token accounts it owns, accounts only it can withdraw from
     yours: Changes; // your fee (0 when another account pays), and each account it writes with any part yours, as the part yours at each end: what guards hold
     leaves: Map<Address, Leaving>; // accounts of yours (`mine`) with a part not yours when it ends: who controls that part then
+    shared: Map<Address, Address>; // token accounts of yours that get tokens, or become yours, under a mint whose permanent delegate (not yours) can move or burn them at any time: who
     keyed: Change[]; // other accounts it can write with your address in them: not yours, but guarded so your place stays
     programs: ProgramUse[];
     flows: Flow[];
@@ -115,6 +116,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
     const add = (level: Level, code: string, text: string, subject?: Address, note?: string) =>
         findings.push({ level, code, text, ...(note !== undefined && { note }), ...(subject !== undefined && { subject }) });
     const given = new Set<Address>(); // who gets your funds, or a say over them: checked against the addresses you keep
+    const shared = new Map<Address, Address>();
 
     // What the simulation shows. A failed one shows nothing, and a site can make it fail on purpose.
     const failed = s.simulation.error !== null;
@@ -172,12 +174,17 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             else if (to.native && !ours.has(to.closer)) add('warn', 'close-authority', `${cap(program(address))} could close your wrapped SOL account`, address, `${to.closer}, an address no key holds, could take its SOL`);
             else add('warn', 'close-authority', 'A token account of yours gets a new close authority', address, `${to.closer} could close it`);
         }
-        // Tokens that come to an account of yours, or one opened for you, of a mint whose permanent delegate can move or
-        // burn anyone's at any time: someone else controls them too.
-        const lender = to && ours.has(to.owner) && (!from || to.amount > from.amount) ? context.mints?.get(to.mint)?.extensions.find((e) => e.kind === 'permanentDelegate')?.delegate : null;
-        if (lender && !ours.has(lender)) {
-            given.add(lender);
-            add('warn', 'permanent-delegate', 'Someone else can take the tokens you get', address, `${lender}, this token's permanent delegate, can move or burn them at any time`);
+        // Tokens you get, in an account of yours, opened for you or become yours: under a mint whose permanent delegate
+        // can move or burn anyone's at any time, someone else controls them too. A rule of the token, not of this
+        // transaction: said where they show, not graded. A Token-2022 mint Otus couldn't read may have one.
+        const gets = to !== null && ours.has(to.owner) && (!from || !ours.has(from.owner) || to.amount > from.amount);
+        if (gets) {
+            const terms = context.mints?.get(to.mint);
+            const lender = terms?.extensions.find((e) => e.kind === 'permanentDelegate')?.delegate;
+            if (lender && !ours.has(lender)) {
+                given.add(lender);
+                shared.set(address, lender);
+            } else if (!terms && after?.program === TOKEN_2022_PROGRAM_ADDRESS) add('warn', 'token-terms-unread', "Otus couldn't read the terms of a token you get", address, `${to.mint}: who else can move it is not known`);
         }
         // An account of yours left frozen: its tokens can't move until the mint's freeze authority thaws it.
         if (to?.frozen && !from?.frozen && ours.has(to.owner)) {
@@ -375,7 +382,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         if (fresh.length) findings.push({ level: 'notice', code: 'new-program', text: fresh.length === 1 ? 'New program for this site' : 'New programs for this site', note: fresh.map(name).join(', '), programs: fresh });
     }
 
-    return { ...ranked(findings), mine, yours, leaves, keyed, programs, flows, payouts, kinds };
+    return { ...ranked(findings), mine, yours, leaves, shared, keyed, programs, flows, payouts, kinds };
 }
 
 /**

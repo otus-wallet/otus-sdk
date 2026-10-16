@@ -1,5 +1,5 @@
 // What a token's mint lets others do with tokens of yours, read in the review: a permanent delegate over the tokens you
-// get, and an account of yours left frozen.
+// get, said where they show; an account of yours left frozen, and a mint that couldn't be read, warned of.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -37,31 +37,46 @@ const [mint22, sender, mine] = [key(70), key(71), key(72)];
 const mintOf = (delegate: Address | null) => account(mint22, TOKEN_2022_PROGRAM_ADDRESS, RENT, extended(delegate ? [[12, bytes(delegate)]] : []));
 const holding = (a: Address, owner: Address, amount: bigint) => account(a, TOKEN_2022_PROGRAM_ADDRESS, RENT, tokenAccountData({ mint: mint22, owner, amount }));
 
-// 5 tokens come to an account opened for you, from someone else's; the mint in the transaction, or only on chain.
-async function received(delegate: Address | null, inTransaction = true) {
-    const ix: Instruction = inTransaction
-        ? getTransferCheckedInstruction({ source: sender, mint: mint22, destination: mine, authority: createNoopSigner(ATTACKER), amount: 5n, decimals: 6 }, { programAddress: TOKEN_2022_PROGRAM_ADDRESS })
-        : { programAddress: key(75), accounts: [{ address: PAYER, role: AccountRole.WRITABLE_SIGNER }, { address: mine, role: AccountRole.WRITABLE }], data: new Uint8Array([1]) };
-    const before = [account(PAYER, SYSTEM, SOL), holding(sender, ATTACKER, 10n), mintOf(delegate)];
-    const after = [account(PAYER, SYSTEM, SOL - FEE), holding(sender, ATTACKER, 5n), holding(mine, PAYER, 5n), mintOf(delegate)];
+// 5 tokens come to an account opened for you, from someone else's; the mint in the transaction, only on chain, or
+// nowhere to be read.
+async function received(delegate: Address | null, mint: 'loaded' | 'onchain' | 'unread' = 'loaded') {
+    const ix: Instruction =
+        mint === 'loaded'
+            ? getTransferCheckedInstruction({ source: sender, mint: mint22, destination: mine, authority: createNoopSigner(ATTACKER), amount: 5n, decimals: 6 }, { programAddress: TOKEN_2022_PROGRAM_ADDRESS })
+            : { programAddress: key(75), accounts: [{ address: PAYER, role: AccountRole.WRITABLE_SIGNER }, { address: mine, role: AccountRole.WRITABLE }], data: new Uint8Array([1]) };
+    const minted = mint === 'unread' ? [] : [mintOf(delegate)];
+    const before = [account(PAYER, SYSTEM, SOL), holding(sender, ATTACKER, 10n), ...minted];
+    const after = [account(PAYER, SYSTEM, SOL - FEE), holding(sender, ATTACKER, 5n), holding(mine, PAYER, 5n), ...minted];
     const r = await review(transaction([ix]), { wallet: PAYER, signedBefore: 0 }, fakeChain(before, after));
-    return r.assessment.findings;
+    return r.assessment;
 }
 
-test("tokens you get whose mint has a permanent delegate: someone else can take them, said with who", async () => {
-    const found = await received(ATTACKER);
-    const lent = found.find((f) => f.code === 'permanent-delegate');
-    assert.deepEqual([lent?.level, lent?.subject], ['warn', mine]);
-    assert.match(lent?.note ?? '', new RegExp(`^${ATTACKER}, this token's permanent delegate`));
-    assert.ok(!found.some((f) => f.code === 'no-authority-change'), 'no "No owner or authority changes" beside it');
+test("tokens you get whose mint has a permanent delegate: who else controls them is said, not graded", async () => {
+    const a = await received(ATTACKER);
+    assert.equal(a.shared.get(mine), ATTACKER);
+    assert.ok(!a.findings.some((f) => f.level !== 'ok' && f.code !== 'unknown-site' && f.code !== 'new-site'), a.findings.map((f) => f.code).join());
+    assert.ok(a.findings.some((f) => f.code === 'no-authority-change'));
     // Read from the chain when the transaction doesn't load the mint.
-    assert.ok((await received(ATTACKER, false)).some((f) => f.code === 'permanent-delegate'));
+    assert.equal((await received(ATTACKER, 'onchain')).shared.get(mine), ATTACKER);
     // None, or you: nothing to say.
-    for (const delegate of [null, PAYER]) {
-        const quiet = await received(delegate);
-        assert.ok(!quiet.some((f) => f.code === 'permanent-delegate'), String(delegate));
-        assert.ok(quiet.some((f) => f.code === 'no-authority-change'), String(delegate));
-    }
+    for (const delegate of [null, PAYER]) assert.equal((await received(delegate)).shared.size, 0, String(delegate));
+});
+
+test('a Token-2022 mint Otus could not read, for tokens you get: said, as who else can move them is not known', async () => {
+    const a = await received(ATTACKER, 'unread');
+    const f = a.findings.find((x) => x.code === 'token-terms-unread');
+    assert.deepEqual([f?.level, f?.subject, a.shared.size], ['warn', mine, 0]);
+});
+
+test('an account that becomes yours with its tokens in it, under a permanent delegate: said too', async () => {
+    const lender = key(76);
+    const ix: Instruction = { programAddress: key(75), accounts: [{ address: PAYER, role: AccountRole.WRITABLE_SIGNER }, { address: mine, role: AccountRole.WRITABLE }], data: new Uint8Array([2]) };
+    const r = await review(
+        transaction([ix]),
+        { wallet: PAYER, signedBefore: 0 },
+        fakeChain([account(PAYER, SYSTEM, SOL), holding(mine, ATTACKER, 5n), mintOf(lender)], [account(PAYER, SYSTEM, SOL - FEE), holding(mine, PAYER, 5n), mintOf(lender)]),
+    );
+    assert.equal(r.assessment.shared.get(mine), lender);
 });
 
 test('an account of yours left frozen: said, naming who can thaw it; one frozen already is not news', async () => {
