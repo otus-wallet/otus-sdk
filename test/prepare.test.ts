@@ -467,3 +467,39 @@ test('signed with others, a guard another weakens is said; amounts held as chang
     const alone = await prepare(a, PAYER, aChain);
     assert.deepEqual([alone.loose, alone.leeway, alone.findings], [[], { lamports: 0n, units: 0n }, []]);
 });
+
+test('signed with others, a comparison that fails is the transaction moving more than reviewed: said, not hidden behind floors', async () => {
+    // Every guarded simulation fails at the first Lighthouse instruction of the kind given: 4, a comparison; 0, a snapshot.
+    const failingAt = (op: number) => {
+        const base = fakeChain([account(PAYER, SYSTEM, 5_000_000n), TABLE_ACCOUNT], [account(PAYER, SYSTEM, 3_995_000n), account(RECIPIENT, SYSTEM, 1_000_000n)]);
+        const simulate: Chain['simulate'] = async (tx, ...rest) => {
+            const s = await base.simulate(tx, ...rest);
+            const m = (await decode(tx)).message;
+            const at = m.instructions.findIndex((ix) => m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE && ix.data[0] === op);
+            return at >= 0 ? { ...s, error: { InstructionError: [at, { Custom: 6001 }] } as unknown as Simulation['error'] } : s;
+        };
+        return { ...base, simulate };
+    };
+    const guarded = async (chain: Chain) => {
+        const [one, two] = [await review(transfer(), context, chain), await review(transfer(), context, chain)];
+        return prepare(one, PAYER, chain, false, undefined, undefined, [two]);
+    };
+    const compared = await guarded(failingAt(4));
+    assert.equal(compared.unguarded, "Otus can't add guards because the transaction fails with them");
+    // A snapshot failing is Otus's own doing: floors instead.
+    const snapped = await guarded(failingAt(0));
+    const m = await messageOf(snapped);
+    assert.deepEqual([snapped.unguarded, m.instructions.some((ix) => m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE && ix.data[0] === 0)], [null, false]);
+});
+
+test('signed with others, an account both open keeps a floor, and what the other puts in it is said', async () => {
+    const opened = key(72);
+    const filled = (amount: bigint) => account(opened, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount }));
+    const chain = () => fakeChain([account(PAYER, SYSTEM, 5_000_000_000n)], [account(PAYER, SYSTEM, 4_997_955_720n), filled(100n)]);
+    const [ca, cb] = [chain(), chain()];
+    const a = await review(transaction([touching(opened)]), context, ca);
+    const b = await review(transaction([touching(opened)]), context, cb);
+    const p = await prepare(a, PAYER, ca, false, undefined, undefined, [b]);
+    assert.equal(p.leeway.units, 100n);
+    assert.ok(p.findings.some((f) => f.code === 'guards-leeway'));
+});

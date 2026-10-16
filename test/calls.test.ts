@@ -6,6 +6,8 @@ import { AccountRole, address, type Address, type Instruction } from '@solana/ki
 import type { Chain, Simulation } from '../src/chain.ts';
 import { review } from '../src/review/review.ts';
 import { prepare } from '../src/prepare/prepare.ts';
+import { decode } from '../src/review/decode.ts';
+import { LIGHTHOUSE } from '../src/programs/addresses.ts';
 import { account, fakeChain, key, PAYER, SYSTEM, transaction } from './helpers.ts';
 
 const JUPITER = address('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4');
@@ -80,4 +82,26 @@ test('guarded, a call made where it was not, under the instruction it is in: a d
     const chain = { ...base, simulate };
     const p = await prepare(await review(transaction([unsigned, signed(STRANGER)]), context, chain), PAYER, chain);
     assert.deepEqual(p.findings.map((f) => f.code), ['guards-differ']);
+});
+
+test('signed with others, the snapshots Otus puts first move the site’s instructions: their calls are still matched to them', async () => {
+    // Every simulation lists the calls where the site's instruction sits in what it simulates: after the snapshots, once guarded.
+    const prepared = async (seen: Calls, guarded: Calls) => {
+        const base = chainOf();
+        const simulate: Chain['simulate'] = async (tx, ...rest) => {
+            const s = await base.simulate(tx, ...rest);
+            const m = (await decode(tx)).message;
+            const at = m.instructions.findIndex((ix) => m.staticAccounts[ix.programAddressIndex] === STRANGER);
+            const calls = m.staticAccounts.includes(LIGHTHOUSE) ? guarded : seen;
+            return { ...s, inner: [{ index: at, calls: calls.map(([program, depth]) => ({ program, type: null, ...(depth && { depth }) })) }], innerListed: true };
+        };
+        const chain = { ...base, simulate };
+        const [one, two] = [await review(transaction([signed(STRANGER)]), context, chain), await review(transaction([signed(STRANGER)]), context, chain)];
+        const p = await prepare(one, PAYER, chain, false, undefined, undefined, [two]);
+        const m = (await decode(p.bytes)).message;
+        assert.equal(m.instructions[0].data[0], 0, 'a snapshot first');
+        return p.findings.map((f) => `${f.level}:${f.code} ${f.note}`);
+    };
+    assert.deepEqual(await prepared([[TOKEN, 2]], [[TOKEN, 2]]), []);
+    assert.deepEqual(await prepared([[TOKEN, 2]], [[TOKEN, 2], [KAMINO, 2]]), ['warn:guards-differ It then calls Kamino Lend, which the review did not see']);
 });

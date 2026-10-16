@@ -92,15 +92,15 @@ export function roomBeside(yours: Changes, wallet: Address, beside: Beside[] = [
 const ROOM_LEFT = 10_000_000n; // lamports: a token account's rent at most, as several transactions open or close them
 
 /** What other transactions signed with this one bring into the accounts its floors hold: landing before it, what a
- *  floor lets go past this one's review. In lamports, and units of any token. */
+ *  floor lets go past this one's review; all of it, for one they open too. In lamports, and units of any token. */
 export function inflowsBeside(held: Hold[], wallet: Address, beside: Beside[] = []): { lamports: bigint; units: bigint } {
     let [lamports, units] = [0n, 0n];
     for (const h of held) {
         for (const b of beside) {
             const c = b.changes.accounts.find((x) => x.address === h.account);
-            if (!c?.before || !c.after) continue;
+            if (!c?.after) continue;
             const tokens = h.kind === 'token' && h.account !== wallet;
-            const [was, is] = tokens ? [c.before.token?.amount ?? 0n, c.after.token?.amount ?? 0n] : [c.before.lamports, c.after.lamports];
+            const [was, is] = tokens ? [c.before?.token?.amount ?? 0n, c.after.token?.amount ?? 0n] : [c.before?.lamports ?? 0n, c.after.lamports];
             if (is <= was) continue;
             if (tokens) units += is - was;
             else lamports += is - was;

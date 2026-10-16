@@ -99,7 +99,9 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         const changed = new Set(deltas.map((d) => d.account));
         const asserted = gross.reduce((n, h) => n + assertions(h, wallet, changed.has(h.account)).length, 0);
         const added = asserted + (retry ? 2 * deltas.length + 2 : 0); // each snapshot and comparison, the memory made and closed
-        const leeway = bare || retry ? { lamports: 0n, units: 0n } : plus(roomBeside(r.assessment.yours, wallet, others), inflowsBeside(gross, wallet, others));
+        // What floors let pass: with snapshots, only the accounts it opens keep floors.
+        const floors = gross.filter((h) => !changed.has(h.account));
+        const leeway = bare ? { lamports: 0n, units: 0n } : retry ? inflowsBeside(floors, wallet, others) : plus(roomBeside(r.assessment.yours, wallet, others), inflowsBeside(gross, wallet, others));
         // A transaction loads no more account data than its limit, v1's or the one a Compute Budget instruction sets for
         // legacy and v0: Lighthouse's program comes with its guards. `room`: the limit as Otus sets it, null to leave the
         // site's.
@@ -115,11 +117,13 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         const noRoom = () => (retry ? null : unheld("Otus can't add guards because the transaction has no room left for them"));
         // Guarded, it fails. For what Otus adds (more accounts or account data than a transaction may take, the rent its
         // priority fee leaves the wallet without, units the guards could have used up), it goes as the site sent it;
-        // otherwise it acts other than reviewed. With snapshots, either way it is tried with floors instead. `limit`: the
-        // units it had.
-        const failed = async (error: NonNullable<Simulation['error']>, limit: number) => {
-            if (retry) return null;
-            return ours(error, { used: r.simulation.unitsConsumed, limit, added }) ? noRoom() : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
+        // otherwise it acts other than reviewed. With snapshots, what Otus adds failing (a snapshot, the memory, the
+        // site's instructions moved past them) is tried with floors instead; a guard failing is the transaction moving
+        // more than reviewed, said as such. `limit`: the units it had.
+        const failed = async (error: NonNullable<Simulation['error']>, limit: number, message: Message) => {
+            const ourOwn = ours(error, { used: r.simulation.unitsConsumed, limit, added });
+            if (retry && (ourOwn || !guardFailed(error, message))) return null;
+            return ourOwn ? noRoom() : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
         };
         let market: { price: bigint; from: Pricing } | null = null;
         try {
@@ -141,7 +145,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
                 const probe = await wired(unpriced(signable(MAX_COMPUTE_UNIT_LIMIT, false).message), r.signers);
                 if (probe === null) return noRoom();
                 const measured = await chain.simulate(probe.bytes, [], r.slot);
-                if (measured.error !== null) return failed(measured.error, MAX_COMPUTE_UNIT_LIMIT);
+                if (measured.error !== null) return failed(measured.error, MAX_COMPUTE_UNIT_LIMIT, probe.message);
                 // An RPC that does not say what it used: the runtime's default for the site's instructions, and the guards'
                 // room; v1 has no default, so the most there is.
                 const unsaid = v1 ? MAX_COMPUTE_UNIT_LIMIT : defaultUnits(r.message) + added * GUARD_UNITS;
@@ -164,7 +168,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
             if (tried?.check.error && rentShort(tried.check.error) && tried.price > 0n) tried = await attempt(limit, false);
             if (tried === null) return noRoom();
             const { message, held, price, bytes, hash, check } = tried;
-            if (check.error !== null) return failed(check.error, limit);
+            if (check.error !== null) return failed(check.error, limit, message);
             const total = check.fee ?? fee(message);
             const beside = [...(loose.length ? [{ ...PARTIAL, subject: loose[0] }] : []), ...(leeway.lamports > 0n || leeway.units > 0n ? [LEEWAY] : [])];
             return {
@@ -173,7 +177,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
                 fee: total,
                 holds: shown(held, gross, deltas, r),
                 unguarded: held.length > 0 ? null : (bare ?? NOTHING_TO_HOLD),
-                findings: [...feeFindings(r, wallet, total), ...differs(r, message, check), ...beside],
+                findings: [...feeFindings(r, wallet, total), ...differs(r, message, check, deltas.length), ...beside],
                 units: limit,
                 priced: price > 0n && market ? market.from : null,
                 room: room !== siteRoom ? room : null,
@@ -207,6 +211,13 @@ function shown(held: Hold[], gross: Hold[], deltas: Delta[], r: Review): Hold[] 
 }
 
 const plus = (a: { lamports: bigint; units: bigint }, b: { lamports: bigint; units: bigint }) => ({ lamports: a.lamports + b.lamports, units: a.units + b.units });
+
+// A failure in one of Lighthouse's assertions or comparisons: not a snapshot (0) nor the memory's close (1).
+function guardFailed(error: NonNullable<Simulation['error']>, m: Message): boolean {
+    if (typeof error !== 'object' || !('InstructionError' in error)) return false;
+    const ix = m.instructions[Number(error.InstructionError[0])];
+    return ix !== undefined && m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE && ix.data[0] !== 0 && ix.data[0] !== 1;
+}
 
 // The sysvar a program reads to see the transaction's instructions: one that does may check where its own sit.
 const INSTRUCTIONS = 'Sysvar1nstructions1111111111111111111111111' as Address;
@@ -291,12 +302,20 @@ const min = (a: bigint, b: bigint) => (a < b ? a : b);
 // Guarded, it may act otherwise than as the review saw it: a program Otus doesn't know calling, or being called,
 // where it was not is what one does that knows it is watched. Known programs calling known ones otherwise is the chain
 // moving on, as a fill through another market. It takes both simulations listing their calls to tell.
-function differs(r: Review, guarded: Message, check: Simulation): Finding[] {
+function differs(r: Review, guarded: Message, check: Simulation, snapshots = 0): Finding[] {
     if (!r.simulation.innerListed || !check.innerListed) return [];
-    // Keyed by instruction: Otus's own are added after the site's, which keep their places.
+    // Keyed by instruction, as the site placed it: Otus's snapshots come first (after a durable nonce's advance), the
+    // rest of what it adds after the site's; a call made in one of Otus's own is none of the site's.
+    const lead = durable(guarded) ? 1 : 0;
+    const site = r.message.instructions.length;
+    const asSite = (i: number) => (i < lead ? i : i < lead + snapshots || i - snapshots >= site ? null : i - snapshots);
     const pair = (c: { index: number; caller: Address; program: Address }) => `${c.index} ${c.caller} ${c.program}`;
     const seen = new Set(callsIn(r.simulation.inner, r.message.instructions.map((ix) => r.accounts[ix.programAddressIndex].address)).map(pair));
     const fresh = callsIn(check.inner, guarded.instructions.map((ix) => guarded.staticAccounts[ix.programAddressIndex]))
+        .flatMap((c) => {
+            const index = asSite(c.index);
+            return index === null ? [] : [{ ...c, index }];
+        })
         .filter((c) => !seen.has(pair(c)) && !(PROGRAM_NAMES.has(c.caller) && PROGRAM_NAMES.has(c.program)));
     const programs = [...new Set(fresh.map((c) => c.program))].map((q) => PROGRAM_NAMES.get(q) ?? q);
     return programs.length ? [{ level: 'warn', code: 'guards-differ', text: 'It acts differently once guarded', note: `It then calls ${programs.join(', ')}, which the review did not see` }] : [];
