@@ -101,7 +101,7 @@ export function account(address: Address, owner: Address, balance: bigint, data:
 
 /** SPL token account data (165 bytes, initialized). `native`: wrapped SOL, with this rent reserve; `delegated`: the
  *  delegate's allowance; `closer`: its close authority. */
-export function tokenAccountData(o: { mint: Address; owner: Address; amount: bigint; delegate?: Address; delegated?: bigint; native?: bigint; closer?: Address }): Uint8Array {
+export function tokenAccountData(o: { mint: Address; owner: Address; amount: bigint; delegate?: Address; delegated?: bigint; native?: bigint; closer?: Address; frozen?: boolean }): Uint8Array {
     const d = new Uint8Array(165);
     d.set(getAddressEncoder().encode(o.mint), 0);
     d.set(getAddressEncoder().encode(o.owner), 32);
@@ -110,7 +110,7 @@ export function tokenAccountData(o: { mint: Address; owner: Address; amount: big
         d[72] = 1;
         d.set(getAddressEncoder().encode(o.delegate), 76);
     }
-    d[108] = 1;
+    d[108] = o.frozen ? 2 : 1;
     if (o.native !== undefined) {
         d[109] = 1;
         new DataView(d.buffer).setBigUint64(113, o.native, true);

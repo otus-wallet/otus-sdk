@@ -15,6 +15,7 @@ import {
     type Address,
     type ReadonlyUint8Array,
 } from '@solana/kit';
+import type { MintTerms } from '../access/mint.ts';
 
 import { alike, cap, told } from '../format.ts';
 import { LIGHTHOUSE, STAKE_PROGRAM, TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresses.ts';
@@ -50,6 +51,7 @@ export type Context = {
     signers?: Address[]; // the accounts of yours Otus signs for (a key it holds, a Ledger): what goes to one stays yours to control
     contacts?: Map<Address, string>; // the addresses you keep, by your names for them
     sent?: Address[]; // the addresses you sent to: a copy of one is what address poisoning counts on
+    mints?: Map<Address, MintTerms>; // the terms of the mints whose tokens it moves, as they stand when it ends
 };
 
 /** What one program gets from you. `name`: Otus's, for a program it knows; null for one it doesn't. `accounts`: how
@@ -169,6 +171,18 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
             else if (to.native && !ours.has(to.closer) && !isOffCurveAddress(to.closer)) add('danger', 'close-authority', 'Someone could take the SOL in your wrapped SOL account', address, `${to.closer} could close it and take its SOL at any time`);
             else if (to.native && !ours.has(to.closer)) add('warn', 'close-authority', `${cap(program(address))} could close your wrapped SOL account`, address, `${to.closer}, an address no key holds, could take its SOL`);
             else add('warn', 'close-authority', 'A token account of yours gets a new close authority', address, `${to.closer} could close it`);
+        }
+        // Tokens that come to an account of yours, or one opened for you, of a mint whose permanent delegate can move or
+        // burn anyone's at any time: someone else controls them too.
+        const lender = to && ours.has(to.owner) && (!from || to.amount > from.amount) ? context.mints?.get(to.mint)?.extensions.find((e) => e.kind === 'permanentDelegate')?.delegate : null;
+        if (lender && !ours.has(lender)) {
+            given.add(lender);
+            add('warn', 'permanent-delegate', 'Someone else can take the tokens you get', address, `${lender}, this token's permanent delegate, can move or burn them at any time`);
+        }
+        // An account of yours left frozen: its tokens can't move until the mint's freeze authority thaws it.
+        if (to?.frozen && !from?.frozen && ours.has(to.owner)) {
+            const thawer = context.mints?.get(to.mint)?.freezeAuthority;
+            add('warn', 'frozen', 'A token account of yours is frozen', address, thawer ? `Its tokens can't move until ${thawer} thaws it` : "Its tokens can't move");
         }
         // Your stake under a lockup in force that someone else keeps: made so now, or getting your SOL, as into a stake
         // account made for you beforehand. You can't withdraw until it ends, or they lift it.

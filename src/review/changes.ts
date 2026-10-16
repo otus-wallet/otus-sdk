@@ -6,8 +6,9 @@ import { TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAMS } from '../programs/addresse
 import { fee } from './budget.ts';
 import type { Simulated } from './simulate.ts';
 
-/** An SPL token account's fields. Amounts in base units. `native`: wrapped SOL, whose amount is the account's own lamports. */
-export type Token = { mint: Address; owner: Address; amount: bigint; delegate: Address | null; delegated: bigint; closer: Address | null; native: boolean };
+/** An SPL token account's fields. Amounts in base units. `native`: wrapped SOL, whose amount is the account's own lamports.
+ *  `frozen`: its tokens can't move until the mint's freeze authority thaws it. */
+export type Token = { mint: Address; owner: Address; amount: bigint; delegate: Address | null; delegated: bigint; closer: Address | null; native: boolean; frozen: boolean };
 
 /** An account as the review reads it; null when there is none. */
 export type State = { lamports: bigint; program: Address; space: number; data: ReadonlyUint8Array; token: Token | null } | null;
@@ -80,5 +81,5 @@ function token(program: Address, d: ReadonlyUint8Array): Token | null {
     const at = (offset: number) => getAddressDecoder().decode(d, offset);
     const option = (offset: number) => (getU32Decoder().decode(d, offset) === 1 ? at(offset + 4) : null);
     const u64 = (offset: number) => getU64Decoder().decode(d, offset);
-    return { mint: at(0), owner: at(32), amount: u64(64), delegate: option(72), delegated: u64(121), closer: option(129), native: getU32Decoder().decode(d, 109) === 1 };
+    return { mint: at(0), owner: at(32), amount: u64(64), delegate: option(72), delegated: u64(121), closer: option(129), native: getU32Decoder().decode(d, 109) === 1, frozen: d[108] === 2 };
 }

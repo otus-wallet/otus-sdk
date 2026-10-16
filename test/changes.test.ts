@@ -43,8 +43,8 @@ test('reads every account the transaction can write, before and after, from the 
         { lamports: 4_995_000n, program: EVIL_PROGRAM, space: 0, token: null },
     ]);
     assert.deepEqual([at[USER_TOKEN].before?.token, at[USER_TOKEN].after?.token], [
-        { mint: MINT, owner: PAYER, amount: 1000n, delegate: null, delegated: 0n, closer: null, native: false },
-        { mint: MINT, owner: ATTACKER, amount: 0n, delegate: ATTACKER, delegated: 0n, closer: null, native: false },
+        { mint: MINT, owner: PAYER, amount: 1000n, delegate: null, delegated: 0n, closer: null, native: false, frozen: false },
+        { mint: MINT, owner: ATTACKER, amount: 0n, delegate: ATTACKER, delegated: 0n, closer: null, native: false, frozen: false },
     ]);
     assert.deepEqual([at[RECIPIENT].before, at[RECIPIENT].after?.lamports], [null, 1_000_000n]);
 });
@@ -77,7 +77,7 @@ test('reads token fields only from initialized token accounts', () => {
     new DataView(data.buffer).setBigUint64(121, 5n, true);
     const extended = (type: number, size = 170) => Uint8Array.from({ length: size }, (_, i) => (i < 165 ? data[i] : i === 165 ? type : 0));
     const token = (owner: Address, d: Uint8Array) => read(account(USER_TOKEN, owner, 1n, d))?.token ?? null;
-    assert.deepEqual(token(TOKEN_PROGRAM_ADDRESS, data), { mint: MINT, owner: PAYER, amount: 7n, delegate: ATTACKER, delegated: 5n, closer: null, native: false });
+    assert.deepEqual(token(TOKEN_PROGRAM_ADDRESS, data), { mint: MINT, owner: PAYER, amount: 7n, delegate: ATTACKER, delegated: 5n, closer: null, native: false, frozen: false });
     assert.equal(token(TOKEN_2022_PROGRAM_ADDRESS, extended(2))?.amount, 7n);
     assert.deepEqual(
         [

@@ -14,7 +14,7 @@ import { key, MINT, PAYER, SYSTEM } from './helpers.ts';
 // any order, so each holds your accounts to what all of them may take.
 const USER_TOKEN = key(40);
 const wallet = (lamports: bigint): State => ({ lamports, program: SYSTEM, space: 0, data: new Uint8Array(), token: null });
-const tokens = (amount: bigint, o: Partial<Token> = {}): State => ({ lamports: 2_039_280n, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: MINT, owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: false, ...o } });
+const tokens = (amount: bigint, o: Partial<Token> = {}): State => ({ lamports: 2_039_280n, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: MINT, owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: false, frozen: false, ...o } });
 const change = (address: typeof PAYER, before: State, after: State): Change => ({ address, before, after });
 const tx = (fee: bigint, ...accounts: Change[]): Changes => ({ fee, accounts });
 const beside = (c: Changes, spare?: bigint): Beside => ({ changes: c, yours: c, ...(spare !== undefined && { spare }) });
@@ -70,7 +70,7 @@ test('a field another changes is not held, the rest still is: what it is then de
 test('what others move between your own accounts is room its guards leave past its review, and said', () => {
     const WRAPPED = key(45);
     // B wraps 4 SOL into your own wrapped SOL account: you lose nothing, but A's wallet floor makes room for it.
-    const native = (amount: bigint): State => ({ lamports: 2_039_280n + amount, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: key(46), owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: true } });
+    const native = (amount: bigint): State => ({ lamports: 2_039_280n + amount, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: key(46), owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: true, frozen: false } });
     const wraps = tx(5_000n, change(PAYER, wallet(10n * SOL), wallet(6n * SOL - 5_000n)), change(WRAPPED, native(0n), native(4n * SOL)));
     const room = roomBeside(a, PAYER, [beside(wraps)]);
     assert.ok(room.lamports >= 4n * SOL && room.lamports < 4n * SOL + SOL / 10n, String(room.lamports));
@@ -123,7 +123,7 @@ test('a stake account another changes one term of keeps the others held, and you
 
 test('room is what each of the others moves out of your accounts past what it loses, asset by asset', () => {
     const [WRAPPED, STAKED] = [key(49), key(50)];
-    const native = (amount: bigint): State => ({ lamports: 2_039_280n + amount, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: key(46), owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: true } });
+    const native = (amount: bigint): State => ({ lamports: 2_039_280n + amount, program: TOKEN_PROGRAM_ADDRESS, space: 165, data: new Uint8Array(165), token: { mint: key(46), owner: PAYER, amount, delegate: null, delegated: 0n, closer: null, native: true, frozen: false } });
     const staked = (lamports: bigint): State => ({ lamports, program: STAKE_PROGRAM, space: 200, data: new Uint8Array(200), token: null });
     // A holds the wallet and the stake account; B wraps 4 SOL (stays yours) and withdraws 4 SOL of the stake to someone else.
     const a = tx(5_000n, change(PAYER, wallet(10n * SOL), wallet(10n * SOL - 5_000n)), change(STAKED, staked(5n * SOL), staked(5n * SOL)));
