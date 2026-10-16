@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS, getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction, getSetLoadedAccountsDataSizeLimitInstruction } from '@solana-program/compute-budget';
 import { getAdvanceNonceAccountInstruction, getTransferSolInstruction } from '@solana-program/system';
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { AccountRole, address, createNoopSigner, getAddressEncoder, getTransactionDecoder, getTransactionEncoder, getI64Encoder, getU32Encoder, getU64Encoder, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
+import { AccountRole, address, createNoopSigner, getProgramDerivedAddress, getAddressEncoder, getTransactionDecoder, getTransactionEncoder, getI64Encoder, getU32Encoder, getU64Encoder, type Address, type Instruction, type MaybeEncodedAccount } from '@solana/kit';
 
 import type { Chain, Simulation } from '../src/chain.ts';
 import type { Context } from '../src/review/assess.ts';
@@ -389,16 +389,61 @@ test('units are measured with a price instruction in place, as the transaction w
     assert.deepEqual([...prices[0].data.slice(1)], [0, 0, 0, 0, 0, 0, 0, 0]); // at zero: it costs nothing
 });
 
-test('signed with others, the guards leave room for what they take and the fee Otus may set them, in any order', async () => {
-    // Two transfers of 1,000,000 lamports, from 5,000,000: alone, each held at 3,985,000; together, room for the other's.
+const i128le = (b: Uint8Array) => BigInt.asIntN(128, b.reduce((acc, x, i) => acc | (BigInt(x) << BigInt(8 * i)), 0n));
+const INSTRUCTIONS_SYSVAR = address('Sysvar1nstructions1111111111111111111111111');
+
+test('signed with others, each amount is held as its own change, whatever lands first: no room for the others', async () => {
+    // Two transfers of 1,000,000 lamports, from 5,000,000: each held as it would be alone, 3,985,000 once its fee is paid.
     const chain = fakeChain([account(PAYER, SYSTEM, 5_000_000n), TABLE_ACCOUNT], [account(PAYER, SYSTEM, 3_995_000n), account(RECIPIENT, SYSTEM, 1_000_000n)]);
     const [one, two] = await Promise.all([review(transfer(), context, chain), review(transfer(), context, chain)]);
     const p = await prepare(one, PAYER, chain, false, undefined, undefined, [two]);
-    // The other takes 1,005,000 (its fee in it) with a hundredth as slack, and up to 1,000,000 as a priority fee.
-    assert.deepEqual(p.holds, [{ kind: 'wallet', account: PAYER, atLeast: 3_985_000n - 1_015_050n - 1_000_000n, owner: SYSTEM, space: 0 }]);
+    assert.deepEqual(p.holds, [{ kind: 'wallet', account: PAYER, atLeast: 3_985_000n, owner: SYSTEM, space: 0 }]);
+    assert.deepEqual([p.leeway, p.loose, p.findings.map((f) => f.code)], [{ lamports: 0n, units: 0n }, [], []]);
+    const m = await messageOf(p);
+    const lighthouse = m.instructions.filter((ix) => m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE);
+    // A snapshot first, before the transfer; then the wallet's owner and size, its lamports against the snapshot, and
+    // the memory closed last.
+    assert.equal(m.instructions[0], lighthouse[0]);
+    assert.deepEqual(lighthouse.map((ix) => ix.data[0]), [0, 6, 4, 1]);
+    // The change it may make: −1,010,000 (its 1,000,000, a hundredth of it as slack), its fee apart, as fees are paid
+    // before it runs.
+    const delta = lighthouse[2].data;
+    assert.deepEqual([...delta.slice(0, 5), delta[21]], [4, 0, 0, 0, 0, 4]);
+    assert.equal(i128le(delta.slice(5, 21)), -1_010_000n);
+    // The memory: the wallet's own, written to and closed, its rent back to the wallet that pays it.
+    const [memory, bump] = await getProgramDerivedAddress({ programAddress: LIGHTHOUSE, seeds: ['memory', keyOf(PAYER), Uint8Array.of(0)] });
+    const at = m.staticAccounts.indexOf(memory);
+    assert.ok(at > 0 && at < m.staticAccounts.length - m.header.numReadonlyNonSignerAccounts, 'writable, signing nothing');
+    assert.deepEqual([...lighthouse[0].data.slice(0, 3)], [0, 0, bump]);
+    assert.deepEqual(lighthouse[3].accountIndices.slice(1), [0, at]);
+    assert.equal(m.staticAccounts[lighthouse[0].accountIndices[1]], SYSTEM);
 });
 
-test('signed with others, a guard another weakens, or room it leaves for what others move between your accounts, is said', async () => {
+test('signed with others, a durable transaction keeps its advance first, the snapshots right after it', async () => {
+    const tx = () => transaction([getAdvanceNonceAccountInstruction({ nonceAccount: key(40), nonceAuthority: payer }), pay]);
+    const chain = fakeChain([account(PAYER, SYSTEM, 5_000_000n)], [account(PAYER, SYSTEM, 3_995_000n), account(RECIPIENT, SYSTEM, 1_000_000n)]);
+    const [one, two] = await Promise.all([review(tx(), context, chain), review(tx(), context, chain)]);
+    const m = await messageOf(await prepare(one, PAYER, chain, false, undefined, undefined, [two]));
+    assert.ok(durable(m));
+    assert.deepEqual([m.staticAccounts[m.instructions[1].programAddressIndex], m.instructions[1].data[0]], [LIGHTHOUSE, 0]);
+});
+
+test('signed with others, one that reads its own instructions keeps floors, and what the others bring into its accounts is said', async () => {
+    const reads: Instruction = { programAddress: EVIL_PROGRAM, accounts: [{ address: PAYER, role: AccountRole.WRITABLE_SIGNER }, { address: USER_TOKEN, role: AccountRole.WRITABLE }, { address: INSTRUCTIONS_SYSVAR, role: AccountRole.READONLY }] };
+    const held = (amount: bigint) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount }));
+    const before = [account(PAYER, SYSTEM, 5_000_000_000n), held(1000n)];
+    const aChain = fakeChain(before, [account(PAYER, SYSTEM, 4_999_995_000n), held(1000n)]);
+    const a = await review(transaction([reads]), context, aChain);
+    const bChain = fakeChain(before, [account(PAYER, SYSTEM, 4_999_995_000n), held(1500n)]);
+    const b = await review(transaction([touching(USER_TOKEN)]), context, bChain);
+    const p = await prepare(a, PAYER, aChain, false, undefined, undefined, [b]);
+    const m = await messageOf(p);
+    assert.ok(!m.instructions.some((ix) => m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE && ix.data[0] === 0), 'no snapshot');
+    assert.equal(p.leeway.units, 500n);
+    assert.ok(p.findings.some((f) => f.code === 'guards-leeway'));
+});
+
+test('signed with others, a guard another weakens is said; amounts held as changes leave no room', async () => {
     const lent = (delegate: Address | undefined) => account(USER_TOKEN, TOKEN_PROGRAM_ADDRESS, 2_039_280n, tokenAccountData({ mint: MINT, owner: PAYER, amount: 1000n, ...(delegate && { delegate, delegated: 10n }) }));
     const before = [account(PAYER, SYSTEM, 5_000_000_000n), lent(key(70))];
     // A: a program Otus doesn't know touching your token account. B: it revoked.
@@ -410,14 +455,14 @@ test('signed with others, a guard another weakens, or room it leaves for what ot
     assert.deepEqual(p.loose, [USER_TOKEN]);
     assert.deepEqual(p.findings.map((f) => f.code), ['guards-partial']);
     assert.equal(p.holds.find((h) => h.account === USER_TOKEN && h.kind === 'token' && h.delegate === undefined)?.account, USER_TOKEN);
-    // C: 4 SOL from the wallet into your own token account's lamports, nothing of yours leaving.
+    // C: 4 SOL from the wallet into your own token account's lamports, nothing of yours leaving. Held as their own
+    // changes, its amounts leave no room for it.
     const WRAPPED = key(71);
     const native = (lamports: bigint) => account(WRAPPED, TOKEN_PROGRAM_ADDRESS, lamports, tokenAccountData({ mint: MINT, owner: PAYER, amount: 0n }));
     const cChain = fakeChain([account(PAYER, SYSTEM, 5_000_000_000n), native(2_039_280n)], [account(PAYER, SYSTEM, 995_000n), native(4_002_039_280n)]);
     const c = await review(transaction([touching(WRAPPED)]), context, cChain);
     const q = await prepare(a, PAYER, aChain, false, undefined, undefined, [c]);
-    assert.ok(q.leeway.lamports >= 3_999_000_000n, String(q.leeway.lamports));
-    assert.ok(q.findings.some((f) => f.code === 'guards-leeway'));
+    assert.deepEqual([q.leeway, q.findings.some((f) => f.code === 'guards-leeway')], [{ lamports: 0n, units: 0n }, false]);
     // Alone: nothing of the kind.
     const alone = await prepare(a, PAYER, aChain);
     assert.deepEqual([alone.loose, alone.leeway, alone.findings], [[], { lamports: 0n, units: 0n }, []]);

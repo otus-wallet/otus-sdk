@@ -91,6 +91,24 @@ export function roomBeside(yours: Changes, wallet: Address, beside: Beside[] = [
 }
 const ROOM_LEFT = 10_000_000n; // lamports: a token account's rent at most, as several transactions open or close them
 
+/** What other transactions signed with this one bring into the accounts its floors hold: landing before it, what a
+ *  floor lets go past this one's review. In lamports, and units of any token. */
+export function inflowsBeside(held: Hold[], wallet: Address, beside: Beside[] = []): { lamports: bigint; units: bigint } {
+    let [lamports, units] = [0n, 0n];
+    for (const h of held) {
+        for (const b of beside) {
+            const c = b.changes.accounts.find((x) => x.address === h.account);
+            if (!c?.before || !c.after) continue;
+            const tokens = h.kind === 'token' && h.account !== wallet;
+            const [was, is] = tokens ? [c.before.token?.amount ?? 0n, c.after.token?.amount ?? 0n] : [c.before.lamports, c.after.lamports];
+            if (is <= was) continue;
+            if (tokens) units += is - was;
+            else lamports += is - was;
+        }
+    }
+    return { lamports, units };
+}
+
 // A field a hold asserts: its owner, size and a token account's authorities, your address at an offset (`key:<n>`), a
 // stake's terms one by one; 'all' when the account is not the same kind any more.
 type Field = 'owner' | 'space' | 'delegate' | 'closer' | 'all' | keyof Meta | `key:${number}`;
@@ -175,24 +193,25 @@ const [U64, I64, PUBKEY] = [7, 8, 12]; // data values
 const [EQUAL, AT_LEAST] = [0, 4];
 
 /** A hold as Lighthouse instructions' data: one, or two for an account whose data keeps your address, or a stake
- *  account, its authorities and lockup held whole. */
-export function assertions(h: Hold, wallet: Address): Uint8Array[] {
+ *  account, its authorities and lockup held whole. `byDelta`: its amount is held as a change instead (`compared`), so
+ *  only the rest is asserted here, and none when there is no rest. */
+export function assertions(h: Hold, wallet: Address, byDelta = false): Uint8Array[] {
     const u64 = (v: bigint | number) => [...getU64Encoder().encode(v)];
     const key = (a: Address) => [...getAddressEncoder().encode(a)];
     const option = (a: Address | null) => (a === null ? [0] : [1, ...key(a)]);
     // Each assertion of a multi one, the fields left out of the hold left out.
     const multi = (kind: number, parts: number[][]) => Uint8Array.from([kind, SILENT, parts.length, ...parts.flat()]);
     if (h.kind === 'token') {
-        const parts = [[AMOUNT, ...u64(h.atLeast), AT_LEAST]];
+        const parts = byDelta ? [] : [[AMOUNT, ...u64(h.atLeast), AT_LEAST]];
         if (h.owner !== undefined) parts.push([TOKEN_OWNER, ...key(h.owner), EQUAL]);
         if (h.delegate !== undefined) parts.push([DELEGATE, ...option(h.delegate), EQUAL], [DELEGATED, ...u64(h.delegated ?? 0n), EQUAL]);
         if (h.closer !== undefined) parts.push([CLOSER, ...option(h.closer), EQUAL]);
-        return [multi(TOKEN_MULTI, parts)];
+        return parts.length ? [multi(TOKEN_MULTI, parts)] : [];
     }
-    const parts = [[LAMPORTS, ...u64(h.atLeast), AT_LEAST]];
+    const parts = byDelta ? [] : [[LAMPORTS, ...u64(h.atLeast), AT_LEAST]];
     if (h.space !== undefined) parts.push([DATA_LENGTH, ...u64(h.space), EQUAL]);
     if (h.owner !== undefined) parts.push([OWNER, ...key(h.owner), EQUAL]);
-    const found = multi(INFO_MULTI, parts);
+    const found = parts.length ? [multi(INFO_MULTI, parts)] : [];
     if (h.kind === 'account' && h.stake) {
         const m = h.stake;
         const i64 = (v: bigint) => [...getI64Encoder().encode(v)];
@@ -206,12 +225,64 @@ export function assertions(h: Hold, wallet: Address): Uint8Array[] {
         const termed = [m.staker && 12, m.withdrawer && 44, m.custodian && 92].filter((o): o is number => typeof o === 'number');
         const others = h.keys.filter((offset) => !termed.includes(offset)).map((offset) => [offset, PUBKEY, ...key(wallet)]);
         const all = [...held, ...others];
-        if (all.length === 0) return [found];
-        return [found, Uint8Array.from([DATA_MULTI, SILENT, ...leb128(all.length), ...all.flatMap(([offset, ...value]) => [...leb128(offset), ...value, EQUAL])])];
+        if (all.length === 0) return found;
+        return [...found, Uint8Array.from([DATA_MULTI, SILENT, ...leb128(all.length), ...all.flatMap(([offset, ...value]) => [...leb128(offset), ...value, EQUAL])])];
     }
-    if (h.kind === 'wallet' || h.keys.length === 0) return [found];
-    return [found, Uint8Array.from([DATA_MULTI, SILENT, ...leb128(h.keys.length), ...h.keys.flatMap((offset) => [...leb128(offset), PUBKEY, ...key(wallet), EQUAL])])];
+    if (h.kind === 'wallet' || h.keys.length === 0) return found;
+    return [...found, Uint8Array.from([DATA_MULTI, SILENT, ...leb128(h.keys.length), ...h.keys.flatMap((offset) => [...leb128(offset), PUBKEY, ...key(wallet), EQUAL])])];
 }
+
+/** A hold's amount as this transaction's own change, against a snapshot Lighthouse takes as it starts: held so
+ *  whatever others signed with it do first, in any order. `atLeast`: the least change, below 0 for what may leave;
+ *  `tokens`: a token account's amount, else its lamports; `slot`: its snapshot's place in memory, 8 bytes each. */
+export type Delta = { account: Address; tokens: boolean; atLeast: bigint; slot: number };
+
+/** The amounts of `held` as changes: each from the floor its account would have alone (no room for others), less what
+ *  it held before. An account the transaction opens keeps its floor: there was nothing before to compare with. */
+export function byChange(held: Hold[], yours: Changes, keyed: Change[], wallet: Address, trade = SLACK.trade): Delta[] {
+    const alone = new Map(holds(yours, wallet, keyed, trade).map((h) => [h.account, h]));
+    const changes = new Map([...yours.accounts, ...keyed].map((c) => [c.address, c]));
+    const out: Delta[] = [];
+    for (const h of held) {
+        const before = changes.get(h.account)?.before;
+        const floor = alone.get(h.account)?.atLeast;
+        if (!before || floor === undefined || (h.kind === 'token' && !before.token)) continue;
+        const was = h.kind === 'token' ? before.token!.amount : before.lamports;
+        out.push({ account: h.account, tokens: h.kind === 'token', atLeast: floor - was, slot: out.length });
+    }
+    return out;
+}
+
+// Lighthouse's memory: an account derived from the payer and an id ("memory", payer, id), made by the first snapshot
+// written, at the size all of them take, and closed as the transaction ends, its rent back to the payer.
+const [MEMORY_WRITE, MEMORY_CLOSE, DELTA] = [0, 1, 4];
+const [WRITE_DATA, WRITE_INFO, INFO_LAMPORTS] = [0, 1, 1];
+const [DELTA_INFO, DELTA_DATA, LAMPORTS_DELTA, U64_DELTA] = [0, 1, 0, 6];
+const TOKEN_AMOUNT = 64; // a token account's amount: a u64 at 64, in SPL and Token-2022 accounts alike
+export const MEMORY_ID = 0;
+
+/** A snapshot of a delta's amount into memory: its lamports, or a token account's 8 bytes of amount. */
+export function snapshot(d: Delta, bump: number): Uint8Array {
+    const source = d.tokens ? [WRITE_DATA, ...u16(TOKEN_AMOUNT), ...u16(8)] : [WRITE_INFO, INFO_LAMPORTS];
+    return Uint8Array.from([MEMORY_WRITE, MEMORY_ID, bump, ...leb128(d.slot * 8), ...source]);
+}
+
+/** The amount now against its snapshot: it may have changed by `atLeast` or more. */
+export function compared(d: Delta): Uint8Array {
+    const least = [...i128(d.atLeast), AT_LEAST];
+    if (d.tokens) return Uint8Array.from([DELTA, SILENT, DELTA_DATA, ...leb128(d.slot * 8), ...leb128(TOKEN_AMOUNT), U64_DELTA, ...least]);
+    return Uint8Array.from([DELTA, SILENT, DELTA_INFO, ...leb128(d.slot * 8), LAMPORTS_DELTA, ...least]);
+}
+
+/** Closes the memory, its rent back to the payer. */
+export const forgotten = (bump: number): Uint8Array => Uint8Array.from([MEMORY_CLOSE, MEMORY_ID, bump]);
+
+const u16 = (n: number) => [n & 0xff, (n >> 8) & 0xff];
+// Two's complement, little-endian, as Borsh writes an i128.
+const i128 = (v: bigint) => {
+    const u = BigInt.asUintN(128, v);
+    return Array.from({ length: 16 }, (_, i) => Number((u >> BigInt(8 * i)) & 0xffn));
+};
 
 // Lighthouse writes counts and offsets as unsigned LEB128.
 function leb128(n: number): number[] {

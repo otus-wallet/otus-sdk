@@ -5,7 +5,8 @@ import {
     getSetLoadedAccountsDataSizeLimitInstructionDataEncoder,
     MAX_COMPUTE_UNIT_LIMIT,
 } from '@solana-program/compute-budget';
-import { getTransactionEncoder, type Address, type ReadonlyUint8Array } from '@solana/kit';
+import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
+import { getAddressEncoder, getProgramDerivedAddress, getTransactionEncoder, type Address, type ReadonlyUint8Array } from '@solana/kit';
 
 import type { Chain, Simulation } from '../chain.ts';
 import { callsIn, HIGH_FEE, HUGE_FEE, type Finding } from '../review/assess.ts';
@@ -15,7 +16,7 @@ import type { Review } from '../review/review.ts';
 import { LIGHTHOUSE } from '../programs/addresses.ts';
 import { CORE_PROGRAMS } from '../programs/core.ts';
 import { PROGRAM_NAMES } from '../programs/known.ts';
-import { assertions, holds, roomBeside, type Hold } from './guard.ts';
+import { assertions, byChange, compared, forgotten, holds, inflowsBeside, MEMORY_ID, roomBeside, snapshot, type Delta, type Hold } from './guard.ts';
 
 /** The transaction to sign, as the user approves it, and what preparing it found. */
 /** Where a priority fee Otus sets comes from: the price the RPC recommends (Helius), or what recent blocks took. */
@@ -33,7 +34,7 @@ export type Prepared = {
     room: number | null; // the account data a v1 transaction may load, when Otus changed it
     priority: bigint | null; // lamports: the priority fee Otus set, when it set one
     loose: Address[]; // signed with others: your accounts its guards hold less than alone, as another changes them
-    leeway: { lamports: bigint; units: bigint }; // signed with others: what its guards let pass past its own review, for what the others move between your accounts
+    leeway: { lamports: bigint; units: bigint }; // signed with others, guarded by floors: what they let pass past its own review, for what the others move into or between your accounts
 };
 
 const GUARD_UNITS = 4_000; // compute units per assertion added to a site's own limit; Lighthouse uses about 2,000
@@ -64,7 +65,6 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     const gross = bare ? [] : holds(r.assessment.yours, wallet, r.assessment.keyed, trade, others);
     const alone = bare || others.length === 0 ? gross : holds(r.assessment.yours, wallet, r.assessment.keyed, trade);
     const loose = alone.filter((h) => weaker(h, gross.find((g) => g.account === h.account))).map((h) => h.account);
-    const leeway = bare ? { lamports: 0n, units: 0n } : roomBeside(r.assessment.yours, wallet, others);
     // As the site sent it, without guards: why, for the review's Guards line; and what else was found on the way.
     const asIs = (reason: string, findings: Finding[] = []): Prepared => ({ bytes: r.bytes, hash: r.hash, fee: r.changes.fee, holds: [], unguarded: reason, findings, units: null, priced: null, room: null, priority: null, loose: [], leeway: { lamports: 0n, units: 0n } });
     // Without the guards it should have had: a warning too, when what it does to accounts of yours can come out otherwise.
@@ -75,95 +75,141 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
     const loaded = r.accounts.filter((a) => a.table).map((a) => a.address);
     if ([LIGHTHOUSE, COMPUTE_BUDGET_PROGRAM_ADDRESS].some((p) => loaded.includes(p))) return asIs("Otus can't add guards because its lookup tables load the programs they need", [TABLED]);
 
-    const guards = gross.map((h) => ({ hold: h, data: assertions(h, wallet) }));
-    const added = guards.reduce((n, g) => n + g.data.length, 0);
     const accounts = r.accounts.map((a) => a.address);
-    // A transaction loads no more account data than its limit, v1's or the one a Compute Budget instruction sets for
-    // legacy and v0: Lighthouse's program comes with its guards. `room`: the limit as Otus sets it, null to leave the
-    // site's.
-    const v1 = r.message.version === 1;
-    const siteRoom = own ? null : dataLimit(r.message);
-    const roomed = v1 || siteRoom !== null;
-    let room: number | null = null;
-    const build = (h: Hold[], limit: number, price: bigint) => {
-        const m = withRoom(withPrice(withLimit(withAssertions(r.message, h, wallet, accounts), limit), price), room);
-        return bare ? budgetFirst(m) : m; // where a Ledger reads the rest in clear
-    };
-    const siteLimit = own ? null : unitLimit(r.message);
-    // Guarded, it fails. For what Otus adds (more accounts or account data than a transaction may take, the rent its
-    // priority fee leaves the wallet without, units the guards could have used up), it goes as the site sent it;
-    // otherwise it acts other than reviewed. `limit`: the units it had.
-    const failed = async (error: NonNullable<Simulation['error']>, limit: number) =>
-        ours(error, { used: r.simulation.unitsConsumed, limit, added }) ? unheld("Otus can't add guards because the transaction has no room left for them") : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
     const sitePrice = r.message.version === 1 ? r.message.config.priorityFeeLamports : unitPrice(r.message);
     // The price asked of the network while the limit is measured, which needs none.
     const pricingAsked = sitePrice == null ? pricing(r, chain) : Promise.resolve(null);
     pricingAsked.catch(() => {}); // awaited below; one that fails is the network not answering
-    let market: { price: bigint; from: Pricing } | null = null;
-    try {
-        // The transaction as it would be signed with this limit: priced under the cap, the wallet's floor net of what
-        // it pays for it.
-        const signable = (limit: number, priced = true) => {
-            const price = !priced || market === null || market.price === 0n ? 0n : min(market.price, (MAX_PRIORITY_FEE * 1_000_000n) / BigInt(Math.max(limit, 1)));
-            const paid = r.signers[0] === wallet ? fee(build(gross, limit, price)) : 0n;
-            const held = gross.map((h) => (h.kind === 'wallet' ? { ...h, atLeast: h.atLeast > paid ? h.atLeast - paid : 0n } : h));
-            return { message: build(held, limit, price), held, price };
+    // Signed with others, landing in any order: each amount is held as this transaction's own change, against a
+    // snapshot Lighthouse takes as it starts, so what the others do first changes nothing. Not for one that reads its
+    // own instructions (the snapshots go first, and move them), nor when it can't take them: then floors that leave room
+    // for the others, said with what they may let pass.
+    const deltas = !bare && others.length > 0 && !accounts.includes(INSTRUCTIONS) ? byChange(gross, r.assessment.yours, r.assessment.keyed, wallet, trade) : [];
+    if (deltas.length > 0) {
+        const [memory, bump] = await getProgramDerivedAddress({ programAddress: LIGHTHOUSE, seeds: ['memory', getAddressEncoder().encode(wallet), Uint8Array.of(MEMORY_ID)] });
+        const held = await guarded(deltas, { address: memory, bump });
+        if (held) return held;
+    }
+    return (await guarded([], null)) ?? unheld("Otus can't add guards because the transaction has no room left for them");
+
+    // Guarded with these amounts held as changes (none: as floors). Null when snapshots are what keep it from being
+    // guarded: then it is guarded with floors instead.
+    async function guarded(deltas: Delta[], memory: Memory | null): Promise<Prepared | null> {
+        const retry = deltas.length > 0;
+        const changed = new Set(deltas.map((d) => d.account));
+        const asserted = gross.reduce((n, h) => n + assertions(h, wallet, changed.has(h.account)).length, 0);
+        const added = asserted + (retry ? 2 * deltas.length + 2 : 0); // each snapshot and comparison, the memory made and closed
+        const leeway = bare || retry ? { lamports: 0n, units: 0n } : plus(roomBeside(r.assessment.yours, wallet, others), inflowsBeside(gross, wallet, others));
+        // A transaction loads no more account data than its limit, v1's or the one a Compute Budget instruction sets for
+        // legacy and v0: Lighthouse's program comes with its guards. `room`: the limit as Otus sets it, null to leave the
+        // site's.
+        const v1 = r.message.version === 1;
+        const siteRoom = own ? null : dataLimit(r.message);
+        const roomed = v1 || siteRoom !== null;
+        let room: number | null = null;
+        const build = (h: Hold[], limit: number, price: bigint) => {
+            const m = withRoom(withPrice(withLimit(withAssertions(r.message, h, wallet, accounts, deltas, memory), limit), price), room);
+            return bare ? budgetFirst(m) : m; // where a Ledger reads the rest in clear
         };
-        // The site's own limit stays, with room for the guards. Otherwise the limit is what the transaction uses as it
-        // will be signed, guards and fee settings included, measured with all the room a transaction may have, and a
-        // tenth more. With guards, the account data a limited one loads is measured the same way. Measured with no
-        // priority fee: it changes neither, and at the most units a fee could cost more than the wallet keeps.
-        let limit = siteLimit !== null ? Math.min(MAX_COMPUTE_UNIT_LIMIT, siteLimit + added * GUARD_UNITS) : MAX_COMPUTE_UNIT_LIMIT;
-        if (siteLimit === null || (roomed && added > 0)) {
-            if (roomed) room = MAX_ROOM;
-            const probe = await wired(unpriced(signable(MAX_COMPUTE_UNIT_LIMIT, false).message), r.signers);
-            if (probe === null) return unheld("Otus can't add guards because the transaction has no room left for them");
-            const measured = await chain.simulate(probe.bytes, [], r.slot);
-            if (measured.error !== null) return failed(measured.error, MAX_COMPUTE_UNIT_LIMIT);
-            // An RPC that does not say what it used: the runtime's default for the site's instructions, and the guards'
-            // room; v1 has no default, so the most there is.
-            const unsaid = v1 ? MAX_COMPUTE_UNIT_LIMIT : defaultUnits(r.message) + added * GUARD_UNITS;
-            const used = measured.unitsConsumed ? Number(measured.unitsConsumed) : null; // none at all is not said either
-            if (siteLimit === null) limit = Math.min(MAX_COMPUTE_UNIT_LIMIT, used === null ? unsaid : Math.ceil(used * SPARE));
-            if (roomed) room = roomFor(measured.loadedBytes ?? null, siteRoom);
+        const siteLimit = own ? null : unitLimit(r.message);
+        const noRoom = () => (retry ? null : unheld("Otus can't add guards because the transaction has no room left for them"));
+        // Guarded, it fails. For what Otus adds (more accounts or account data than a transaction may take, the rent its
+        // priority fee leaves the wallet without, units the guards could have used up), it goes as the site sent it;
+        // otherwise it acts other than reviewed. With snapshots, either way it is tried with floors instead. `limit`: the
+        // units it had.
+        const failed = async (error: NonNullable<Simulation['error']>, limit: number) => {
+            if (retry) return null;
+            return ours(error, { used: r.simulation.unitsConsumed, limit, added }) ? noRoom() : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
+        };
+        let market: { price: bigint; from: Pricing } | null = null;
+        try {
+            // The transaction as it would be signed with this limit: priced under the cap, the wallet's floor net of what
+            // it pays for it.
+            const signable = (limit: number, priced = true) => {
+                const price = !priced || market === null || market.price === 0n ? 0n : min(market.price, (MAX_PRIORITY_FEE * 1_000_000n) / BigInt(Math.max(limit, 1)));
+                const paid = r.signers[0] === wallet ? fee(build(gross, limit, price)) : 0n;
+                const held = gross.map((h) => (h.kind === 'wallet' ? { ...h, atLeast: h.atLeast > paid ? h.atLeast - paid : 0n } : h));
+                return { message: build(held, limit, price), held, price };
+            };
+            // The site's own limit stays, with room for the guards. Otherwise the limit is what the transaction uses as it
+            // will be signed, guards and fee settings included, measured with all the room a transaction may have, and a
+            // tenth more. With guards, the account data a limited one loads is measured the same way. Measured with no
+            // priority fee: it changes neither, and at the most units a fee could cost more than the wallet keeps.
+            let limit = siteLimit !== null ? Math.min(MAX_COMPUTE_UNIT_LIMIT, siteLimit + added * GUARD_UNITS) : MAX_COMPUTE_UNIT_LIMIT;
+            if (siteLimit === null || (roomed && added > 0)) {
+                if (roomed) room = MAX_ROOM;
+                const probe = await wired(unpriced(signable(MAX_COMPUTE_UNIT_LIMIT, false).message), r.signers);
+                if (probe === null) return noRoom();
+                const measured = await chain.simulate(probe.bytes, [], r.slot);
+                if (measured.error !== null) return failed(measured.error, MAX_COMPUTE_UNIT_LIMIT);
+                // An RPC that does not say what it used: the runtime's default for the site's instructions, and the guards'
+                // room; v1 has no default, so the most there is.
+                const unsaid = v1 ? MAX_COMPUTE_UNIT_LIMIT : defaultUnits(r.message) + added * GUARD_UNITS;
+                const used = measured.unitsConsumed ? Number(measured.unitsConsumed) : null; // none at all is not said either
+                if (siteLimit === null) limit = Math.min(MAX_COMPUTE_UNIT_LIMIT, used === null ? unsaid : Math.ceil(used * SPARE));
+                if (roomed) room = roomFor(measured.loadedBytes ?? null, siteRoom);
+            }
+            market = await pricingAsked;
+            if (signable(limit).message === r.message) return asIs(NOTHING_TO_HOLD);
+            // As it will be signed, simulated once more. Short of units at the limit set (a run may use more than the last,
+            // or a program act otherwise at another limit), it gets the most there is rather than losing its guards; left
+            // without its rent by Otus's priority fee, it goes without that fee.
+            const attempt = async (limit: number, priced: boolean) => {
+                const { message, held, price } = signable(limit, priced);
+                const prepared = await wired(message, r.signers);
+                return prepared && { held, price, ...prepared, check: await chain.simulate(prepared.bytes, [], r.slot) };
+            };
+            let tried = await attempt(limit, true);
+            if (tried?.check.error && spent(tried.check.error) && limit < MAX_COMPUTE_UNIT_LIMIT) tried = await attempt((limit = MAX_COMPUTE_UNIT_LIMIT), true);
+            if (tried?.check.error && rentShort(tried.check.error) && tried.price > 0n) tried = await attempt(limit, false);
+            if (tried === null) return noRoom();
+            const { message, held, price, bytes, hash, check } = tried;
+            if (check.error !== null) return failed(check.error, limit);
+            const total = check.fee ?? fee(message);
+            const beside = [...(loose.length ? [{ ...PARTIAL, subject: loose[0] }] : []), ...(leeway.lamports > 0n || leeway.units > 0n ? [LEEWAY] : [])];
+            return {
+                bytes,
+                hash,
+                fee: total,
+                holds: shown(held, gross, deltas, r),
+                unguarded: held.length > 0 ? null : (bare ?? NOTHING_TO_HOLD),
+                findings: [...feeFindings(r, wallet, total), ...differs(r, message, check), ...beside],
+                units: limit,
+                priced: price > 0n && market ? market.from : null,
+                room: room !== siteRoom ? room : null,
+                priority: price > 0n && market ? priorityFee(message) : null,
+                loose,
+                leeway,
+            };
+        } catch (cause) {
+            console.error('Otus: preparing', cause);
+            return unheld("Otus couldn't add guards because the network didn't answer");
         }
-        market = await pricingAsked;
-        if (signable(limit).message === r.message) return asIs(NOTHING_TO_HOLD);
-        // As it will be signed, simulated once more. Short of units at the limit set (a run may use more than the last,
-        // or a program act otherwise at another limit), it gets the most there is rather than losing its guards; left
-        // without its rent by Otus's priority fee, it goes without that fee.
-        const attempt = async (limit: number, priced: boolean) => {
-            const { message, held, price } = signable(limit, priced);
-            const prepared = await wired(message, r.signers);
-            return prepared && { held, price, ...prepared, check: await chain.simulate(prepared.bytes, [], r.slot) };
-        };
-        let tried = await attempt(limit, true);
-        if (tried?.check.error && spent(tried.check.error) && limit < MAX_COMPUTE_UNIT_LIMIT) tried = await attempt((limit = MAX_COMPUTE_UNIT_LIMIT), true);
-        if (tried?.check.error && rentShort(tried.check.error) && tried.price > 0n) tried = await attempt(limit, false);
-        if (tried === null) return unheld("Otus can't add guards because the transaction has no room left for them");
-        const { message, held, price, bytes, hash, check } = tried;
-        if (check.error !== null) return failed(check.error, limit);
-        const total = check.fee ?? fee(message);
-        const beside = [...(loose.length ? [{ ...PARTIAL, subject: loose[0] }] : []), ...(leeway.lamports > 0n || leeway.units > 0n ? [LEEWAY] : [])];
-        return {
-            bytes,
-            hash,
-            fee: total,
-            holds: held,
-            unguarded: held.length > 0 ? null : (bare ?? NOTHING_TO_HOLD),
-            findings: [...feeFindings(r, wallet, total), ...differs(r, message, check), ...beside],
-            units: limit,
-            priced: price > 0n && market ? market.from : null,
-            room: room !== siteRoom ? room : null,
-            priority: price > 0n && market ? priorityFee(message) : null,
-            loose,
-            leeway,
-        };
-    } catch (cause) {
-        console.error('Otus: preparing', cause);
-        return unheld("Otus couldn't add guards because the network didn't answer");
     }
 }
+
+// Lighthouse's memory for this payer: where snapshots go.
+type Memory = { address: Address; bump: number };
+
+// What a hold whose amount is held as a change keeps as its floor, for what the user is told is guaranteed: as it was
+// before, plus the least change; the wallet's net of the fee it pays, as a floor's is (`gross`: before that).
+function shown(held: Hold[], gross: Hold[], deltas: Delta[], r: Review): Hold[] {
+    if (deltas.length === 0) return held;
+    const before = new Map([...r.assessment.yours.accounts, ...r.assessment.keyed].map((c) => [c.address, c.before]));
+    return held.map((h, i) => {
+        const d = deltas.find((x) => x.account === h.account);
+        const was = before.get(h.account);
+        if (!d || !was) return h;
+        const paid = h.kind === 'wallet' ? gross[i].atLeast - h.atLeast : 0n;
+        const floor = (d.tokens ? (was.token?.amount ?? 0n) : was.lamports) + d.atLeast - paid;
+        return { ...h, atLeast: floor > 0n ? floor : 0n };
+    });
+}
+
+const plus = (a: { lamports: bigint; units: bigint }, b: { lamports: bigint; units: bigint }) => ({ lamports: a.lamports + b.lamports, units: a.units + b.units });
+
+// The sysvar a program reads to see the transaction's instructions: one that does may check where its own sit.
+const INSTRUCTIONS = 'Sysvar1nstructions1111111111111111111111111' as Address;
 
 // A failure of what Otus adds rather than of what the site's transaction does: one of the whole transaction (too
 // many accounts, too much account data: no program can raise these), the fee payer left without its rent, or units
@@ -191,7 +237,7 @@ function feeFindings(r: Review, wallet: Address, total: bigint): Finding[] {
 // Signed with others: guards that hold less than they would alone, as another changes those accounts; and room they
 // leave past this one's review, for what others move between your accounts (and the site may never send).
 const PARTIAL: Finding = { level: 'warn', code: 'guards-partial', text: 'Some guards hold less', note: 'Another transaction here changes those accounts' };
-const LEEWAY: Finding = { level: 'warn', code: 'guards-leeway', text: 'Its guards leave room for the others', note: 'Others here move funds between your accounts' };
+const LEEWAY: Finding = { level: 'warn', code: 'guards-leeway', text: 'Its guards leave room for the others', note: 'Others here move funds into or between your accounts' };
 
 // Whether a hold made beside others asserts less than `alone`, the one made without them: none at all, or a field less.
 function weaker(alone: Hold, beside: Hold | undefined): boolean {
@@ -263,11 +309,44 @@ async function wired(message: Message, signers: Address[]): Promise<{ message: M
     return decode(bytes).then((d) => ({ message, bytes, hash: d.hash }), () => null);
 }
 
-function withAssertions(m: Message, h: Hold[], wallet: Address, accounts: Address[]): Message {
+// Lighthouse's assertions at the end. With `deltas`, their snapshots go first (after a durable nonce's advance, which
+// stays first), the first written the one furthest in, so the memory is made at its whole size before any lamports are
+// read; their comparisons go last, and the memory is closed after them, its rent back to the wallet that paid it.
+function withAssertions(m: Message, h: Hold[], wallet: Address, accounts: Address[], deltas: Delta[] = [], memory: Memory | null = null): Message {
     if (h.length === 0) return m;
-    const { message, at, shift } = withProgram(m, LIGHTHOUSE);
-    const added = h.flatMap((x) => assertions(x, wallet).map((data) => ({ programAddressIndex: at, accountIndices: [shift(accounts.indexOf(x.account))], data })));
-    return { ...message, instructions: [...message.instructions, ...added] };
+    const changed = new Set(deltas.map((d) => d.account));
+    const lighthouse = withProgram(m, LIGHTHOUSE);
+    if (deltas.length === 0 || memory === null) {
+        const added = h.flatMap((x) => assertions(x, wallet).map((data) => ({ programAddressIndex: lighthouse.at, accountIndices: [lighthouse.shift(accounts.indexOf(x.account))], data })));
+        return { ...lighthouse.message, instructions: [...lighthouse.message.instructions, ...added] };
+    }
+    // The System program, where the transaction has it already (a table's included), else added; then the memory.
+    const had = accounts.indexOf(SYSTEM_PROGRAM_ADDRESS);
+    const system = had >= 0 ? { message: lighthouse.message, at: lighthouse.shift(had), shift: (i: number) => i } : withProgram(lighthouse.message, SYSTEM_PROGRAM_ADDRESS);
+    const kept = withWritable(system.message, memory.address);
+    const now = (i: number) => kept.shift(system.shift(i)); // an index after the System program was added
+    const at = (a: Address) => now(lighthouse.shift(accounts.indexOf(a)));
+    const [L, S, M] = [now(lighthouse.at), kept.shift(system.at), kept.at];
+    const ix = (accountIndices: number[], data: Uint8Array) => ({ programAddressIndex: L, accountIndices, data });
+    const writes = deltas.toSorted((a, b) => b.slot - a.slot).map((d) => ix([L, S, 0, M, at(d.account)], snapshot(d, memory.bump)));
+    const asserts = h.flatMap((x) => assertions(x, wallet, changed.has(x.account)).map((data) => ix([at(x.account)], data)));
+    const comparisons = deltas.map((d) => ix([M, at(d.account)], compared(d)));
+    const lead = durable(kept.message) ? 1 : 0;
+    const rest = kept.message.instructions;
+    return { ...kept.message, instructions: [...rest.slice(0, lead), ...writes, ...rest.slice(lead), ...asserts, ...comparisons, ix([L, 0, M], forgotten(memory.bump))] };
+}
+
+// Adds an account as the last writable static account that signs nothing, before the read-only ones: they, and the
+// accounts loaded from tables, move one place, in every instruction that names them, its program included.
+function withWritable(m: Message, address: Address): { message: Message; at: number; shift: (i: number) => number } {
+    const at = m.staticAccounts.length - m.header.numReadonlyNonSignerAccounts;
+    const shift = (i: number) => (i >= at ? i + 1 : i);
+    const message = {
+        ...m,
+        staticAccounts: [...m.staticAccounts.slice(0, at), address, ...m.staticAccounts.slice(at)],
+        instructions: m.instructions.map((ix) => ({ ...ix, programAddressIndex: shift(ix.programAddressIndex), accountIndices: ix.accountIndices.map(shift) })),
+    };
+    return { message, at, shift };
 }
 
 // v1 keeps its budget in config; legacy and v0 in Compute Budget instructions. The priority fee of v1 is a total.
