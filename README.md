@@ -1,5 +1,9 @@
 # @otus-wallet/sdk
 
+[![npm](https://img.shields.io/npm/v/@otus-wallet/sdk)](https://www.npmjs.com/package/@otus-wallet/sdk)
+[![test](https://github.com/otus-wallet/otus-sdk/actions/workflows/test.yml/badge.svg)](https://github.com/otus-wallet/otus-sdk/actions/workflows/test.yml)
+[![license](https://img.shields.io/npm/l/@otus-wallet/sdk)](LICENSE)
+
 The transaction review behind [Otus Wallet](https://github.com/otus-wallet/otus-app), on
 [@solana/kit](https://github.com/anza-xyz/kit): know what a Solana transaction does before signing it, and sign it
 guarded. For wallets, bots and agents alike.
