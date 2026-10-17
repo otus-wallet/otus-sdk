@@ -90,10 +90,18 @@ export function summarize(t: Landed, wallet: Address): Activity {
     // spent, rent back from one it closes is not received, rent that one sends elsewhere is. Wrapped SOL in them is a
     // token, apart from their rent.
     const rentIn = (side: 'before' | 'after', i: number) => lamports[side][i] - listed(side, i).reduce((n, b) => n + (isWrappedSol(b.mint) ? b.units : 0n), 0n);
-    const own = [...new Set([...tokens.before, ...tokens.after].filter((b) => yours(b.owner)).map((b) => b.account))];
+    const told = instructionsOf(t);
+    // A token account's SOL is the wallet's only while it alone can close it, as the review reads it: one closed by
+    // someone else's authority (a close authority set by whoever opened it for the wallet, say) held SOL that was
+    // theirs to take, and what leaves with it is none of the wallet's.
+    const closers = closersIn(t, told);
+    const theirsToClose = (i: number) => {
+        const by = closers.get(accounts[i]!);
+        return by !== undefined && by !== wallet;
+    };
+    const own = [...new Set([...tokens.before, ...tokens.after].filter((b) => yours(b.owner)).map((b) => b.account))].filter((i) => !theirsToClose(i));
     const rent = own.reduce((n, i) => n + rentIn('after', i) - rentIn('before', i), 0n);
     const at = accounts.indexOf(wallet);
-    const told = instructionsOf(t);
     // Stake accounts it sets up for the wallet to withdraw from: the SOL put in them stays the wallet's own, staked.
     const staking = stakesFor(told, wallet).map((a) => accounts.indexOf(a)).filter((i) => i >= 0);
     const staked = staking.reduce((n, i) => n + change(i), 0n);
@@ -256,6 +264,27 @@ function instructionsOf(t: Landed): Told[] {
         writable: i < statics ? (i < h.numSignerAccounts ? i < h.numSignerAccounts - h.numReadonlySignerAccounts : i < statics - h.numReadonlyNonSignerAccounts) : i < statics + loadedWritable,
     }));
     return explain({ message: t.message, accounts }).map(({ data: _, ...rest }) => rest);
+}
+
+// Token accounts the transaction closes, each with the authority that closed it (its owner, or its close authority):
+// in its own instructions and, read the same way, in the instructions they make.
+function closersIn(t: Landed, told: Told[]): Map<Address, Address> {
+    const out = new Map<Address, Address>();
+    const read = (e: Pick<Told, 'program' | 'name' | 'accounts'>) => {
+        if (!isTokenProgram(e.program) || e.name !== 'CloseAccount') return;
+        const at = (role: string) => e.accounts.find((a) => a.role === role)?.address;
+        const [account, by] = [at('account'), at('owner')];
+        if (account && by) out.set(account, by);
+    };
+    told.forEach(read);
+    for (const group of t.inner ?? []) {
+        for (const ix of group.instructions) {
+            const accounts = [ix.program, ...ix.accounts].map((address) => ({ address, signer: false, writable: true }));
+            const [e] = explain({ message: { instructions: [{ programAddressIndex: 0, accountIndices: ix.accounts.map((_, i) => i + 1), data: ix.data }] }, accounts });
+            if (e && e.source === 'plugin') read(e);
+        }
+    }
+    return out;
 }
 
 // What the programs Otus doesn't know did with the wallet's inside them: each inner instruction of theirs read as the

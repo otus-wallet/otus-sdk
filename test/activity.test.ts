@@ -412,3 +412,24 @@ test("rent stays the wallet's own: wrapping SOL, closing while sending, rent sen
     assert.deepEqual(sum(relayed), ['send', ['token -12000000'], 0n, RENT]);
     assert.deepEqual(sum(opened), ['receive', ['token 12000000'], RENT, 0n]);
 });
+
+test("an account of the wallet's that someone else closes, as its close authority: the SOL in it was theirs, none of the wallet's leaves", async () => {
+    const [SPAMMER] = [key(45)];
+    const RENT = 1_488_440n;
+    // As a spam token's maker does: it opened the account for the wallet, kept the right to close it, and now takes its
+    // rent back. The wallet signs nothing.
+    const [closedByThem, closedByYou] = await landed(
+        item([getCloseAccountInstruction({ account: MY_TOKENS, destination: SPAMMER, owner: createNoopSigner(SPAMMER) })], SPAMMER, {
+            lamports: { [SPAMMER]: [1_000_000_000n, 1_000_000_000n + RENT - 5000n], [MY_TOKENS]: [RENT, 0n] },
+            tokens: [{ address: MY_TOKENS, mint: MINT, owner: WALLET, before: 0n, after: null }],
+        }),
+        item([getCloseAccountInstruction({ account: MY_TOKENS, destination: SPAMMER, owner: createNoopSigner(WALLET) })], WALLET, {
+            lamports: { [WALLET]: [1_000_000_000n, 1_000_000_000n - 5000n], [MY_TOKENS]: [RENT, 0n], [SPAMMER]: [0n, RENT] },
+            tokens: [{ address: MY_TOKENS, mint: MINT, owner: WALLET, before: 0n, after: null }],
+        }),
+    );
+    const them = summarize(closedByThem, WALLET);
+    assert.deepEqual([them.rent.yours, them.moves.filter((m) => m.mint === null)], [0n, []]);
+    // Closed by the wallet's own say, its rent sent elsewhere is the wallet's, as before.
+    assert.equal(summarize(closedByYou, WALLET).rent.yours, -RENT);
+});
