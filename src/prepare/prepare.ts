@@ -122,7 +122,7 @@ export async function prepare(r: Review, wallet: Address, chain: Chain, own = fa
         // more than reviewed, said as such. `limit`: the units it had.
         const failed = async (error: NonNullable<Simulation['error']>, limit: number, message: Message) => {
             const ourOwn = ours(error, { used: r.simulation.unitsConsumed, limit, added });
-            if (retry && (ourOwn || !guardFailed(error, message))) return null;
+            if (retry && (ourOwn || !guardFailed(error, message, deltas.length, r.message.instructions.length))) return null;
             return ourOwn ? noRoom() : asIs("Otus can't add guards because the transaction fails with them", [await whyFailed(r, chain)]);
         };
         let market: { price: bigint; from: Pricing } | null = null;
@@ -212,11 +212,14 @@ function shown(held: Hold[], gross: Hold[], deltas: Delta[], r: Review): Hold[] 
 
 const plus = (a: { lamports: bigint; units: bigint }, b: { lamports: bigint; units: bigint }) => ({ lamports: a.lamports + b.lamports, units: a.units + b.units });
 
-// A failure in one of Lighthouse's assertions or comparisons: not a snapshot (0) nor the memory's close (1).
-function guardFailed(error: NonNullable<Simulation['error']>, m: Message): boolean {
+// A failure in one of the assertions or comparisons Otus added, past the snapshots and the site's own instructions (a
+// site's own Lighthouse instruction is none of them), and not the memory's close (1).
+function guardFailed(error: NonNullable<Simulation['error']>, m: Message, snapshots: number, site: number): boolean {
     if (typeof error !== 'object' || !('InstructionError' in error)) return false;
-    const ix = m.instructions[Number(error.InstructionError[0])];
-    return ix !== undefined && m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE && ix.data[0] !== 0 && ix.data[0] !== 1;
+    const at = Number(error.InstructionError[0]);
+    const ix = m.instructions[at];
+    const first = (durable(m) ? 1 : 0) + snapshots + site;
+    return ix !== undefined && at >= first && m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE && ix.data[0] !== 1;
 }
 
 // The sysvar a program reads to see the transaction's instructions: one that does may check where its own sit.

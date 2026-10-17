@@ -503,3 +503,22 @@ test('signed with others, an account both open keeps a floor, and what the other
     assert.equal(p.leeway.units, 100n);
     assert.ok(p.findings.some((f) => f.code === 'guards-leeway'));
 });
+
+test("signed with others, the site's own Lighthouse instruction failing once snapshots go first is not Otus's guard failing: floors instead", async () => {
+    const own: Instruction = { programAddress: LIGHTHOUSE, accounts: [{ address: PAYER, role: AccountRole.READONLY }], data: new Uint8Array([5, 0, 0]) };
+    const base = fakeChain([account(PAYER, SYSTEM, 5_000_000n)], [account(PAYER, SYSTEM, 3_995_000n), account(RECIPIENT, SYSTEM, 1_000_000n)]);
+    // With snapshots in front, the site's own assertion (its data starting 5) fails; without them it passes.
+    const simulate: Chain['simulate'] = async (tx, ...rest) => {
+        const s = await base.simulate(tx, ...rest);
+        const m = (await decode(tx)).message;
+        const lighthouse = (ix: Message['instructions'][number]) => m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE;
+        const at = m.instructions.findIndex((ix) => lighthouse(ix) && ix.data[0] === 5);
+        return m.instructions.some((ix) => lighthouse(ix) && ix.data[0] === 0) && at >= 0 ? { ...s, error: { InstructionError: [at, { Custom: 6001 }] } as unknown as Simulation['error'] } : s;
+    };
+    const chain = { ...base, simulate };
+    const tx = () => transaction([pay, own]);
+    const [one, two] = [await review(tx(), context, chain), await review(tx(), context, chain)];
+    const p = await prepare(one, PAYER, chain, false, undefined, undefined, [two]);
+    const m = await messageOf(p);
+    assert.deepEqual([p.unguarded, m.instructions.some((ix) => m.staticAccounts[ix.programAddressIndex] === LIGHTHOUSE && ix.data[0] === 0)], [null, false]);
+});
