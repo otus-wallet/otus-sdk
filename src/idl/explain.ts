@@ -15,6 +15,8 @@ export type IdlInstruction = { name: string; args: string; accounts: { role: str
 
 const MAX_NODES = 2_000; // type nodes one instruction may come to, each link to a defined type followed where it is
 const MAX_LINKS = 24; // links within links
+const MAX_MARKS = 8; // discriminators one instruction may have: those published have one, seldom two
+const MAX_MARK_NODES = 32; // nodes one discriminator may come to: a number or a few bytes, not a type as large as arguments may be
 const SHOWN = 6; // arguments shown, the discriminator aside
 const NAME = 48; // characters of a name
 const TEXT = 24; // characters of a text value
@@ -59,7 +61,8 @@ type Mark = { size: number } | { offset: number; bytes: ReadonlyUint8Array };
 
 // Each instruction of an IDL with its marks, worked out once per IDL, so that an instruction is matched by comparing
 // bytes, and only the one that matches is measured whole. One with no discriminator cannot be told apart; one whose
-// discriminators' own types are not small, or do not encode, is never matched either.
+// discriminators are many, or whose own types are not small, or do not encode, is never matched either: each is
+// encoded here for every instruction of the IDL, before any is matched, so an IDL could make that take minutes.
 const marked = new WeakMap<RootNode, { instruction: InstructionNode; marks: Mark[] }[]>();
 function markedIn(root: RootNode): { instruction: InstructionNode; marks: Mark[] }[] {
     const found = marked.get(root);
@@ -85,7 +88,7 @@ type Values = ReturnType<typeof getValueNodeVisitor>;
 // An instruction's discriminators as marks; null when it has none, or one that can't be worked out small.
 function marksOf(program: ProgramNode, instruction: InstructionNode, codecs: Codecs, values: Values): Mark[] | null {
     const discriminators = instruction.discriminators ?? [];
-    if (!discriminators.length) return null;
+    if (!discriminators.length || discriminators.length > MAX_MARKS) return null;
     const marks: Mark[] = [];
     for (const d of discriminators) {
         if (d.kind === 'sizeDiscriminatorNode') {
@@ -93,12 +96,12 @@ function marksOf(program: ProgramNode, instruction: InstructionNode, codecs: Cod
             continue;
         }
         if (d.kind === 'constantDiscriminatorNode') {
-            if (!boundedTypes(program, [d.constant])) return null;
+            if (!boundedTypes(program, [d.constant], MAX_MARK_NODES)) return null;
             marks.push({ offset: d.offset, bytes: visit(d.constant.type, codecs).encode(visit(d.constant.value, values)) });
             continue;
         }
         const field = (instruction.arguments ?? []).find((a) => a.name === d.name);
-        if (!field || !isNode(field.defaultValue, VALUE_NODE_KINDS) || !boundedTypes(program, [field.type])) return null;
+        if (!field || !isNode(field.defaultValue, VALUE_NODE_KINDS) || !boundedTypes(program, [field.type], MAX_MARK_NODES)) return null;
         marks.push({ offset: d.offset, bytes: visit(field.type, codecs).encode(visit(field.defaultValue, values)) });
     }
     return marks;
@@ -136,15 +139,15 @@ function bounded(program: ProgramNode, instruction: InstructionNode): boolean {
     return boundedTypes(program, [...(instruction.arguments ?? []).map((a) => a.type), ...constants]);
 }
 
-/** Whether the reader of these types (an instruction's, an account's) stays small and comes to an end, as bounded()
- *  says for an instruction. */
-export function boundedTypes(program: ProgramNode, read: unknown[]): boolean {
+/** Whether the reader of these types (an instruction's, an account's) stays small, within `most` nodes, and comes to an
+ *  end, as bounded() says for an instruction. */
+export function boundedTypes(program: ProgramNode, read: unknown[], most = MAX_NODES): boolean {
     const { types, empty } = definedIn(program);
     let nodes = 0;
     const fits = (node: unknown, links: number): boolean => {
         if (Array.isArray(node)) return node.every((n) => fits(n, links));
         if (!node || typeof node !== 'object') return true;
-        if (++nodes > MAX_NODES || links > MAX_LINKS) return false;
+        if (++nodes > most || links > MAX_LINKS) return false;
         const n = node as { kind?: unknown; name?: unknown; program?: unknown; item?: unknown; key?: unknown; value?: unknown };
         const kind = typeof n.kind === 'string' ? n.kind : '';
         if (kind === 'definedTypeLinkNode') {

@@ -193,3 +193,43 @@ test('reads only as much of an IDL’s account as an IDL can take', async () => 
     assert.equal((await toldByIdl(r, chain)).size, 0);
     assert.deepEqual(asked, [96 + MAX_STORED]);
 });
+
+test('an instruction with many discriminators, or one as large as arguments may be, is not worked out at all', async () => {
+    const time = (f: () => unknown) => {
+        const t = performance.now();
+        f();
+        return performance.now() - t;
+    };
+    const u8 = { kind: 'numberTypeNode', format: 'u8', endian: 'le' };
+    const struct = (fields: number) => ({ kind: 'structTypeNode', fields: Array.from({ length: fields }, (_, i) => ({ kind: 'structFieldTypeNode', name: `f${i}`, type: u8 })) });
+    const zeros = (fields: number) => ({ kind: 'structValueNode', fields: Array.from({ length: fields }, (_, i) => ({ kind: 'structFieldValueNode', name: `f${i}`, value: { kind: 'numberValueNode', number: 0 } })) });
+    // A Codama IDL of one instruction: an argument of so many fields, all 0, and so many discriminators that name it.
+    const codama = (fields: number, discriminators: number) =>
+        JSON.stringify({
+            kind: 'rootNode',
+            standard: 'codama',
+            version: '1.0.0',
+            additionalPrograms: [],
+            program: {
+                kind: 'programNode',
+                name: 'hostile',
+                publicKey: SOME,
+                version: '0.0.0',
+                accounts: [],
+                definedTypes: [],
+                pdas: [],
+                errors: [],
+                instructions: [
+                    { kind: 'instructionNode', name: 'doIt', accounts: [], arguments: [{ kind: 'instructionArgumentNode', name: 'big', type: struct(fields), defaultValue: zeros(fields) }], discriminators: Array.from({ length: discriminators }, () => ({ kind: 'fieldDiscriminatorNode', name: 'big', offset: 0 })) },
+                ],
+            },
+        });
+    const read = async (text: string) => (await readIdl(anchorAccount(SOME, text), 'anchor', SOME))!;
+    // Thirty thousand of them over 999 fields, each encoded whole, took two minutes.
+    const many = await read(codama(999, 30_000));
+    assert.ok(time(() => assert.equal(tellWith([many], new Uint8Array(999), [PAYER]), null)) < 1_000);
+    // One, but as large: not a discriminator either.
+    assert.equal(tellWith([await read(codama(999, 1))], new Uint8Array(999), [PAYER]), null);
+    // A few small ones tell the instruction, as before.
+    assert.equal(tellWith([await read(codama(2, 2))], new Uint8Array(2), [PAYER])?.name, 'DoIt');
+});
