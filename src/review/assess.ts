@@ -176,7 +176,8 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
         }
         // Tokens you get, in an account of yours, opened for you or become yours: under a mint whose permanent delegate
         // can move or burn anyone's at any time, someone else controls them too. A rule of the token, not of this
-        // transaction: said where they show, not graded. A Token-2022 mint Otus couldn't read may have one.
+        // transaction: said where they show, not graded. A Token-2022 mint Otus couldn't read may have one, and one with
+        // an extension Otus doesn't know has a rule it can't tell.
         const gets = to !== null && ours.has(to.owner) && (!from || !ours.has(from.owner) || to.amount > from.amount);
         if (gets) {
             const terms = context.mints?.get(to.mint);
