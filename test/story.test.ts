@@ -35,6 +35,8 @@ test('tells a site that imitates a known one', () => {
         [host('jüp.ag'), 'jup.ag'], [host('раydium.io'), 'raydium.io'], [host('phаntom.app'), 'phantom.app'],
         // Plain words and other brands stay what they are.
         ['draft.com', null], ['parcel.com', null], ['jupyter.org', null], ['tensorflow.org', null], ['solanabeach.io', null], ['crypto-exchange.com', null],
+        // Words every object answers to are no names of a site.
+        ['constructor.dev', null], ['app-constructor.io', null], ['tostring.com', null], ['valueof.xyz', null],
     ];
     for (const [name, like] of cases) assert.equal(lookalike(name), like, name);
     assert.match(host('раydium.io'), /^xn--/);

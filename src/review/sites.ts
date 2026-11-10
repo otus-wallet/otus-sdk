@@ -78,7 +78,7 @@ export function lookalike(host: string): string | null {
     for (const label of named) {
         const words = label.split(/[-_]+/).filter(Boolean);
         const joined = skeleton(words.join(''));
-        for (const word of words) if (ALIASES[word]) return ALIASES[word];
+        for (const word of words) if (Object.hasOwn(ALIASES, word)) return ALIASES[word];
         for (const [alias, site] of Object.entries(ALIASES)) if (joined.includes(skeleton(alias))) return site;
         for (const known of KNOWN_SITES) {
             const brand = known.split('.')[0];
