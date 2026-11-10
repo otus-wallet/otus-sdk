@@ -34,17 +34,17 @@ function extended(extensions: [number, number[]][]) {
 }
 
 const [mint22, sender, mine] = [key(70), key(71), key(72)];
-const mintOf = (delegate: Address | null) => account(mint22, TOKEN_2022_PROGRAM_ADDRESS, RENT, extended(delegate ? [[12, bytes(delegate)]] : []));
+const mintOf = (delegate: Address | null, more: [number, number[]][] = []) => account(mint22, TOKEN_2022_PROGRAM_ADDRESS, RENT, extended([...(delegate ? [[12, bytes(delegate)] as [number, number[]]] : []), ...more]));
 const holding = (a: Address, owner: Address, amount: bigint) => account(a, TOKEN_2022_PROGRAM_ADDRESS, RENT, tokenAccountData({ mint: mint22, owner, amount }));
 
 // 5 tokens come to an account opened for you, from someone else's; the mint in the transaction, only on chain, or
 // nowhere to be read.
-async function received(delegate: Address | null, mint: 'loaded' | 'onchain' | 'unread' = 'loaded') {
+async function received(delegate: Address | null, mint: 'loaded' | 'onchain' | 'unread' = 'loaded', more: [number, number[]][] = []) {
     const ix: Instruction =
         mint === 'loaded'
             ? getTransferCheckedInstruction({ source: sender, mint: mint22, destination: mine, authority: createNoopSigner(ATTACKER), amount: 5n, decimals: 6 }, { programAddress: TOKEN_2022_PROGRAM_ADDRESS })
             : { programAddress: key(75), accounts: [{ address: PAYER, role: AccountRole.WRITABLE_SIGNER }, { address: mine, role: AccountRole.WRITABLE }], data: new Uint8Array([1]) };
-    const minted = mint === 'unread' ? [] : [mintOf(delegate)];
+    const minted = mint === 'unread' ? [] : [mintOf(delegate, more)];
     const before = [account(PAYER, SYSTEM, SOL), holding(sender, ATTACKER, 10n), ...minted];
     const after = [account(PAYER, SYSTEM, SOL - FEE), holding(sender, ATTACKER, 5n), holding(mine, PAYER, 5n), ...minted];
     const r = await review(transaction([ix]), { wallet: PAYER, signedBefore: 0 }, fakeChain(before, after));
@@ -66,6 +66,14 @@ test('a Token-2022 mint Otus could not read, for tokens you get: said, as who el
     const a = await received(ATTACKER, 'unread');
     const f = a.findings.find((x) => x.code === 'token-terms-unread');
     assert.deepEqual([f?.level, f?.subject, a.shared.size], ['warn', mine, 0]);
+});
+
+test('a mint with an extension Otus does not know, for tokens you get: said, as it has a rule Otus can not tell', async () => {
+    const a = await received(null, 'loaded', [[200, [1, 2, 3, 4]]]);
+    const f = a.findings.find((x) => x.code === 'token-terms-unread');
+    assert.deepEqual([f?.level, f?.subject, f?.note], ['warn', mine, `${mint22}: it has a rule Otus doesn't know`]);
+    // Every extension known: nothing to say.
+    assert.equal((await received(null)).findings.some((x) => x.code === 'token-terms-unread'), false);
 });
 
 test('an account that becomes yours with its tokens in it, under a permanent delegate: said too', async () => {

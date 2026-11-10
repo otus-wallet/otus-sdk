@@ -185,6 +185,7 @@ export function assess(s: Simulated, changes: Changes, explained: Explained[], c
                 given.add(lender);
                 shared.set(address, lender);
             } else if (!terms && after?.program === TOKEN_2022_PROGRAM_ADDRESS) add('warn', 'token-terms-unread', "Otus couldn't read the terms of a token you get", address, `${to.mint}: who else can move it is not known`);
+            else if (terms?.unknown.length) add('warn', 'token-terms-unread', "Otus couldn't read all the terms of a token you get", address, `${to.mint}: it has a rule Otus doesn't know`);
         }
         // An account of yours left frozen: its tokens can't move until the mint's freeze authority thaws it.
         if (to?.frozen && !from?.frozen && ours.has(to.owner)) {
