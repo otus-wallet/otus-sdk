@@ -448,8 +448,9 @@ const BORROWABLE: ReadonlySet<string> = new Set([
 ]);
 
 // What a brand comes with in one word of a product's name: "jupiterv6", "kaminolend", "raydiumamm", "orcawhirlpool"
-// (another brand), "realjupiter".
-const PRODUCT = /^(?:v?\d+|swap|amm|clmm|cpmm|dlmm|router|route|lend|lending|aggregator|agg|perps?|dex|pools?|vaults?|farms?|stake|staking|bridge|program|protocol|finance|fi|labs|exchange|markets?|network|oracle|wallet|official|app|pro|io|xyz|sol)*$/;
+// (another brand), "realjupiter". A run of digits is taken whole: split every way, a long one in a name that then
+// does not match would take hours to refuse.
+const PRODUCT = /^(?:v?\d+(?!\d)|swap|amm|clmm|cpmm|dlmm|router|route|lend|lending|aggregator|agg|perps?|dex|pools?|vaults?|farms?|stake|staking|bridge|program|protocol|finance|fi|labs|exchange|markets?|network|oracle|wallet|official|app|pro|io|xyz|sol)*$/;
 const BEFORE = /^(?:the|real|official|my|true|get|go|super)/;
 
 // The brand a word is made of, as a product of it; null when it is another word ("python" is no Pyth).
